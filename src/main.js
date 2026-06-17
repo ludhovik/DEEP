@@ -65,8 +65,20 @@ const ambientLight = new THREE.AmbientLight(0xffffff, 0.55);
 scene.add(ambientLight);
 
 const directionalLight = new THREE.DirectionalLight(0xffffff, 2.0);
-directionalLight.position.set(2.0, -3.0, 4.0);
 scene.add(directionalLight);
+
+function updateLighting() {
+  ambientLight.intensity = Number(params.ambientIntensity);
+  directionalLight.intensity = Number(params.directionalIntensity);
+  const az = THREE.MathUtils.degToRad(Number(params.lightAzimuthDeg));
+  const el = THREE.MathUtils.degToRad(Number(params.lightElevationDeg));
+  const rho = 5.0;
+  directionalLight.position.set(
+    rho * Math.cos(el) * Math.cos(az),
+    rho * Math.cos(el) * Math.sin(az),
+    rho * Math.sin(el)
+  );
+}
 
 const axes = new THREE.AxesHelper(1.25);
 axes.visible = false;
@@ -94,7 +106,13 @@ const params = {
   meridian2PhiDeg: 90,
   equator2Z: 0.25,
   cmbClipWithMeridian: true,
+  cmbClipMode: "rear-half",
   cmbRearSide: "positive",
+
+  ambientIntensity: 0.55,
+  directionalIntensity: 2.0,
+  lightAzimuthDeg: 304,
+  lightElevationDeg: 48,
 
   cmbOpacity: 0.82,
   icbOpacity: 0.72,
@@ -311,9 +329,23 @@ function angularDistance(a, b) {
   return Math.abs(((a - b + Math.PI) % twoPi + twoPi) % twoPi - Math.PI);
 }
 
+function normalizePhi(phi) {
+  const twoPi = 2.0 * Math.PI;
+  return ((phi % twoPi) + twoPi) % twoPi;
+}
+
+function isAngleInCCWSector(phi, start, end) {
+  const p = normalizePhi(phi);
+  const s = normalizePhi(start);
+  const e = normalizePhi(end);
+  const span = (e - s + 2.0 * Math.PI) % (2.0 * Math.PI);
+  const rel = (p - s + 2.0 * Math.PI) % (2.0 * Math.PI);
+  return rel <= span;
+}
+
 function nearestPhiIndex(phi) {
   const twoPi = 2.0 * Math.PI;
-  const target = ((phi % twoPi) + twoPi) % twoPi;
+  const target = normalizePhi(phi);
 
   let best = 0;
   let bestDist = Infinity;
@@ -592,9 +624,23 @@ function makeCmbSurfaceMesh(fieldObject, radiusIndex, opacity, vmin, vmax, color
       const ip1 = (ip + 1) % np;
 
       if (clipOptions?.enabled) {
-        const phiMid = phiAtIndex(ip);
-        const sideValue = Math.sin(phiMid - clipOptions.phi0);
-        const keep = clipOptions.side === "negative" ? sideValue < 0.0 : sideValue > 0.0;
+        const phiMid = normalizePhi(phiAtIndex(ip));
+        let keep = true;
+
+        if (clipOptions.mode === "between-meridians-behind" && clipOptions.hasTwoPlanes) {
+          const a = normalizePhi(clipOptions.phiA);
+          const b = normalizePhi(clipOptions.phiB);
+          const spanAB = (b - a + 2.0 * Math.PI) % (2.0 * Math.PI);
+          const useAB = spanAB <= Math.PI;
+          const inFrontOpening = useAB
+            ? isAngleInCCWSector(phiMid, a, b)
+            : isAngleInCCWSector(phiMid, b, a);
+          keep = !inFrontOpening;
+        } else {
+          const sideValue = Math.sin(phiMid - clipOptions.phi0);
+          keep = clipOptions.side === "negative" ? sideValue < 0.0 : sideValue > 0.0;
+        }
+
         if (!keep) continue;
       }
 
@@ -867,17 +913,34 @@ async function rebuildCMB() {
   const [vmin, vmax] = cmbDisplayRange(fieldObject, metadata.nr - 1, "cmb");
   setColourbarForSlot("cmb", params.cmbField, vmin, vmax);
 
-  const activeMeridianPhiDeg = params.showMeridian
+  const mer1Shown = params.showMeridian;
+  const mer2Shown = params.showMeridian2;
+  const anyMeridianShown = mer1Shown || mer2Shown;
+  const activeMeridianPhiDeg = mer1Shown
     ? params.meridianPhiDeg
-    : params.showMeridian2
+    : mer2Shown
       ? params.meridian2PhiDeg
       : params.meridianPhiDeg;
 
-  const cmbClip = {
-    enabled: params.cmbClipWithMeridian && (params.showMeridian || params.showMeridian2),
-    phi0: THREE.MathUtils.degToRad(activeMeridianPhiDeg),
-    side: params.cmbRearSide,
-  };
+  let cmbClip = { enabled: false };
+  if (params.cmbClipWithMeridian && anyMeridianShown && params.cmbClipMode !== "none") {
+    if (params.cmbClipMode === "between-meridians-behind" && mer1Shown && mer2Shown) {
+      cmbClip = {
+        enabled: true,
+        mode: "between-meridians-behind",
+        hasTwoPlanes: true,
+        phiA: THREE.MathUtils.degToRad(params.meridianPhiDeg),
+        phiB: THREE.MathUtils.degToRad(params.meridian2PhiDeg),
+      };
+    } else {
+      cmbClip = {
+        enabled: true,
+        mode: "rear-half",
+        phi0: THREE.MathUtils.degToRad(activeMeridianPhiDeg),
+        side: params.cmbRearSide,
+      };
+    }
+  }
   cmbMesh = makeCmbSurfaceMesh(fieldObject, metadata.nr - 1, params.cmbOpacity, vmin, vmax, params.cmbColormap, cmbClip);
   cmbMesh.visible = params.showCMB;
   scene.add(cmbMesh);
@@ -1265,8 +1328,15 @@ function buildGui() {
   const mer2Folder = addDisplayControls(gui, "meridian2", "Meridional slice 2", "meridian2Field", "showMeridian2", "meridian2Opacity", rebuildMeridian2, volumeFields);
   mer2Folder.add(params, "meridian2PhiDeg", 0, 360, 1).name("Longitude phi").onChange(() => { rebuildMeridian2(); rebuildCMB(); });
 
-  merFolder.add(params, "cmbClipWithMeridian").name("Show rear CMB only").onChange(rebuildCMB);
+  merFolder.add(params, "cmbClipWithMeridian").name("Clip CMB with meridians").onChange(rebuildCMB);
+  merFolder.add(params, "cmbClipMode", { None: "none", "Rear half": "rear-half", "Between meridional planes (behind)": "between-meridians-behind" }).name("CMB clip mode").onChange(rebuildCMB);
   merFolder.add(params, "cmbRearSide", { Rear: "positive", Front: "negative" }).name("CMB side").onChange(rebuildCMB);
+
+  const lighting = gui.addFolder("Lighting");
+  lighting.add(params, "ambientIntensity", 0.0, 2.0, 0.01).name("Ambient").onChange(updateLighting);
+  lighting.add(params, "directionalIntensity", 0.0, 4.0, 0.01).name("Directional").onChange(updateLighting);
+  lighting.add(params, "lightAzimuthDeg", 0, 360, 1).name("Light azimuth").onChange(updateLighting);
+  lighting.add(params, "lightElevationDeg", -89, 89, 1).name("Light elevation").onChange(updateLighting);
 
   const other = gui.addFolder("Other visualisation");
   const lineModes = getAvailableFieldLineModes();
@@ -1302,6 +1372,7 @@ async function init() {
 
     applyDefaultFields();
     buildGui();
+    updateLighting();
 
     await rebuildAllMeshes();
     await loadFieldLines();

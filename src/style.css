@@ -48,8 +48,9 @@ canvas {
 
 #colourbars {
   position: fixed;
-  right: 18px;
-  top: 18px;
+  left: 18px;
+  top: 50%;
+  transform: translateY(-50%);
   width: 330px;
   color: white;
   font-size: 12px;
@@ -96,8 +97,8 @@ canvas {
   position: fixed;
   left: 18px !important;
   right: auto !important;
-  top: 160px;
-  bottom: auto;
+  top: auto;
+  bottom: 18px;
   width: 330px;
   color: white;
   font-size: 12px;
