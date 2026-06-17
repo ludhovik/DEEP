@@ -6,13 +6,14 @@ import GUI from "lil-gui";
 
 const statusEl = document.getElementById("status");
 
-const displaySlots = ["cmb", "icb", "equator", "equator2", "meridian"];
+const displaySlots = ["cmb", "icb", "equator", "equator2", "meridian", "meridian2"];
 const displayNames = {
   cmb: "CMB",
   icb: "ICB",
   equator: "Equator 1",
   equator2: "Equator 2",
-  meridian: "Meridian",
+  meridian: "Meridian 1",
+  meridian2: "Meridian 2",
 };
 
 const colourbars = Object.fromEntries(
@@ -77,17 +78,20 @@ const params = {
   equatorField: "C",
   equator2Field: "C",
   meridianField: "C",
+  meridian2Field: "C",
 
   showCMB: true,
   showICB: true,
   showEquator: true,
   showEquator2: false,
   showMeridian: false,
+  showMeridian2: false,
   showFieldLines: true,
   fieldLineDisplay: "shell",
   showAxes: false,
 
   meridianPhiDeg: 0,
+  meridian2PhiDeg: 90,
   equator2Z: 0.25,
   cmbClipWithMeridian: true,
   cmbRearSide: "positive",
@@ -97,6 +101,7 @@ const params = {
   equatorOpacity: 1.0,
   equator2Opacity: 1.0,
   meridianOpacity: 1.0,
+  meridian2Opacity: 1.0,
 
   cmbScale: "symmetric",
   cmbMin: -1.0,
@@ -113,12 +118,16 @@ const params = {
   meridianScale: "symmetric",
   meridianMin: -1.0,
   meridianMax: 1.0,
+  meridian2Scale: "symmetric",
+  meridian2Min: -1.0,
+  meridian2Max: 1.0,
 
   cmbColormap: "blue-white-red",
   icbColormap: "blue-white-red",
   equatorColormap: "blue-white-red",
   equator2Colormap: "blue-white-red",
   meridianColormap: "blue-white-red",
+  meridian2Colormap: "blue-white-red",
 
   lineStride: 3,
 
@@ -133,6 +142,7 @@ let icbMesh = null;
 let equatorMesh = null;
 let equator2Mesh = null;
 let meridianMesh = null;
+let meridian2Mesh = null;
 let fieldLineGroups = { shell: null, exterior: null };
 const fieldLineDataCache = new Map();
 
@@ -844,7 +854,7 @@ function setStatusSummary(lastFieldName = null) {
   const sim = metadata.magnetic?.classification ? `${metadata.magnetic.classification} | ` : "";
   const shownMap = {shell: "shell/internal", exterior: "exterior potential/poloidal", both: "both"};
   const lineMode = metadata.field_lines?.mode ? `B lines=${metadata.field_lines.mode}, shown=${shownMap[params.fieldLineDisplay] || params.fieldLineDisplay} | ` : "";
-  const fieldText = `CMB=${params.cmbField}, ICB=${params.icbField}, Eq1=${params.equatorField}, Eq2=${params.equator2Field}, Mer=${params.meridianField}`;
+  const fieldText = `CMB=${params.cmbField}, ICB=${params.icbField}, Eq1=${params.equatorField}, Eq2=${params.equator2Field}, Mer1=${params.meridianField}, Mer2=${params.meridian2Field}`;
   const changed = lastFieldName ? ` | updated=${lastFieldName}` : "";
   setStatus(`${title}${sim}${lineMode}${fieldText}${changed} | grid ${metadata.nr} x ${metadata.ntheta} x ${metadata.nphi}`);
 }
@@ -857,9 +867,15 @@ async function rebuildCMB() {
   const [vmin, vmax] = cmbDisplayRange(fieldObject, metadata.nr - 1, "cmb");
   setColourbarForSlot("cmb", params.cmbField, vmin, vmax);
 
+  const activeMeridianPhiDeg = params.showMeridian
+    ? params.meridianPhiDeg
+    : params.showMeridian2
+      ? params.meridian2PhiDeg
+      : params.meridianPhiDeg;
+
   const cmbClip = {
-    enabled: params.cmbClipWithMeridian && params.showMeridian,
-    phi0: THREE.MathUtils.degToRad(params.meridianPhiDeg),
+    enabled: params.cmbClipWithMeridian && (params.showMeridian || params.showMeridian2),
+    phi0: THREE.MathUtils.degToRad(activeMeridianPhiDeg),
     side: params.cmbRearSide,
   };
   cmbMesh = makeCmbSurfaceMesh(fieldObject, metadata.nr - 1, params.cmbOpacity, vmin, vmax, params.cmbColormap, cmbClip);
@@ -937,6 +953,27 @@ async function rebuildMeridian() {
   setStatusSummary(`Meridian:${params.meridianField}`);
 }
 
+async function rebuildMeridian2() {
+  disposeObject(meridian2Mesh);
+  meridian2Mesh = null;
+
+  const field = await loadField(params.meridian2Field);
+  const [vmin, vmax] = meridianRange(field, params.meridian2PhiDeg, "meridian2");
+  setColourbarForSlot("meridian2", params.meridian2Field, vmin, vmax);
+
+  meridian2Mesh = makeMeridionalSliceMesh(
+    field,
+    params.meridian2PhiDeg,
+    params.meridian2Opacity,
+    vmin,
+    vmax,
+    params.meridian2Colormap
+  );
+  meridian2Mesh.visible = params.showMeridian2;
+  scene.add(meridian2Mesh);
+  setStatusSummary(`Meridian2:${params.meridian2Field}`);
+}
+
 async function rebuildAllMeshes() {
   setStatus("Loading selected fields...");
   await rebuildCMB();
@@ -944,6 +981,7 @@ async function rebuildAllMeshes() {
   await rebuildEquator();
   await rebuildEquator2();
   await rebuildMeridian();
+  await rebuildMeridian2();
   updateVisibility();
   setStatusSummary();
 }
@@ -954,12 +992,14 @@ function updateVisibility() {
   if (equatorMesh) equatorMesh.visible = params.showEquator;
   if (equator2Mesh) equator2Mesh.visible = params.showEquator2;
   if (meridianMesh) meridianMesh.visible = params.showMeridian;
+  if (meridian2Mesh) meridian2Mesh.visible = params.showMeridian2;
 
   if (colourbars.cmb?.row) colourbars.cmb.row.style.display = params.showCMB && cmbMesh ? "block" : "none";
   if (colourbars.icb?.row) colourbars.icb.row.style.display = params.showICB && icbMesh ? "block" : "none";
   if (colourbars.equator?.row) colourbars.equator.row.style.display = params.showEquator && equatorMesh ? "block" : "none";
   if (colourbars.equator2?.row) colourbars.equator2.row.style.display = params.showEquator2 && equator2Mesh ? "block" : "none";
   if (colourbars.meridian?.row) colourbars.meridian.row.style.display = params.showMeridian && meridianMesh ? "block" : "none";
+  if (colourbars.meridian2?.row) colourbars.meridian2.row.style.display = params.showMeridian2 && meridian2Mesh ? "block" : "none";
   if (!params.showFieldLines) {
     disposeFieldLineGroups();
   } else {
@@ -996,6 +1036,11 @@ function updateOpacities() {
   if (meridianMesh) {
     meridianMesh.material.opacity = params.meridianOpacity;
     meridianMesh.material.transparent = params.meridianOpacity < 1.0;
+  }
+
+  if (meridian2Mesh) {
+    meridian2Mesh.material.opacity = params.meridian2Opacity;
+    meridian2Mesh.material.transparent = params.meridian2Opacity < 1.0;
   }
 }
 
@@ -1184,12 +1229,13 @@ function applyDefaultFields() {
   params.equatorField = chooseField(["C", "Comp", "Br", "Uabs"], fields);
   params.equator2Field = chooseField(["C", "Comp", "Br", "Uabs"], fields);
   params.meridianField = chooseField(["C", "Comp", "Br", "Uabs"], fields);
+  params.meridian2Field = chooseField(["C", "Comp", "Br", "Uabs"], fields);
 }
 
 function addDisplayControls(gui, slot, label, fieldParam, showParam, opacityParam, rebuildFn, availableFields) {
   const folder = gui.addFolder(label);
 
-  folder.add(params, showParam).name("Show").onChange(() => { updateVisibility(); if (slot === "meridian") rebuildCMB(); });
+  folder.add(params, showParam).name("Show").onChange(() => { updateVisibility(); if (slot === "meridian" || slot === "meridian2") rebuildCMB(); });
   folder.add(params, fieldParam, availableFields).name("Field").onChange(rebuildFn);
   folder.add(params, `${slot}Scale`, ["symmetric", "minmax", "manual"]).name("Scale").onChange(rebuildFn);
   folder.add(params, `${slot}Colormap`, colourMapNames).name("Colour map").onChange(rebuildFn);
@@ -1213,8 +1259,12 @@ function buildGui() {
   const eqFolder = addDisplayControls(gui, "equator", "Equatorial slice 1", "equatorField", "showEquator", "equatorOpacity", rebuildEquator, volumeFields);
   const eq2Folder = addDisplayControls(gui, "equator2", "Equatorial slice 2", "equator2Field", "showEquator2", "equator2Opacity", rebuildEquator2, volumeFields);
   eq2Folder.add(params, "equator2Z", -0.95, 0.95, 0.01).name("z / r_o").onChange(rebuildEquator2);
-  const merFolder = addDisplayControls(gui, "meridian", "Meridional slice", "meridianField", "showMeridian", "meridianOpacity", rebuildMeridian, volumeFields);
+  const merFolder = addDisplayControls(gui, "meridian", "Meridional slice 1", "meridianField", "showMeridian", "meridianOpacity", rebuildMeridian, volumeFields);
   merFolder.add(params, "meridianPhiDeg", 0, 360, 1).name("Longitude phi").onChange(() => { rebuildMeridian(); rebuildCMB(); });
+
+  const mer2Folder = addDisplayControls(gui, "meridian2", "Meridional slice 2", "meridian2Field", "showMeridian2", "meridian2Opacity", rebuildMeridian2, volumeFields);
+  mer2Folder.add(params, "meridian2PhiDeg", 0, 360, 1).name("Longitude phi").onChange(() => { rebuildMeridian2(); rebuildCMB(); });
+
   merFolder.add(params, "cmbClipWithMeridian").name("Show rear CMB only").onChange(rebuildCMB);
   merFolder.add(params, "cmbRearSide", { Rear: "positive", Front: "negative" }).name("CMB side").onChange(rebuildCMB);
 
