@@ -1,0 +1,140 @@
+html,
+body {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: #050505;
+  font-family:
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+}
+
+canvas {
+  display: block;
+}
+
+#info-panel {
+  position: fixed;
+  top: 14px;
+  left: 14px;
+  padding: 12px 14px;
+  background: rgba(0, 0, 0, 0.62);
+  color: white;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.4;
+  pointer-events: none;
+  max-width: 360px;
+}
+
+#info-panel .title {
+  font-weight: 700;
+  font-size: 15px;
+  margin-bottom: 4px;
+}
+
+#status {
+  color: #dddddd;
+  margin-bottom: 8px;
+}
+
+#info-panel .hint {
+  color: #aaaaaa;
+}
+
+#colourbars {
+  position: fixed;
+  right: 18px;
+  top: 18px;
+  width: 330px;
+  color: white;
+  font-size: 12px;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.colourbar-row {
+  padding: 7px 9px 6px;
+  background: rgba(0, 0, 0, 0.58);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+}
+
+.colourbar-title {
+  font-weight: 650;
+  margin-bottom: 5px;
+  text-shadow: 0 1px 3px black;
+}
+
+.colourbar-gradient {
+  height: 13px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: linear-gradient(
+    to right,
+    rgb(40, 60, 180),
+    rgb(255, 255, 255),
+    rgb(180, 40, 40)
+  );
+}
+
+.colourbar-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 3px;
+  text-shadow: 0 1px 3px black;
+}
+
+
+#line-legend {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  width: 330px;
+  color: white;
+  font-size: 12px;
+  pointer-events: none;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.58);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+}
+
+.legend-title {
+  font-weight: 650;
+  margin-bottom: 6px;
+}
+
+.legend-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 3px 0;
+}
+
+.legend-swatch {
+  width: 28px;
+  height: 3px;
+  border-radius: 999px;
+  display: inline-block;
+}
+
+.legend-swatch.yellow {
+  background: rgb(255, 220, 128);
+}
+
+.legend-swatch.blue {
+  background: rgb(128, 200, 255);
+}
+
+.legend-note {
+  color: #bbbbbb;
+  margin-top: 6px;
+  line-height: 1.25;
+}
