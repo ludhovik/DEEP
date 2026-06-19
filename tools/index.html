@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Dynamo 3D Viewer</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script type="module" src="/src/main.js"></script>
+  </head>
+
+  <body>
+    <div id="app"></div>
+
+    <div id="info-panel">
+      <div class="title">Dynamo 3D Viewer</div>
+      <div id="status">Loading...</div>
+      <div class="hint">
+        Mouse left: rotate<br />
+        Mouse wheel: zoom<br />
+        Mouse right: pan
+      </div>
+    </div>
+
+    <div id="colourbars">
+      <div class="colourbar-row" id="cb-row-cmb">
+        <div class="colourbar-title" id="cb-cmb-title">CMB</div>
+        <div class="colourbar-gradient" id="cb-cmb-gradient"></div>
+        <div class="colourbar-labels">
+          <span id="cb-cmb-min">min</span>
+          <span id="cb-cmb-mid">0</span>
+          <span id="cb-cmb-max">max</span>
+        </div>
+      </div>
+
+      <div class="colourbar-row" id="cb-row-icb">
+        <div class="colourbar-title" id="cb-icb-title">ICB</div>
+        <div class="colourbar-gradient" id="cb-icb-gradient"></div>
+        <div class="colourbar-labels">
+          <span id="cb-icb-min">min</span>
+          <span id="cb-icb-mid">0</span>
+          <span id="cb-icb-max">max</span>
+        </div>
+      </div>
+
+      <div class="colourbar-row" id="cb-row-equator">
+        <div class="colourbar-title" id="cb-equator-title">Equator</div>
+        <div class="colourbar-gradient" id="cb-equator-gradient"></div>
+        <div class="colourbar-labels">
+          <span id="cb-equator-min">min</span>
+          <span id="cb-equator-mid">0</span>
+          <span id="cb-equator-max">max</span>
+        </div>
+      </div>
+
+      <div class="colourbar-row" id="cb-row-equator2">
+        <div class="colourbar-title" id="cb-equator2-title">Equator 2</div>
+        <div class="colourbar-gradient" id="cb-equator2-gradient"></div>
+        <div class="colourbar-labels">
+          <span id="cb-equator2-min">min</span>
+          <span id="cb-equator2-mid">0</span>
+          <span id="cb-equator2-max">max</span>
+        </div>
+      </div>
+
+      <div class="colourbar-row" id="cb-row-meridian">
+        <div class="colourbar-title" id="cb-meridian-title">Meridian</div>
+        <div class="colourbar-gradient" id="cb-meridian-gradient"></div>
+        <div class="colourbar-labels">
+          <span id="cb-meridian-min">min</span>
+          <span id="cb-meridian-mid">0</span>
+          <span id="cb-meridian-max">max</span>
+        </div>
+      </div>
+
+      <div class="colourbar-row" id="cb-row-meridian2">
+        <div class="colourbar-title" id="cb-meridian2-title">Meridian 2</div>
+        <div class="colourbar-gradient" id="cb-meridian2-gradient"></div>
+        <div class="colourbar-labels">
+          <span id="cb-meridian2-min">min</span>
+          <span id="cb-meridian2-mid">0</span>
+          <span id="cb-meridian2-max">max</span>
+        </div>
+      </div>
+    </div>
+
+    <div id="line-legend">
+      <div class="legend-title">Magnetic field lines</div>
+      <div class="legend-row"><span class="legend-swatch yellow"></span><span>positive CMB seed polarity</span></div>
+      <div class="legend-row"><span class="legend-swatch blue"></span><span>negative CMB seed polarity</span></div>
+      <div class="legend-note">Exterior: potential/poloidal CMB-to-CMB arcs</div>
+    </div>
+
+    <div id="export-panel">
+      <div class="export-title">Export</div>
+      <button id="export-png-button" type="button">PNG white bg</button>
+      <button id="export-pdf-button" type="button">PDF white bg</button>
+      <button id="export-video-button" type="button">Record 360°</button>
+      <div id="export-message">Files are saved by the browser.</div>
+    </div>
+  </body>
+</html>
