@@ -5,6 +5,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import GUI from "lil-gui";
 
 const statusEl = document.getElementById("status");
+const exportMessageEl = document.getElementById("export-message");
 
 const displaySlots = ["cmb", "icb", "equator", "equator2", "meridian", "meridian2"];
 const displayNames = {
@@ -44,6 +45,7 @@ camera.position.set(0.0, -3.0, 1.35);
 const renderer = new THREE.WebGLRenderer({
   antialias: true,
   powerPreference: "high-performance",
+  preserveDrawingBuffer: true,
 });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -149,7 +151,26 @@ const params = {
 
   lineStride: 3,
 
-  resetCamera: () => resetCameraView(),
+  cameraDistance: 3.29,
+  cameraAzimuthDeg: -90,
+  cameraElevationDeg: 24,
+  cameraTargetX: 0.0,
+  cameraTargetY: 0.0,
+  cameraTargetZ: 0.0,
+  cameraFovDeg: 45,
+  applyCameraView: () => applyCameraViewFromParams(),
+  captureCameraView: () => syncCameraParamsFromCamera(true),
+
+  exportWidthPx: 2400,
+  videoWidthPx: 1920,
+  videoDurationSec: 8,
+  videoFps: 30,
+  videoRotationMode: "phi360",
+  exportPngWhite: () => exportCurrentViewPNG(),
+  exportPdfWhite: () => exportCurrentViewPDF(),
+  recordFullRotation: () => startFullRotationRecording(),
+
+  resetCamera: () => { resetCameraView(); syncCameraParamsFromCamera(true); },
 };
 
 let metadata = null;
@@ -166,8 +187,74 @@ const fieldLineDataCache = new Map();
 
 const dataCache = new Map();
 
+const videoState = {
+  active: false,
+  recorder: null,
+  chunks: [],
+  startTime: 0,
+  durationMs: 0,
+  startAngle: 0,
+  radiusXY: 0,
+  zOffset: 0,
+  radius: 0,
+  polarAngle: 0,
+  mode: "phi360",
+  target: new THREE.Vector3(),
+  startPosition: new THREE.Vector3(),
+  previousRendererSize: new THREE.Vector2(),
+  previousPixelRatio: 1,
+  previousAspect: 1,
+  resizedRenderer: false,
+};
+
+const cameraParamControllers = [];
+
 function setStatus(text) {
   statusEl.textContent = text;
+  setExportMessage(text);
+}
+
+function setExportMessage(text) {
+  if (exportMessageEl) exportMessageEl.textContent = text;
+}
+
+function refreshCameraParamControllers() {
+  for (const controller of cameraParamControllers) controller.updateDisplay();
+}
+
+function syncCameraParamsFromCamera(updateControllers = false) {
+  const offset = camera.position.clone().sub(controls.target);
+  const distance = Math.max(offset.length(), 1.0e-6);
+  params.cameraDistance = distance;
+  params.cameraAzimuthDeg = THREE.MathUtils.radToDeg(Math.atan2(offset.y, offset.x));
+  params.cameraElevationDeg = THREE.MathUtils.radToDeg(Math.asin(clamp(offset.z / distance, -1.0, 1.0)));
+  params.cameraTargetX = controls.target.x;
+  params.cameraTargetY = controls.target.y;
+  params.cameraTargetZ = controls.target.z;
+  params.cameraFovDeg = camera.fov;
+  if (updateControllers) refreshCameraParamControllers();
+}
+
+function applyCameraViewFromParams() {
+  const distance = Math.max(0.05, Number(params.cameraDistance));
+  const az = THREE.MathUtils.degToRad(Number(params.cameraAzimuthDeg));
+  const el = THREE.MathUtils.degToRad(clamp(Number(params.cameraElevationDeg), -89.0, 89.0));
+  const target = new THREE.Vector3(
+    Number(params.cameraTargetX),
+    Number(params.cameraTargetY),
+    Number(params.cameraTargetZ)
+  );
+
+  controls.target.copy(target);
+  camera.position.set(
+    target.x + distance * Math.cos(el) * Math.cos(az),
+    target.y + distance * Math.cos(el) * Math.sin(az),
+    target.z + distance * Math.sin(el)
+  );
+  camera.up.set(0.0, 0.0, 1.0);
+  camera.fov = clamp(Number(params.cameraFovDeg), 5.0, 120.0);
+  camera.updateProjectionMatrix();
+  controls.update();
 }
 
 function formatNumber(x) {
@@ -277,6 +364,24 @@ function idx(ir, it, ip) {
 
 function clamp(x, a, b) {
   return Math.max(a, Math.min(b, x));
+}
+
+const OPAQUE_OPACITY = 0.999;
+
+function isEffectivelyOpaque(opacity) {
+  return Number(opacity) >= OPAQUE_OPACITY;
+}
+
+function applyOpacityAndDepth(material, opacity) {
+  const alpha = clamp(Number(opacity), 0.0, 1.0);
+  const opaque = isEffectivelyOpaque(alpha);
+
+  material.opacity = alpha;
+  material.transparent = !opaque;
+  material.depthTest = true;
+  material.depthWrite = opaque;
+  material.blending = opaque ? THREE.NoBlending : THREE.NormalBlending;
+  material.needsUpdate = true;
 }
 
 function radiusAtIndex(ir) {
@@ -583,11 +688,9 @@ function makeSurfaceMesh(field, radiusIndex, opacity, vmin, vmax, colormap) {
   const material = new THREE.MeshPhongMaterial({
     vertexColors: true,
     side: THREE.DoubleSide,
-    transparent: opacity < 1.0,
-    opacity,
     shininess: 8,
-    depthWrite: opacity >= 0.95,
   });
+  applyOpacityAndDepth(material, opacity);
 
   return new THREE.Mesh(geometry, material);
 }
@@ -661,11 +764,9 @@ function makeCmbSurfaceMesh(fieldObject, radiusIndex, opacity, vmin, vmax, color
   const material = new THREE.MeshPhongMaterial({
     vertexColors: true,
     side: THREE.DoubleSide,
-    transparent: opacity < 1.0,
-    opacity,
     shininess: 8,
-    depthWrite: opacity >= 0.95,
   });
+  applyOpacityAndDepth(material, opacity);
 
   return new THREE.Mesh(geometry, material);
 }
@@ -775,10 +876,8 @@ function makeHorizontalSliceMesh(field, z, opacity, vmin, vmax, colormap) {
   const material = new THREE.MeshBasicMaterial({
     vertexColors: true,
     side: THREE.DoubleSide,
-    transparent: opacity < 1.0,
-    opacity,
-    depthWrite: opacity >= 0.95,
   });
+  applyOpacityAndDepth(material, opacity);
 
   return new THREE.Mesh(geometry, material);
 }
@@ -837,10 +936,8 @@ function makeMeridionalSliceMesh(field, phiDeg, opacity, vmin, vmax, colormap) {
   const material = new THREE.MeshBasicMaterial({
     vertexColors: true,
     side: THREE.DoubleSide,
-    transparent: opacity < 1.0,
-    opacity,
-    depthWrite: opacity >= 0.95,
   });
+  applyOpacityAndDepth(material, opacity);
 
   return new THREE.Mesh(geometry, material);
 }
@@ -1076,35 +1173,12 @@ function updateVisibility() {
 }
 
 function updateOpacities() {
-  if (cmbMesh) {
-    cmbMesh.material.opacity = params.cmbOpacity;
-    cmbMesh.material.transparent = params.cmbOpacity < 1.0;
-  }
-
-  if (icbMesh) {
-    icbMesh.material.opacity = params.icbOpacity;
-    icbMesh.material.transparent = params.icbOpacity < 1.0;
-  }
-
-  if (equatorMesh) {
-    equatorMesh.material.opacity = params.equatorOpacity;
-    equatorMesh.material.transparent = params.equatorOpacity < 1.0;
-  }
-
-  if (equator2Mesh) {
-    equator2Mesh.material.opacity = params.equator2Opacity;
-    equator2Mesh.material.transparent = params.equator2Opacity < 1.0;
-  }
-
-  if (meridianMesh) {
-    meridianMesh.material.opacity = params.meridianOpacity;
-    meridianMesh.material.transparent = params.meridianOpacity < 1.0;
-  }
-
-  if (meridian2Mesh) {
-    meridian2Mesh.material.opacity = params.meridian2Opacity;
-    meridian2Mesh.material.transparent = params.meridian2Opacity < 1.0;
-  }
+  if (cmbMesh) applyOpacityAndDepth(cmbMesh.material, params.cmbOpacity);
+  if (icbMesh) applyOpacityAndDepth(icbMesh.material, params.icbOpacity);
+  if (equatorMesh) applyOpacityAndDepth(equatorMesh.material, params.equatorOpacity);
+  if (equator2Mesh) applyOpacityAndDepth(equator2Mesh.material, params.equator2Opacity);
+  if (meridianMesh) applyOpacityAndDepth(meridianMesh.material, params.meridianOpacity);
+  if (meridian2Mesh) applyOpacityAndDepth(meridian2Mesh.material, params.meridian2Opacity);
 }
 
 async function fetchFieldLineFile(filename) {
@@ -1338,6 +1412,27 @@ function buildGui() {
   lighting.add(params, "lightAzimuthDeg", 0, 360, 1).name("Light azimuth").onChange(updateLighting);
   lighting.add(params, "lightElevationDeg", -89, 89, 1).name("Light elevation").onChange(updateLighting);
 
+  const viewFolder = gui.addFolder("Point of view");
+  cameraParamControllers.push(viewFolder.add(params, "cameraDistance", 0.2, 20.0, 0.01).name("Distance").onChange(applyCameraViewFromParams));
+  cameraParamControllers.push(viewFolder.add(params, "cameraAzimuthDeg", -180, 180, 1).name("Azimuth phi").onChange(applyCameraViewFromParams));
+  cameraParamControllers.push(viewFolder.add(params, "cameraElevationDeg", -89, 89, 1).name("Elevation theta").onChange(applyCameraViewFromParams));
+  cameraParamControllers.push(viewFolder.add(params, "cameraTargetX", -2.0, 2.0, 0.01).name("Target x").onChange(applyCameraViewFromParams));
+  cameraParamControllers.push(viewFolder.add(params, "cameraTargetY", -2.0, 2.0, 0.01).name("Target y").onChange(applyCameraViewFromParams));
+  cameraParamControllers.push(viewFolder.add(params, "cameraTargetZ", -2.0, 2.0, 0.01).name("Target z").onChange(applyCameraViewFromParams));
+  cameraParamControllers.push(viewFolder.add(params, "cameraFovDeg", 10, 90, 1).name("FOV").onChange(applyCameraViewFromParams));
+  viewFolder.add(params, "captureCameraView").name("Use current mouse view");
+  viewFolder.add(params, "applyCameraView").name("Apply view");
+
+  const exportFolder = gui.addFolder("Export");
+  exportFolder.add(params, "exportWidthPx", 800, 6000, 100).name("PNG/PDF width px");
+  exportFolder.add(params, "exportPngWhite").name("Save PNG + colourbars");
+  exportFolder.add(params, "exportPdfWhite").name("Save PDF + colourbars");
+  exportFolder.add(params, "videoWidthPx", 800, 6000, 100).name("Video width px");
+  exportFolder.add(params, "videoDurationSec", 2, 120, 1).name("Video duration s");
+  exportFolder.add(params, "videoFps", 10, 60, 1).name("Video FPS");
+  exportFolder.add(params, "videoRotationMode", { "360° in phi": "phi360", "360° phi + 180° theta": "phi360Theta180" }).name("Rotation mode");
+  exportFolder.add(params, "recordFullRotation").name("Record video");
+
   const other = gui.addFolder("Other visualisation");
   const lineModes = getAvailableFieldLineModes();
   if (lineModes.length > 0) {
@@ -1358,9 +1453,467 @@ function buildGui() {
   eqFolder.open();
 }
 
-function animate() {
+
+async function saveBlob(blob, filename, description = "file") {
+  if (!(blob instanceof Blob) || blob.size === 0) {
+    throw new Error(`No ${description} data were produced.`);
+  }
+
+  setExportMessage(`Saving ${filename}...`);
+
+  if (window.isSecureContext && "showSaveFilePicker" in window) {
+    try {
+      const extension = filename.split(".").pop()?.toLowerCase() || "dat";
+      const pickerTypes = {
+        png: [{ description: "PNG image", accept: { "image/png": [".png"] } }],
+        pdf: [{ description: "PDF document", accept: { "application/pdf": [".pdf"] } }],
+        webm: [{ description: "WebM video", accept: { "video/webm": [".webm"] } }],
+      };
+      const handle = await window.showSaveFilePicker({
+        suggestedName: filename,
+        types: pickerTypes[extension] || undefined,
+      });
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      setStatus(`Saved ${filename}.`);
+      return;
+    } catch (err) {
+      if (err?.name === "AbortError") {
+        setStatus(`Save cancelled for ${filename}.`);
+        return;
+      }
+      console.warn("Save picker failed; falling back to download link.", err);
+    }
+  }
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  setStatus(`Download requested for ${filename}. Check your browser Downloads.`);
+}
+
+
+function withTemporaryWhiteBackground(renderCallback) {
+  const previousBackground = scene.background;
+  scene.background = new THREE.Color(0xffffff);
+  renderer.render(scene, camera);
+  const result = renderCallback();
+  scene.background = previousBackground;
+  renderer.render(scene, camera);
+  return result;
+}
+
+function getVisibleColourbarSlots() {
+  return displaySlots.filter((slot) => {
+    const bar = colourbars[slot];
+    return bar?.row && bar.row.style.display !== "none";
+  });
+}
+
+function drawRoundedRectPath(ctx, x, y, w, h, r) {
+  const rr = Math.min(r, 0.5 * w, 0.5 * h);
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.lineTo(x + w - rr, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + rr);
+  ctx.lineTo(x + w, y + h - rr);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - rr, y + h);
+  ctx.lineTo(x + rr, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - rr);
+  ctx.lineTo(x, y + rr);
+  ctx.quadraticCurveTo(x, y, x + rr, y);
+  ctx.closePath();
+}
+
+function drawColourbarGradient(ctx, x, y, w, h, scheme) {
+  const stops = colourStops[scheme] || colourStops["blue-white-red"];
+  const gradient = ctx.createLinearGradient(x, y, x + w, y);
+  for (const [t, rgb] of stops) {
+    gradient.addColorStop(t, `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`);
+  }
+  ctx.fillStyle = gradient;
+  drawRoundedRectPath(ctx, x, y, w, h, 0.5 * h);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(0,0,0,0.45)";
+  ctx.lineWidth = Math.max(1, h * 0.08);
+  ctx.stroke();
+}
+
+function drawExportColourbars(ctx, width, height) {
+  const slots = getVisibleColourbarSlots();
+  if (slots.length === 0) return;
+
+  const scale = clamp(width / Math.max(1, window.innerWidth), 1.0, 4.0);
+  const panelWidth = 330 * scale;
+  const panelHeight = 58 * scale;
+  const gap = 8 * scale;
+  const x = 18 * scale;
+  const totalHeight = slots.length * panelHeight + (slots.length - 1) * gap;
+  let y = 0.5 * (height - totalHeight);
+  y = clamp(y, 18 * scale, Math.max(18 * scale, height - totalHeight - 18 * scale));
+
+  ctx.save();
+  for (const slot of slots) {
+    const bar = colourbars[slot];
+    const scheme = params[`${slot}Colormap`] || "blue-white-red";
+
+    ctx.fillStyle = "rgba(255,255,255,0.88)";
+    ctx.strokeStyle = "rgba(0,0,0,0.22)";
+    ctx.lineWidth = Math.max(1, scale);
+    drawRoundedRectPath(ctx, x, y, panelWidth, panelHeight, 8 * scale);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = "rgb(0,0,0)";
+    ctx.font = `${Math.round(12 * scale)}px system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif`;
+    ctx.textBaseline = "top";
+    ctx.fillText(bar.title?.textContent || displayNames[slot], x + 9 * scale, y + 7 * scale);
+
+    const gx = x + 9 * scale;
+    const gy = y + 27 * scale;
+    const gw = panelWidth - 18 * scale;
+    const gh = 13 * scale;
+    drawColourbarGradient(ctx, gx, gy, gw, gh, scheme);
+
+    ctx.font = `${Math.round(10 * scale)}px system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif`;
+    ctx.textBaseline = "top";
+    ctx.fillStyle = "rgb(0,0,0)";
+    const minText = bar.min?.textContent || "min";
+    const midText = bar.mid?.textContent || "";
+    const maxText = bar.max?.textContent || "max";
+    ctx.fillText(minText, gx, y + 43 * scale);
+    ctx.textAlign = "center";
+    ctx.fillText(midText, gx + 0.5 * gw, y + 43 * scale);
+    ctx.textAlign = "right";
+    ctx.fillText(maxText, gx + gw, y + 43 * scale);
+    ctx.textAlign = "left";
+
+    y += panelHeight + gap;
+  }
+  ctx.restore();
+}
+
+function makeCompositeExportCanvas(widthPx = null) {
+  const prevSize = renderer.getSize(new THREE.Vector2());
+  const prevPixelRatio = renderer.getPixelRatio();
+  const prevAspect = camera.aspect;
+  const previousBackground = scene.background;
+  let needResize = false;
+
+  if (widthPx && Number.isFinite(widthPx) && widthPx > 0) {
+    const width = Math.round(widthPx);
+    const height = Math.round(width / prevAspect);
+    renderer.setPixelRatio(1);
+    renderer.setSize(width, height, false);
+    camera.aspect = width / height;
+    camera.updateProjectionMatrix();
+    needResize = true;
+  }
+
+  scene.background = new THREE.Color(0xffffff);
+  renderer.render(scene, camera);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = renderer.domElement.width;
+  canvas.height = renderer.domElement.height;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "white";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(renderer.domElement, 0, 0, canvas.width, canvas.height);
+  drawExportColourbars(ctx, canvas.width, canvas.height);
+
+  scene.background = previousBackground;
+  if (needResize) {
+    renderer.setPixelRatio(prevPixelRatio);
+    renderer.setSize(prevSize.x, prevSize.y, false);
+    camera.aspect = prevAspect;
+    camera.updateProjectionMatrix();
+  }
+  renderer.render(scene, camera);
+
+  return canvas;
+}
+
+function exportCanvasDataUrl(type = "image/png", quality = 0.95, widthPx = null) {
+  const canvas = makeCompositeExportCanvas(widthPx);
+  return canvas.toDataURL(type, quality);
+}
+
+function exportCanvasBlob(type = "image/png", quality = 0.95, widthPx = null) {
+  return new Promise((resolve, reject) => {
+    try {
+      const canvas = makeCompositeExportCanvas(widthPx);
+      if (canvas.toBlob) {
+        canvas.toBlob((blob) => {
+          if (blob) resolve(blob);
+          else reject(new Error("Canvas export produced no blob."));
+        }, type, quality);
+      } else {
+        resolve(dataUrlToBlob(canvas.toDataURL(type, quality)));
+      }
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+function dataUrlToBlob(dataUrl) {
+  const [header, data] = dataUrl.split(",");
+  const mime = header.match(/data:(.*?);base64/)[1];
+  const binary = atob(data);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+}
+
+async function exportCurrentViewPNG() {
+  try {
+    setStatus("Preparing PNG export...");
+    const blob = await exportCanvasBlob("image/png", 1.0, params.exportWidthPx);
+    await saveBlob(blob, `dynamo-viewer-${Date.now()}.png`, "PNG");
+  } catch (err) {
+    console.error(err);
+    setStatus(`PNG export failed: ${err.message}`);
+  }
+}
+
+
+function concatUint8Arrays(chunks) {
+  const total = chunks.reduce((s, a) => s + a.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const a of chunks) {
+    out.set(a, offset);
+    offset += a.length;
+  }
+  return out;
+}
+
+function asciiBytes(str) {
+  return new TextEncoder().encode(str);
+}
+
+function base64ToUint8Array(base64) {
+  const binary = atob(base64);
+  const arr = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) arr[i] = binary.charCodeAt(i);
+  return arr;
+}
+
+function makeSimplePdfFromJpegDataUrl(dataUrl, widthPx, heightPx) {
+  const base64 = dataUrl.split(",")[1];
+  const jpegBytes = base64ToUint8Array(base64);
+  const pageWidth = Math.max(100, Math.round(widthPx * 0.75));
+  const pageHeight = Math.max(100, Math.round(heightPx * 0.75));
+  const content = `q\n${pageWidth} 0 0 ${pageHeight} 0 0 cm\n/Im0 Do\nQ\n`;
+
+  const objects = [
+    asciiBytes("<< /Type /Catalog /Pages 2 0 R >>"),
+    asciiBytes("<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+    asciiBytes(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /ProcSet [/PDF /ImageC] /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>`),
+    concatUint8Arrays([
+      asciiBytes(`<< /Type /XObject /Subtype /Image /Width ${widthPx} /Height ${heightPx} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpegBytes.length} >>\nstream\n`),
+      jpegBytes,
+      asciiBytes("\nendstream")
+    ]),
+    asciiBytes(`<< /Length ${content.length} >>\nstream\n${content}endstream`)
+  ];
+
+  const chunks = [asciiBytes("%PDF-1.4\n%\xFF\xFF\xFF\xFF\n")];
+  const offsets = [0];
+  let currentOffset = chunks[0].length;
+
+  for (let i = 0; i < objects.length; i++) {
+    offsets.push(currentOffset);
+    const header = asciiBytes(`${i + 1} 0 obj\n`);
+    const footer = asciiBytes("\nendobj\n");
+    chunks.push(header, objects[i], footer);
+    currentOffset += header.length + objects[i].length + footer.length;
+  }
+
+  const xrefOffset = currentOffset;
+  let xref = `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (let i = 1; i <= objects.length; i++) {
+    xref += `${String(offsets[i]).padStart(10, "0")} 00000 n \n`;
+  }
+
+  const trailer = `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+  chunks.push(asciiBytes(xref), asciiBytes(trailer));
+  return new Blob(chunks, { type: "application/pdf" });
+}
+
+async function exportCurrentViewPDF() {
+  try {
+    setStatus("Preparing PDF export...");
+    const widthPx = Math.round(params.exportWidthPx);
+    const heightPx = Math.round(widthPx / camera.aspect);
+    const dataUrl = exportCanvasDataUrl("image/jpeg", 0.95, widthPx);
+    const blob = makeSimplePdfFromJpegDataUrl(dataUrl, widthPx, heightPx);
+    await saveBlob(blob, `dynamo-viewer-${Date.now()}.pdf`, "PDF");
+  } catch (err) {
+    console.error(err);
+    setStatus(`PDF export failed: ${err.message}`);
+  }
+}
+
+
+function getSupportedVideoMimeType() {
+  const candidates = [
+    "video/webm;codecs=vp9",
+    "video/webm;codecs=vp8",
+    "video/webm"
+  ];
+
+  for (const type of candidates) {
+    if (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(type)) return type;
+  }
+
+  return "";
+}
+
+function resizeRendererForVideoIfNeeded() {
+  const width = Math.round(Number(params.videoWidthPx));
+  if (!Number.isFinite(width) || width <= 0) return;
+
+  videoState.previousRendererSize = renderer.getSize(new THREE.Vector2());
+  videoState.previousPixelRatio = renderer.getPixelRatio();
+  videoState.previousAspect = camera.aspect;
+
+  const height = Math.max(1, Math.round(width / camera.aspect));
+  renderer.setPixelRatio(1);
+  renderer.setSize(width, height, false);
+  camera.aspect = width / height;
+  camera.updateProjectionMatrix();
+  videoState.resizedRenderer = true;
+}
+
+function restoreRendererAfterVideo() {
+  if (!videoState.resizedRenderer) return;
+  renderer.setPixelRatio(videoState.previousPixelRatio);
+  renderer.setSize(videoState.previousRendererSize.x, videoState.previousRendererSize.y, false);
+  camera.aspect = videoState.previousAspect;
+  camera.updateProjectionMatrix();
+  videoState.resizedRenderer = false;
+}
+
+function cameraPositionFromRawSpherical(target, radius, polarAngle, azimuthAngle) {
+  return new THREE.Vector3(
+    target.x + radius * Math.sin(polarAngle) * Math.cos(azimuthAngle),
+    target.y + radius * Math.sin(polarAngle) * Math.sin(azimuthAngle),
+    target.z + radius * Math.cos(polarAngle)
+  );
+}
+
+function startFullRotationRecording() {
+  if (videoState.active) return;
+
+  if (typeof MediaRecorder === "undefined" || !renderer.domElement.captureStream) {
+    setStatus("Video recording is not supported in this browser.");
+    return;
+  }
+
+  const offset = camera.position.clone().sub(controls.target);
+  const radius = offset.length();
+  const radiusXY = Math.hypot(offset.x, offset.y);
+
+  if (radius <= 1.0e-8 || radiusXY <= 1.0e-8) {
+    setStatus("Cannot record rotation from current camera position.");
+    return;
+  }
+
+  resizeRendererForVideoIfNeeded();
+  renderer.render(scene, camera);
+
+  const mimeType = getSupportedVideoMimeType();
+  const stream = renderer.domElement.captureStream(Math.max(1, Math.round(params.videoFps)));
+  const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+
+  videoState.active = true;
+  videoState.recorder = recorder;
+  videoState.chunks = [];
+  videoState.startTime = performance.now();
+  videoState.durationMs = 1000 * Math.max(1, Number(params.videoDurationSec));
+  videoState.startAngle = Math.atan2(offset.y, offset.x);
+  videoState.radiusXY = radiusXY;
+  videoState.zOffset = offset.z;
+  videoState.radius = radius;
+  videoState.polarAngle = Math.acos(clamp(offset.z / radius, -1.0, 1.0));
+  videoState.mode = params.videoRotationMode;
+  videoState.target.copy(controls.target);
+  videoState.startPosition.copy(camera.position);
+
+  recorder.ondataavailable = (event) => {
+    if (event.data && event.data.size > 0) videoState.chunks.push(event.data);
+  };
+
+  recorder.onstop = async () => {
+    const blob = new Blob(videoState.chunks, { type: mimeType || "video/webm" });
+    try {
+      await saveBlob(blob, `dynamo-viewer-rotation-${Date.now()}.webm`, "video");
+    } catch (err) {
+      console.error(err);
+      setStatus(`Video save failed: ${err.message}`);
+    } finally {
+      stream.getTracks().forEach((t) => t.stop());
+      controls.enabled = true;
+      videoState.active = false;
+      camera.position.copy(videoState.startPosition);
+      restoreRendererAfterVideo();
+      controls.update();
+      syncCameraParamsFromCamera(true);
+    }
+  };
+
+  controls.enabled = false;
+  recorder.start();
+  setStatus(`Recording video at ${renderer.domElement.width} x ${renderer.domElement.height} px...`);
+}
+
+function updateVideoRecordingFrame(nowMs) {
+  if (!videoState.active) return;
+
+  const frac = Math.min(1, (nowMs - videoState.startTime) / videoState.durationMs);
+  let azimuth = videoState.startAngle + 2.0 * Math.PI * frac;
+  let polar = videoState.polarAngle;
+
+  if (videoState.mode === "phi360Theta180") {
+    const phiPhase = Math.min(1.0, frac / 0.75);
+    const thetaPhase = frac <= 0.75 ? 0.0 : (frac - 0.75) / 0.25;
+    azimuth = videoState.startAngle + 2.0 * Math.PI * phiPhase;
+    polar = videoState.polarAngle + Math.PI * thetaPhase;
+  }
+
+  camera.position.copy(cameraPositionFromRawSpherical(videoState.target, videoState.radius, polar, azimuth));
+  camera.up.set(0.0, 0.0, 1.0);
+  camera.lookAt(videoState.target);
+
+  if (frac >= 1 && videoState.recorder && videoState.recorder.state !== "inactive") {
+    videoState.recorder.stop();
+  }
+}
+
+
+
+function bindExportPanelButtons() {
+  document.getElementById("export-png-button")?.addEventListener("click", () => exportCurrentViewPNG());
+  document.getElementById("export-pdf-button")?.addEventListener("click", () => exportCurrentViewPDF());
+  document.getElementById("export-video-button")?.addEventListener("click", () => startFullRotationRecording());
+}
+
+function animate(now = performance.now()) {
   requestAnimationFrame(animate);
-  controls.update();
+  if (videoState.active) {
+    updateVideoRecordingFrame(now);
+  } else {
+    controls.update();
+  }
   renderer.render(scene, camera);
 }
 
@@ -1371,7 +1924,9 @@ async function init() {
     await loadCoordinates();
 
     applyDefaultFields();
+    syncCameraParamsFromCamera(false);
     buildGui();
+    bindExportPanelButtons();
     updateLighting();
 
     await rebuildAllMeshes();
@@ -1385,10 +1940,12 @@ async function init() {
 }
 
 window.addEventListener("resize", () => {
+  if (videoState.active) return;
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  syncCameraParamsFromCamera(true);
 });
 
 init();
