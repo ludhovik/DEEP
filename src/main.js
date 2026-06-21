@@ -886,47 +886,100 @@ function makeMeridionalSliceMesh(field, phiDeg, opacity, vmin, vmax, colormap) {
   const nr = metadata.nr;
   const nt = metadata.ntheta;
   const requestedPhi = THREE.MathUtils.degToRad(phiDeg);
+  const ipFront = nearestPhiIndex(requestedPhi);
+  const ipBack = nearestPhiIndex(requestedPhi + Math.PI);
 
   const positions = [];
   const colors = [];
   const indices = [];
 
-  function appendSide(phiWanted) {
-    const ip = nearestPhiIndex(phiWanted);
-    const phi = phiAtIndex(ip);
-    const offset = positions.length / 3;
+  // The SHTns/Gauss theta grid usually does not include the exact poles.
+  // Extend it to theta=0 and theta=pi, duplicating the nearest boundary values,
+  // equivalent to the RegularGridInterpolator extension used in the Python plots.
+  const thetaExt = [];
+  const thetaSampleIndex = [];
 
-    for (let ir = 0; ir < nr; ir++) {
-      const r = radiusAtIndex(ir);
-
-      for (let it = 0; it < nt; it++) {
-        const theta = thetaAtIndex(it);
-
-        positions.push(
-          r * Math.sin(theta) * Math.cos(phi),
-          r * Math.sin(theta) * Math.sin(phi),
-          r * Math.cos(theta)
-        );
-
-        const val = field[idx(ir, it, ip)];
-        const col = colourMap(val, vmin, vmax, colormap);
-        colors.push(col.r, col.g, col.b);
-      }
-    }
-
-    for (let ir = 0; ir < nr - 1; ir++) {
-      for (let it = 0; it < nt - 1; it++) {
-        const a = offset + ir * nt + it;
-        const b = offset + ir * nt + it + 1;
-        const c = offset + (ir + 1) * nt + it;
-        const d = offset + (ir + 1) * nt + it + 1;
-        indices.push(a, c, b, b, c, d);
-      }
+  for (let j = 0; j < nt + 2; j++) {
+    if (j === 0) {
+      thetaExt.push(0.0);
+      thetaSampleIndex.push(0);
+    } else if (j === nt + 1) {
+      thetaExt.push(Math.PI);
+      thetaSampleIndex.push(nt - 1);
+    } else {
+      thetaExt.push(thetaAtIndex(j - 1));
+      thetaSampleIndex.push(j - 1);
     }
   }
 
-  appendSide(requestedPhi);
-  appendSide(requestedPhi + Math.PI);
+  function poleValue(ir, it) {
+    // Force the two sides to have the same colour at the pole vertices.
+    // This removes the visual seam where phi and phi+pi meet at theta=0/pi.
+    return 0.5 * (field[idx(ir, it, ipFront)] + field[idx(ir, it, ipBack)]);
+  }
+
+  const columns = [];
+
+  // Positive signed half-plane: phi.
+  for (let j = 0; j < thetaExt.length; j++) {
+    columns.push({
+      theta: thetaExt[j],
+      it: thetaSampleIndex[j],
+      ip: ipFront,
+      sign: 1.0,
+      pole: j === 0 || j === thetaExt.length - 1,
+    });
+  }
+
+  // Negative signed half-plane: phi + pi, reversed so the meridional
+  // coordinate is continuous around the full signed plane.
+  for (let j = thetaExt.length - 1; j >= 0; j--) {
+    columns.push({
+      theta: thetaExt[j],
+      it: thetaSampleIndex[j],
+      ip: ipBack,
+      sign: -1.0,
+      pole: j === 0 || j === thetaExt.length - 1,
+    });
+  }
+
+  const ncol = columns.length;
+  const cosPhi = Math.cos(requestedPhi);
+  const sinPhi = Math.sin(requestedPhi);
+
+  for (let ir = 0; ir < nr; ir++) {
+    const r = radiusAtIndex(ir);
+
+    for (const colInfo of columns) {
+      const theta = colInfo.theta;
+      const signedS = colInfo.sign * r * Math.sin(theta);
+
+      positions.push(
+        signedS * cosPhi,
+        signedS * sinPhi,
+        r * Math.cos(theta)
+      );
+
+      const val = colInfo.pole
+        ? poleValue(ir, colInfo.it)
+        : field[idx(ir, colInfo.it, colInfo.ip)];
+      const col = colourMap(val, vmin, vmax, colormap);
+      colors.push(col.r, col.g, col.b);
+    }
+  }
+
+  // Connect the signed meridional plane as one continuous annular mesh.
+  // The cyclic closure connects theta=0 on both sides and removes the pole seam.
+  for (let ir = 0; ir < nr - 1; ir++) {
+    for (let jc = 0; jc < ncol; jc++) {
+      const jn = (jc + 1) % ncol;
+      const a = ir * ncol + jc;
+      const b = ir * ncol + jn;
+      const c = (ir + 1) * ncol + jc;
+      const d = (ir + 1) * ncol + jn;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
