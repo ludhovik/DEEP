@@ -291,6 +291,154 @@ def interpolate_B_cartesian(
     return B / norm
 
 
+
+def radius_of(x: np.ndarray) -> float:
+    return float(np.linalg.norm(x))
+
+
+def append_point(points: list[list[float]], x: np.ndarray, min_separation: float = 0.0) -> None:
+    if min_separation > 0.0 and points:
+        last = np.asarray(points[-1], dtype=np.float64)
+        if float(np.linalg.norm(np.asarray(x, dtype=np.float64) - last)) <= min_separation:
+            return
+    points.append([float(x[0]), float(x[1]), float(x[2])])
+
+
+def segment_sphere_intersection(x0: np.ndarray, x1: np.ndarray, radius: float) -> np.ndarray:
+    """Return the point where the Cartesian segment x0->x1 intersects |x|=radius."""
+    x0 = np.asarray(x0, dtype=np.float64)
+    x1 = np.asarray(x1, dtype=np.float64)
+    d = x1 - x0
+    a = float(np.dot(d, d))
+    b = 2.0 * float(np.dot(x0, d))
+    c = float(np.dot(x0, x0) - radius * radius)
+
+    if a <= 1.0e-300:
+        r0, th0, ph0 = cart_to_sph(x0)
+        return sph_to_cart(radius, th0, ph0)
+
+    disc = max(0.0, b * b - 4.0 * a * c)
+    sqrt_disc = math.sqrt(disc)
+    roots = [(-b - sqrt_disc) / (2.0 * a), (-b + sqrt_disc) / (2.0 * a)]
+    roots = [t for t in roots if -1.0e-12 <= t <= 1.0 + 1.0e-12]
+
+    if roots:
+        # Prefer the intersection reached while moving from x0 to x1.
+        t = min(max(0.0, min(1.0, t)) for t in roots)
+        if abs(roots[-1]) < abs(t):
+            t = min(max(0.0, roots[-1]), 1.0)
+        hit = x0 + t * d
+    else:
+        # Fallback: use the closest point to the target radius and project radially.
+        t = max(0.0, min(1.0, -b / (2.0 * a)))
+        hit = x0 + t * d
+
+    r_hit, th_hit, ph_hit = cart_to_sph(hit)
+    return sph_to_cart(radius, th_hit, ph_hit)
+
+
+def local_boundary_hit(x: np.ndarray, unit_velocity: np.ndarray, boundary_radius: float) -> np.ndarray:
+    """First-order event point on a spherical boundary, radially projected exactly."""
+    r, th, ph = cart_to_sph(x)
+    er, _, _ = spherical_basis(th, ph)
+    drds = float(np.dot(unit_velocity, er))
+    if abs(drds) <= 1.0e-300:
+        return sph_to_cart(boundary_radius, th, ph)
+    h = (boundary_radius - r) / drds
+    guess = np.asarray(x, dtype=np.float64) + h * np.asarray(unit_velocity, dtype=np.float64)
+    _, th_hit, ph_hit = cart_to_sph(guess)
+    return sph_to_cart(boundary_radius, th_hit, ph_hit)
+
+
+def boundary_limited_rk4_step(
+    x: np.ndarray,
+    direction: float,
+    Br: np.ndarray,
+    Bt: np.ndarray,
+    Bp: np.ndarray,
+    r_grid: np.ndarray,
+    theta_grid: np.ndarray,
+    phi_grid: np.ndarray,
+    step_size: float,
+    boundary_mode: str,
+    boundary_margin: float = 0.20,
+) -> tuple[np.ndarray | None, str, float | None]:
+    """
+    Boundary-aware RK4 step for dx/ds = +/-B/|B|.
+
+    Returns (x_new, status, hit_radius).  status is one of:
+      ok, hit_inner, hit_outer, hit_cmb, interpolation_stop.
+
+    The step uses RK4 away from boundaries.  When the local radial derivative
+    predicts a boundary crossing within this step, the endpoint is placed
+    exactly on the spherical boundary.  Otherwise the step length is reduced
+    adaptively if an intermediate RK4 sample would leave the interpolation
+    domain.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    r_now, th_now, ph_now = cart_to_sph(x)
+    rmin = float(r_grid[0])
+    rmax = float(r_grid[-1])
+    h_requested = float(step_size)
+    h_min = max(1.0e-8 * max(abs(rmax), 1.0), 1.0e-5 * abs(h_requested))
+
+    k1 = interpolate_B_cartesian(x, Br, Bt, Bp, r_grid, theta_grid, phi_grid)
+    if k1 is None:
+        return None, "interpolation_stop", None
+    velocity = float(direction) * k1
+    er, _, _ = spherical_basis(th_now, ph_now)
+    drds = float(np.dot(velocity, er))
+
+    boundary_radius = None
+    boundary_status = None
+
+    if boundary_mode == "shell":
+        if drds > 0.0 and r_now < rmax:
+            h_to_outer = (rmax - r_now) / drds
+            if 0.0 <= h_to_outer <= h_requested:
+                boundary_radius = rmax
+                boundary_status = "hit_outer"
+        elif drds < 0.0 and r_now > rmin:
+            h_to_inner = (rmin - r_now) / drds
+            if 0.0 <= h_to_inner <= h_requested:
+                boundary_radius = rmin
+                boundary_status = "hit_inner"
+    elif boundary_mode == "exterior":
+        if drds < 0.0 and r_now > rmin:
+            h_to_cmb = (rmin - r_now) / drds
+            if 0.0 <= h_to_cmb <= h_requested:
+                boundary_radius = rmin
+                boundary_status = "hit_cmb"
+        elif drds > 0.0 and r_now < rmax:
+            h_to_outer = (rmax - r_now) / drds
+            if 0.0 <= h_to_outer <= h_requested:
+                boundary_radius = rmax
+                boundary_status = "hit_outer"
+
+    if boundary_radius is not None:
+        return local_boundary_hit(x, velocity, float(boundary_radius)), str(boundary_status), float(boundary_radius)
+
+    h = h_requested
+    while abs(h) >= h_min:
+        x_new = rk4_step_cartesian(x, direction, Br, Bt, Bp, r_grid, theta_grid, phi_grid, h)
+        if x_new is None:
+            h *= 0.5
+            continue
+
+        r_new = radius_of(x_new)
+        if boundary_mode == "shell" and (r_new < rmin or r_new > rmax):
+            hit_radius = rmin if r_new < rmin else rmax
+            status = "hit_inner" if r_new < rmin else "hit_outer"
+            return segment_sphere_intersection(x, x_new, hit_radius), status, float(hit_radius)
+        if boundary_mode == "exterior" and (r_new < rmin or r_new > rmax):
+            hit_radius = rmin if r_new < rmin else rmax
+            status = "hit_cmb" if r_new < rmin else "hit_outer"
+            return segment_sphere_intersection(x, x_new, hit_radius), status, float(hit_radius)
+
+        return x_new, "ok", None
+
+    return None, "interpolation_stop", None
+
 def trace_one_line(
     seed: np.ndarray,
     direction: float,
@@ -303,44 +451,44 @@ def trace_one_line(
     step_size: float,
     max_steps: int,
 ) -> list[list[float]]:
+    """Trace one shell field-line branch with RK4 and exact shell-boundary endpoints."""
     points: list[list[float]] = []
     x = np.asarray(seed, dtype=np.float64).copy()
 
     rmin = float(r_grid[0])
     rmax = float(r_grid[-1])
+    min_sep = 1.0e-6 * max(abs(rmax), 1.0)
 
     for _ in range(max_steps):
-        r, _, _ = cart_to_sph(x)
-        if r < rmin or r > rmax:
+        r_now = radius_of(x)
+        if r_now < rmin or r_now > rmax:
             break
 
-        points.append([float(x[0]), float(x[1]), float(x[2])])
+        append_point(points, x, min_sep)
 
-        # RK4 integration of dx/ds = +/- B/|B| in Cartesian coordinates.
-        k1 = interpolate_B_cartesian(x, Br, Bt, Bp, r_grid, theta_grid, phi_grid)
-        if k1 is None:
+        x_new, status, _ = boundary_limited_rk4_step(
+            x,
+            direction,
+            Br,
+            Bt,
+            Bp,
+            r_grid,
+            theta_grid,
+            phi_grid,
+            step_size,
+            boundary_mode="shell",
+        )
+        if x_new is None:
             break
-        k1 *= direction
 
-        k2 = interpolate_B_cartesian(x + 0.5 * step_size * k1, Br, Bt, Bp, r_grid, theta_grid, phi_grid)
-        if k2 is None:
+        if status in ("hit_inner", "hit_outer"):
+            append_point(points, x_new, min_sep)
             break
-        k2 *= direction
 
-        k3 = interpolate_B_cartesian(x + 0.5 * step_size * k2, Br, Bt, Bp, r_grid, theta_grid, phi_grid)
-        if k3 is None:
-            break
-        k3 *= direction
-
-        k4 = interpolate_B_cartesian(x + step_size * k3, Br, Bt, Bp, r_grid, theta_grid, phi_grid)
-        if k4 is None:
-            break
-        k4 *= direction
-
-        x = x + (step_size / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+        append_point(points, x_new, min_sep)
+        x = x_new
 
     return points
-
 
 def rk4_step_cartesian(
     x: np.ndarray,
@@ -393,70 +541,81 @@ def trace_exterior_cmb_to_cmb_arc(
     """
     Trace one exterior potential-field arc as a CMB-to-CMB segment.
 
-    This version deliberately uses a robust first-order field-line step rather
-    than RK4.  RK4 samples intermediate points; near the CMB one of those
-    samples can fall just inside r_cmb, making the whole step fail with an
-    interpolation_stop before a valid CMB-returning arc is detected.  For the
-    viewer, robust topology of CMB-to-CMB arcs is more important than very high
-    integration order.
+    The arc is integrated with boundary-aware RK4 in the exterior domain.  When
+    the line returns to the CMB, the endpoint is placed exactly on r = r_cmb.
+    This gives more geometrically coherent exterior arcs than the previous
+    first-order stepping while avoiding invalid RK4 samples just inside the CMB.
     """
     r_outer = float(r_grid[0])
     r_max_allowed = float(r_grid[-1])
     x = np.asarray(seed, dtype=np.float64).copy()
 
-    points: list[list[float]] = [[float(x[0]), float(x[1]), float(x[2])]]
-    r0, _, _ = cart_to_sph(x)
+    points: list[list[float]] = []
+    _, theta_seed, phi_seed = cart_to_sph(x)
+    start_foot = sph_to_cart(r_outer, theta_seed, phi_seed)
+    append_point(points, start_foot)
+    append_point(points, x)
+
+    r0 = radius_of(x)
     max_r_seen = float(r0)
     moved_outward = False
     outward_threshold = r_outer + max(2.0 * step_size, 1.0e-6 * r_outer)
+    min_sep = 1.0e-6 * max(abs(r_max_allowed), 1.0)
 
     for _ in range(max_steps):
-        r_now, _, _ = cart_to_sph(x)
+        r_now = radius_of(x)
+        max_r_seen = max(max_r_seen, r_now)
 
         if r_now > r_max_allowed:
             return points, "hit_external_rmax", max_r_seen
 
         if r_now < r_outer:
             if moved_outward and len(points) >= min_points:
-                rr, tt, pp = cart_to_sph(x)
+                _, tt, pp = cart_to_sph(x)
                 foot = sph_to_cart(r_outer, tt, pp)
-                points.append([float(foot[0]), float(foot[1]), float(foot[2])])
+                append_point(points, foot, min_sep)
                 return points, "returned_cmb", max_r_seen
             return points, "immediate_cmb", max_r_seen
 
-        bhat = interpolate_B_cartesian(x, Br, Bt, Bp, r_grid, theta_grid, phi_grid)
-        if bhat is None:
-            return points, "interpolation_stop_at_current_point", max_r_seen
+        x_new, status, hit_radius = boundary_limited_rk4_step(
+            x,
+            direction,
+            Br,
+            Bt,
+            Bp,
+            r_grid,
+            theta_grid,
+            phi_grid,
+            step_size,
+            boundary_mode="exterior",
+        )
 
-        x_new = x + float(direction) * float(step_size) * bhat
-        r_new, theta_new, phi_new = cart_to_sph(x_new)
-        max_r_seen = max(max_r_seen, float(r_new))
+        if x_new is None:
+            return points, "interpolation_stop", max_r_seen
+
+        r_new = radius_of(x_new)
+        max_r_seen = max(max_r_seen, r_new)
 
         if r_new >= outward_threshold:
             moved_outward = True
 
-        # If the step crosses back through the CMB after moving outward,
-        # place the endpoint exactly on r_cmb by linear interpolation along
-        # the Cartesian segment.
-        if r_new <= r_outer:
+        if status == "hit_outer":
+            append_point(points, x_new, min_sep)
+            return points, "hit_external_rmax", max_r_seen
+
+        if status == "hit_cmb" or r_new <= r_outer:
             if moved_outward and len(points) >= min_points:
-                frac = (r_now - r_outer) / ((r_now - r_new) + 1.0e-300)
-                frac = max(0.0, min(1.0, float(frac)))
-                x_hit = x + frac * (x_new - x)
-                _, theta_hit, phi_hit = cart_to_sph(x_hit)
-                foot = sph_to_cart(r_outer, theta_hit, phi_hit)
-                points.append([float(foot[0]), float(foot[1]), float(foot[2])])
+                # x_new is already projected exactly to r_cmb by the event handler.
+                _, tt, pp = cart_to_sph(x_new)
+                foot = sph_to_cart(r_outer, tt, pp)
+                append_point(points, foot, min_sep)
                 return points, "returned_cmb", max_r_seen
             return points, "immediate_cmb", max_r_seen
 
-        if r_new > r_max_allowed:
-            return points, "hit_external_rmax", max_r_seen
-
-        points.append([float(x_new[0]), float(x_new[1]), float(x_new[2])])
+        append_point(points, x_new, min_sep)
         x = x_new
 
     return points, "max_steps", max_r_seen
-
 
 def external_potential_field_from_BP(
     BP_lsd: np.ndarray,
@@ -592,11 +751,17 @@ def compute_external_field_lines_from_cmb(
 
     for theta in theta_seeds:
         for phi in phi_seeds:
+            # Use the CMB value for polarity/coherence with shell lines, but
+            # use the slightly offset seed only for numerical integration.
+            br_cmb = interp_spherical_field(Br_ext, r_ext, theta_grid, phi_grid, r_outer, theta, phi)
             br_seed = interp_spherical_field(Br_ext, r_ext, theta_grid, phi_grid, seed_r, theta, phi)
             if not math.isfinite(br_seed) or abs(br_seed) <= 1.0e-300:
                 continue
+            if not math.isfinite(br_cmb) or abs(br_cmb) <= 1.0e-300:
+                br_cmb = br_seed
 
             seed = sph_to_cart(seed_r, float(theta), float(phi))
+            cmb_seed = sph_to_cart(r_outer, float(theta), float(phi))
             candidates = []
 
             for direction in (1.0, -1.0):
@@ -624,16 +789,24 @@ def compute_external_field_lines_from_cmb(
             else:
                 continue
 
-            polarity = 1 if br_seed >= 0.0 else -1
+            polarity = 1 if br_cmb >= 0.0 else -1
+            start_r = radius_of(np.asarray(points[0], dtype=np.float64)) if points else float("nan")
+            end_r = radius_of(np.asarray(points[-1], dtype=np.float64)) if points else float("nan")
             lines.append(
                 {
                     "seed": [float(seed[0]), float(seed[1]), float(seed[2])],
+                    "cmb_seed": [float(cmb_seed[0]), float(cmb_seed[1]), float(cmb_seed[2])],
                     "polarity": polarity,
+                    "cmb_br_seed": float(br_cmb),
                     "region": "outside_cmb_potential_poloidal",
-                    "mode": "exterior_potential_poloidal_cmb_to_cmb",
+                    "mode": "exterior_potential_poloidal_cmb_to_cmb_rk4",
+                    "integrator": "boundary-aware RK4 with exact spherical-boundary event endpoints",
                     "status": status,
                     "direction": float(direction),
                     "max_r": float(max_r_seen),
+                    "start_r": float(start_r),
+                    "end_r": float(end_r),
+                    "end_r_error": float(abs(end_r - r_outer)) if math.isfinite(end_r) else None,
                     "points": points,
                 }
             )
@@ -677,12 +850,18 @@ def compute_shell_field_lines_from_cmb(
 
     for theta in theta_seeds:
         for phi in phi_seeds:
+            # Use the CMB value for polarity so shell and exterior lines seeded
+            # at the same (theta, phi) use the same colour convention.
+            br_cmb = interp_spherical_field(Br, r_grid, theta_grid, phi_grid, r_outer, theta, phi)
             br_seed = interp_spherical_field(Br, r_grid, theta_grid, phi_grid, seed_r, theta, phi)
             if not math.isfinite(br_seed) or abs(br_seed) <= 1.0e-300:
                 continue
+            if not math.isfinite(br_cmb) or abs(br_cmb) <= 1.0e-300:
+                br_cmb = br_seed
 
-            polarity = 1 if br_seed >= 0.0 else -1
+            polarity = 1 if br_cmb >= 0.0 else -1
             seed = sph_to_cart(seed_r, float(theta), float(phi))
+            cmb_seed = sph_to_cart(r_outer, float(theta), float(phi))
 
             forward = trace_one_line(
                 seed,
@@ -727,14 +906,21 @@ def compute_shell_field_lines_from_cmb(
             endpoint_distance = float(np.linalg.norm(p1 - p0))
             closed = endpoint_distance <= 2.5 * step_size
 
+            start_r = radius_of(np.asarray(points[0], dtype=np.float64)) if points else float("nan")
+            end_r = radius_of(np.asarray(points[-1], dtype=np.float64)) if points else float("nan")
             lines.append(
                 {
                     "seed": [float(seed[0]), float(seed[1]), float(seed[2])],
+                    "cmb_seed": [float(cmb_seed[0]), float(cmb_seed[1]), float(cmb_seed[2])],
                     "polarity": polarity,
+                    "cmb_br_seed": float(br_cmb),
                     "region": "fluid_shell_outside_inner_core",
-                    "mode": "shell_bidirectional_actual_B",
+                    "mode": "shell_bidirectional_actual_B_rk4",
+                    "integrator": "boundary-aware RK4 with exact inner/outer spherical-boundary endpoints",
                     "closed": bool(closed),
                     "endpoint_distance": endpoint_distance,
+                    "start_r": float(start_r),
+                    "end_r": float(end_r),
                     "points": points,
                 }
             )
