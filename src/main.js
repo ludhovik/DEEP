@@ -2,12 +2,15 @@ import "./style.css";
 
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { Line2 } from "three/examples/jsm/lines/Line2.js";
+import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
+import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import GUI from "lil-gui";
 
 const statusEl = document.getElementById("status");
 const exportMessageEl = document.getElementById("export-message");
 
-const displaySlots = ["cmb", "icb", "equator", "equator2", "meridian", "meridian2"];
+const displaySlots = ["cmb", "icb", "equator", "equator2", "meridian", "meridian2", "fieldlines"];
 const displayNames = {
   cmb: "CMB",
   icb: "ICB",
@@ -15,6 +18,7 @@ const displayNames = {
   equator2: "Equator 2",
   meridian: "Meridian 1",
   meridian2: "Meridian 2",
+  fieldlines: "Field lines",
 };
 
 const colourbars = Object.fromEntries(
@@ -30,6 +34,8 @@ const colourbars = Object.fromEntries(
     },
   ])
 );
+
+const lineLegendEl = document.getElementById("line-legend");
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x050505);
@@ -150,6 +156,20 @@ const params = {
   meridian2Colormap: "blue-white-red",
 
   lineStride: 3,
+  lineColourMode: "strength",
+  lineColormap: "viridis",
+  lineScale: "minmax",
+  lineMin: 0.0,
+  lineMax: 1.0,
+  lineWidthPx: 2.0,
+  lineOpacity: 0.95,
+
+  showEarthSurface: false,
+  earthLongitudeDeg: 0.0,
+  earthRadiusScale: 1.83,
+  earthOpacity: 0.95,
+  showSliceGapFiller: true,
+  sliceGapFillerOpacity: 0.35,
 
   cameraDistance: 3.29,
   cameraAzimuthDeg: -90,
@@ -170,6 +190,11 @@ const params = {
   exportPdfWhite: () => exportCurrentViewPDF(),
   recordFullRotation: () => startFullRotationRecording(),
 
+  copyViewStateCode: () => copyViewStateCode(),
+  showViewStateCode: () => showViewStateCode(),
+  loadViewStateCode: () => loadViewStateCode(),
+  saveViewStateCode: () => saveViewStateCode(),
+
   resetCamera: () => { resetCameraView(); syncCameraParamsFromCamera(true); },
 };
 
@@ -182,10 +207,20 @@ let equatorMesh = null;
 let equator2Mesh = null;
 let meridianMesh = null;
 let meridian2Mesh = null;
+let equatorFillerMesh = null;
+let equator2FillerMesh = null;
+let meridianFillerMesh = null;
+let meridian2FillerMesh = null;
 let fieldLineGroups = { shell: null, exterior: null };
+let earthMesh = null;
+let earthTexture = null;
 const fieldLineDataCache = new Map();
 
+const EARTH_TEXTURE_URL = "https://upload.wikimedia.org/wikipedia/commons/thumb/9/91/Land_shallow_topo_2048.jpg/1280px-Land_shallow_topo_2048.jpg";
+const EARTH_TEXTURE_ATTRIBUTION = "Earth texture: NASA Blue Marble / Land shallow topo 2048, public domain, served from Wikimedia Commons.";
+
 const dataCache = new Map();
+let guiRoot = null;
 
 const videoState = {
   active: false,
@@ -281,6 +316,272 @@ function setColourbarForSlot(slot, fieldName, vmin, vmax) {
 function hideColourbarForSlot(slot) {
   const bar = colourbars[slot];
   if (bar) bar.row.style.display = "none";
+}
+
+
+function setLineLegendMode(mode) {
+  if (!lineLegendEl) return;
+  lineLegendEl.style.display = mode === "polarity" && params.showFieldLines ? "block" : "none";
+}
+
+function getLineColourbarState() {
+  const bar = colourbars.fieldlines;
+  if (!bar) return null;
+  return bar;
+}
+
+function setFieldLineColourbar(vmin, vmax) {
+  const bar = getLineColourbarState();
+  if (!bar) return;
+  const mid = 0.5 * (vmin + vmax);
+  bar.title.textContent = `Field lines: |B|`;
+  bar.min.textContent = formatNumber(vmin);
+  if (bar.mid) bar.mid.textContent = formatNumber(mid);
+  bar.max.textContent = formatNumber(vmax);
+  if (bar.gradient) bar.gradient.style.background = colourbarCssGradient(params.lineColormap || "viridis");
+  bar.row.style.display = params.showFieldLines && params.lineColourMode === "strength" ? "block" : "none";
+}
+
+function hideFieldLineColourbar() {
+  const bar = getLineColourbarState();
+  if (bar?.row) bar.row.style.display = "none";
+}
+
+function strengthRangeFromLines(lines) {
+  let vmin = Infinity;
+  let vmax = -Infinity;
+  for (const line of lines) {
+    if (!Array.isArray(line.strength)) continue;
+    for (const val of line.strength) {
+      if (!Number.isFinite(val)) continue;
+      if (val < vmin) vmin = val;
+      if (val > vmax) vmax = val;
+    }
+  }
+  if (!Number.isFinite(vmin) || !Number.isFinite(vmax) || vmax <= vmin) {
+    vmin = 0.0;
+    vmax = 1.0;
+  }
+  return [vmin, vmax];
+}
+
+function getFieldLineRange(lines) {
+  const [autoMin, autoMax] = strengthRangeFromLines(lines);
+  if (params.lineScale === "manual") {
+    return [Number(params.lineMin), Number(params.lineMax)];
+  }
+  return [autoMin, autoMax];
+}
+
+function getFieldLineVertexColor(strength, polarity, vmin, vmax) {
+  if (params.lineColourMode === "polarity") {
+    const c = polarity >= 0 ? new THREE.Color(0xffd080) : new THREE.Color(0x80c0ff);
+    return c;
+  }
+  return colourMap(Number(strength), vmin, vmax, params.lineColormap || "viridis");
+}
+
+function updateLineMaterialResolution(material) {
+  if (material && material.resolution) {
+    material.resolution.set(renderer.domElement.width, renderer.domElement.height);
+  }
+}
+
+function makeLineMaterial() {
+  const material = new LineMaterial({
+    color: 0xffffff,
+    linewidth: Math.max(1.0, Number(params.lineWidthPx)),
+    transparent: Number(params.lineOpacity) < 0.999,
+    opacity: Number(params.lineOpacity),
+    vertexColors: true,
+    dashed: false,
+    depthTest: true,
+    depthWrite: Number(params.lineOpacity) >= 0.999,
+  });
+  updateLineMaterialResolution(material);
+  return material;
+}
+
+function updateFieldLineVisuals() {
+  const groups = Object.values(fieldLineGroups).filter(Boolean);
+  for (const group of groups) {
+    group.traverse((obj) => {
+      const mat = obj.material;
+      if (mat && typeof mat === "object") {
+        if ("linewidth" in mat) mat.linewidth = Math.max(1.0, Number(params.lineWidthPx));
+        mat.opacity = Number(params.lineOpacity);
+        mat.transparent = Number(params.lineOpacity) < 0.999;
+        mat.depthWrite = Number(params.lineOpacity) >= 0.999;
+        updateLineMaterialResolution(mat);
+        mat.needsUpdate = true;
+      }
+    });
+  }
+}
+
+async function ensureEarthTexture() {
+  if (earthTexture) return earthTexture;
+  const loader = new THREE.TextureLoader();
+  loader.setCrossOrigin("anonymous");
+  const texture = await new Promise((resolve, reject) => {
+    loader.load(EARTH_TEXTURE_URL, resolve, undefined, reject);
+  });
+  earthTexture = texture;
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.ClampToEdgeWrapping;
+  texture.colorSpace = THREE.SRGBColorSpace;
+
+  let attrib = document.getElementById("earth-attribution");
+  if (!attrib) {
+    attrib = document.createElement("div");
+    attrib.id = "earth-attribution";
+    attrib.innerHTML = '<div>' + EARTH_TEXTURE_ATTRIBUTION + '</div><div><a href="' + EARTH_TEXTURE_URL + '" target="_blank" rel="noopener">Open texture source</a></div>';
+    document.body.appendChild(attrib);
+  }
+  return earthTexture;
+}
+
+function getActiveCmbClipOptions() {
+  const mer1Shown = params.showMeridian;
+  const mer2Shown = params.showMeridian2;
+  const anyMeridianShown = mer1Shown || mer2Shown;
+  const activeMeridianPhiDeg = mer1Shown
+    ? params.meridianPhiDeg
+    : mer2Shown
+      ? params.meridian2PhiDeg
+      : params.meridianPhiDeg;
+
+  let cmbClip = { enabled: false };
+  if (params.cmbClipWithMeridian && anyMeridianShown && params.cmbClipMode !== "none") {
+    if (params.cmbClipMode === "between-meridians-behind" && mer1Shown && mer2Shown) {
+      cmbClip = {
+        enabled: true,
+        mode: "between-meridians-behind",
+        hasTwoPlanes: true,
+        phiA: THREE.MathUtils.degToRad(params.meridianPhiDeg),
+        phiB: THREE.MathUtils.degToRad(params.meridian2PhiDeg),
+      };
+    } else {
+      cmbClip = {
+        enabled: true,
+        mode: "rear-half",
+        phi0: THREE.MathUtils.degToRad(activeMeridianPhiDeg),
+        side: params.cmbRearSide,
+      };
+    }
+  }
+  return cmbClip;
+}
+
+function makeEarthSurfaceMesh(radius, opacity, texture, longitudeDeg, clipOptions = null) {
+  const nTheta = 96;
+  const nPhi = 192;
+  const positions = [];
+  const normals = [];
+  const uvs = [];
+  const indices = [];
+
+  // Geometry is fixed in the dynamo frame: north pole is always +z.
+  // The longitude control must only shift the texture in u, never rotate/tilt the mesh.
+
+  for (let it = 0; it <= nTheta; it++) {
+    const theta = Math.PI * it / nTheta;
+    for (let ip = 0; ip <= nPhi; ip++) {
+      const phi = 2.0 * Math.PI * ip / nPhi;
+      positions.push(
+        radius * Math.sin(theta) * Math.cos(phi),
+        radius * Math.sin(theta) * Math.sin(phi),
+        radius * Math.cos(theta)
+      );
+      normals.push(
+        Math.sin(theta) * Math.cos(phi),
+        Math.sin(theta) * Math.sin(phi),
+        Math.cos(theta)
+      );
+      const u = normalizePhi(phi) / (2.0 * Math.PI);
+      const v = 1.0 - theta / Math.PI;
+      uvs.push(u, v);
+    }
+  }
+
+  for (let it = 0; it < nTheta; it++) {
+    for (let ip = 0; ip < nPhi; ip++) {
+      if (clipOptions?.enabled) {
+        const phiMid = normalizePhi(2.0 * Math.PI * (ip + 0.5) / nPhi);
+        let keep = true;
+        if (clipOptions.mode === "between-meridians-behind" && clipOptions.hasTwoPlanes) {
+          const a = normalizePhi(clipOptions.phiA);
+          const b = normalizePhi(clipOptions.phiB);
+          const spanAB = (b - a + 2.0 * Math.PI) % (2.0 * Math.PI);
+          const useAB = spanAB <= Math.PI;
+          const inFrontOpening = useAB ? isAngleInCCWSector(phiMid, a, b) : isAngleInCCWSector(phiMid, b, a);
+          keep = !inFrontOpening;
+        } else {
+          const sideValue = Math.sin(phiMid - clipOptions.phi0);
+          keep = clipOptions.side === "negative" ? sideValue < 0.0 : sideValue > 0.0;
+        }
+        if (!keep) continue;
+      }
+      const row = nPhi + 1;
+      const a = it * row + ip;
+      const b = it * row + (ip + 1);
+      const c = (it + 1) * row + ip;
+      const d = (it + 1) * row + (ip + 1);
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
+  geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setIndex(indices);
+
+  const textureMap = texture.clone();
+  textureMap.wrapS = THREE.RepeatWrapping;
+  textureMap.wrapT = THREE.ClampToEdgeWrapping;
+  textureMap.colorSpace = THREE.SRGBColorSpace;
+  textureMap.offset.x = -Number(longitudeDeg) / 360.0;
+  textureMap.offset.y = 0.0;
+  textureMap.repeat.set(1.0, 1.0);
+  textureMap.needsUpdate = true;
+
+  const material = new THREE.MeshPhongMaterial({ map: textureMap, side: THREE.FrontSide, shininess: 6 });
+  applyOpacityAndDepth(material, Number(opacity));
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.name = "earth-surface-sphere";
+  mesh.rotation.set(0.0, 0.0, 0.0);
+  mesh.up.set(0.0, 0.0, 1.0);
+  return mesh;
+}
+
+async function updateEarthSurface() {
+  if (!params.showEarthSurface) {
+    if (earthMesh) earthMesh.visible = false;
+    const a = document.getElementById("earth-attribution");
+    if (a) a.style.display = "none";
+    await rebuildGapFillers();
+    return;
+  }
+  try {
+    const texture = await ensureEarthTexture();
+    const radius = Number(metadata?.radii?.outer || metadata?.r_outer || 1.0) * Number(params.earthRadiusScale);
+    const clipOptions = getActiveCmbClipOptions();
+    if (earthMesh) {
+      scene.remove(earthMesh);
+      disposeObject(earthMesh);
+      earthMesh = null;
+    }
+    earthMesh = makeEarthSurfaceMesh(radius, params.earthOpacity, texture, params.earthLongitudeDeg, clipOptions);
+    earthMesh.visible = true;
+    scene.add(earthMesh);
+    const a = document.getElementById("earth-attribution");
+    if (a) a.style.display = "block";
+    await rebuildGapFillers();
+  } catch (err) {
+    console.warn("Could not load Earth texture", err);
+    setStatus(`Earth texture could not be loaded: ${err.message}`);
+  }
 }
 
 async function loadMetadata() {
@@ -573,40 +874,1459 @@ function meridianRange(field, phiDeg, slot) {
 
 const colourStops = {
   "blue-white-red": [
-    [0.0, [40, 60, 180]],
-    [0.5, [255, 255, 255]],
-    [1.0, [180, 40, 40]],
+    [
+      0.0,
+      [
+        40,
+        60,
+        180
+      ]
+    ],
+    [
+      0.5,
+      [
+        255,
+        255,
+        255
+      ]
+    ],
+    [
+      1.0,
+      [
+        180,
+        40,
+        40
+      ]
+    ]
   ],
   "red-white-blue": [
-    [0.0, [180, 40, 40]],
-    [0.5, [255, 255, 255]],
-    [1.0, [40, 60, 180]],
+    [
+      0.0,
+      [
+        180,
+        40,
+        40
+      ]
+    ],
+    [
+      0.5,
+      [
+        255,
+        255,
+        255
+      ]
+    ],
+    [
+      1.0,
+      [
+        40,
+        60,
+        180
+      ]
+    ]
   ],
-  viridis: [
-    [0.0, [68, 1, 84]],
-    [0.25, [59, 82, 139]],
-    [0.5, [33, 145, 140]],
-    [0.75, [94, 201, 98]],
-    [1.0, [253, 231, 37]],
+  "viridis": [
+    [
+      0.0,
+      [
+        68,
+        1,
+        84
+      ]
+    ],
+    [
+      0.25,
+      [
+        59,
+        82,
+        139
+      ]
+    ],
+    [
+      0.5,
+      [
+        33,
+        145,
+        140
+      ]
+    ],
+    [
+      0.75,
+      [
+        94,
+        201,
+        98
+      ]
+    ],
+    [
+      1.0,
+      [
+        253,
+        231,
+        37
+      ]
+    ]
   ],
-  plasma: [
-    [0.0, [13, 8, 135]],
-    [0.25, [126, 3, 168]],
-    [0.5, [204, 71, 120]],
-    [0.75, [248, 149, 64]],
-    [1.0, [240, 249, 33]],
+  "plasma": [
+    [
+      0.0,
+      [
+        13,
+        8,
+        135
+      ]
+    ],
+    [
+      0.25,
+      [
+        126,
+        3,
+        168
+      ]
+    ],
+    [
+      0.5,
+      [
+        204,
+        71,
+        120
+      ]
+    ],
+    [
+      0.75,
+      [
+        248,
+        149,
+        64
+      ]
+    ],
+    [
+      1.0,
+      [
+        240,
+        249,
+        33
+      ]
+    ]
   ],
-  inferno: [
-    [0.0, [0, 0, 4]],
-    [0.25, [87, 15, 109]],
-    [0.5, [187, 55, 84]],
-    [0.75, [249, 142, 8]],
-    [1.0, [252, 255, 164]],
+  "inferno": [
+    [
+      0.0,
+      [
+        0,
+        0,
+        4
+      ]
+    ],
+    [
+      0.25,
+      [
+        87,
+        15,
+        109
+      ]
+    ],
+    [
+      0.5,
+      [
+        187,
+        55,
+        84
+      ]
+    ],
+    [
+      0.75,
+      [
+        249,
+        142,
+        8
+      ]
+    ],
+    [
+      1.0,
+      [
+        252,
+        255,
+        164
+      ]
+    ]
   ],
-  gray: [
-    [0.0, [20, 20, 20]],
-    [1.0, [245, 245, 245]],
+  "gray": [
+    [
+      0.0,
+      [
+        20,
+        20,
+        20
+      ]
+    ],
+    [
+      1.0,
+      [
+        245,
+        245,
+        245
+      ]
+    ]
   ],
+  "batlow": [
+    [
+      0.0,
+      [
+        1,
+        25,
+        89
+      ]
+    ],
+    [
+      0.125,
+      [
+        17,
+        67,
+        96
+      ]
+    ],
+    [
+      0.25,
+      [
+        34,
+        96,
+        97
+      ]
+    ],
+    [
+      0.375,
+      [
+        77,
+        115,
+        77
+      ]
+    ],
+    [
+      0.5,
+      [
+        130,
+        130,
+        49
+      ]
+    ],
+    [
+      0.625,
+      [
+        192,
+        144,
+        54
+      ]
+    ],
+    [
+      0.75,
+      [
+        242,
+        157,
+        109
+      ]
+    ],
+    [
+      0.875,
+      [
+        253,
+        180,
+        182
+      ]
+    ],
+    [
+      1.0,
+      [
+        250,
+        204,
+        250
+      ]
+    ]
+  ],
+  "bamako": [
+    [
+      0.0,
+      [
+        0,
+        59,
+        71
+      ]
+    ],
+    [
+      0.125,
+      [
+        16,
+        69,
+        62
+      ]
+    ],
+    [
+      0.25,
+      [
+        37,
+        82,
+        49
+      ]
+    ],
+    [
+      0.375,
+      [
+        65,
+        100,
+        31
+      ]
+    ],
+    [
+      0.5,
+      [
+        99,
+        122,
+        10
+      ]
+    ],
+    [
+      0.625,
+      [
+        139,
+        137,
+        0
+      ]
+    ],
+    [
+      0.75,
+      [
+        181,
+        161,
+        36
+      ]
+    ],
+    [
+      0.875,
+      [
+        222,
+        197,
+        103
+      ]
+    ],
+    [
+      1.0,
+      [
+        255,
+        229,
+        173
+      ]
+    ]
+  ],
+  "broc": [
+    [
+      0.0,
+      [
+        44,
+        26,
+        76
+      ]
+    ],
+    [
+      0.125,
+      [
+        41,
+        75,
+        125
+      ]
+    ],
+    [
+      0.25,
+      [
+        91,
+        130,
+        169
+      ]
+    ],
+    [
+      0.375,
+      [
+        165,
+        187,
+        208
+      ]
+    ],
+    [
+      0.5,
+      [
+        235,
+        238,
+        236
+      ]
+    ],
+    [
+      0.625,
+      [
+        211,
+        211,
+        167
+      ]
+    ],
+    [
+      0.75,
+      [
+        153,
+        153,
+        96
+      ]
+    ],
+    [
+      0.875,
+      [
+        91,
+        91,
+        44
+      ]
+    ],
+    [
+      1.0,
+      [
+        38,
+        38,
+        0
+      ]
+    ]
+  ],
+  "cork": [
+    [
+      0.0,
+      [
+        44,
+        25,
+        76
+      ]
+    ],
+    [
+      0.125,
+      [
+        40,
+        75,
+        126
+      ]
+    ],
+    [
+      0.25,
+      [
+        86,
+        127,
+        166
+      ]
+    ],
+    [
+      0.375,
+      [
+        158,
+        181,
+        204
+      ]
+    ],
+    [
+      0.5,
+      [
+        230,
+        237,
+        236
+      ]
+    ],
+    [
+      0.625,
+      [
+        166,
+        196,
+        166
+      ]
+    ],
+    [
+      0.75,
+      [
+        91,
+        146,
+        91
+      ]
+    ],
+    [
+      0.875,
+      [
+        31,
+        97,
+        29
+      ]
+    ],
+    [
+      1.0,
+      [
+        15,
+        41,
+        3
+      ]
+    ]
+  ],
+  "davos": [
+    [
+      0.0,
+      [
+        0,
+        5,
+        74
+      ]
+    ],
+    [
+      0.125,
+      [
+        20,
+        50,
+        119
+      ]
+    ],
+    [
+      0.25,
+      [
+        47,
+        90,
+        150
+      ]
+    ],
+    [
+      0.375,
+      [
+        78,
+        121,
+        157
+      ]
+    ],
+    [
+      0.5,
+      [
+        108,
+        142,
+        147
+      ]
+    ],
+    [
+      0.625,
+      [
+        140,
+        163,
+        136
+      ]
+    ],
+    [
+      0.75,
+      [
+        189,
+        201,
+        149
+      ]
+    ],
+    [
+      0.875,
+      [
+        240,
+        241,
+        205
+      ]
+    ],
+    [
+      1.0,
+      [
+        254,
+        254,
+        254
+      ]
+    ]
+  ],
+  "devon": [
+    [
+      0.0,
+      [
+        44,
+        26,
+        76
+      ]
+    ],
+    [
+      0.125,
+      [
+        41,
+        56,
+        106
+      ]
+    ],
+    [
+      0.25,
+      [
+        41,
+        88,
+        143
+      ]
+    ],
+    [
+      0.375,
+      [
+        66,
+        114,
+        188
+      ]
+    ],
+    [
+      0.5,
+      [
+        126,
+        143,
+        221
+      ]
+    ],
+    [
+      0.625,
+      [
+        176,
+        171,
+        238
+      ]
+    ],
+    [
+      0.75,
+      [
+        203,
+        198,
+        244
+      ]
+    ],
+    [
+      0.875,
+      [
+        229,
+        227,
+        250
+      ]
+    ],
+    [
+      1.0,
+      [
+        255,
+        255,
+        255
+      ]
+    ]
+  ],
+  "hawaii": [
+    [
+      0.0,
+      [
+        140,
+        2,
+        115
+      ]
+    ],
+    [
+      0.125,
+      [
+        146,
+        46,
+        85
+      ]
+    ],
+    [
+      0.25,
+      [
+        151,
+        78,
+        62
+      ]
+    ],
+    [
+      0.375,
+      [
+        155,
+        111,
+        40
+      ]
+    ],
+    [
+      0.5,
+      [
+        156,
+        150,
+        28
+      ]
+    ],
+    [
+      0.625,
+      [
+        137,
+        189,
+        74
+      ]
+    ],
+    [
+      0.75,
+      [
+        107,
+        212,
+        142
+      ]
+    ],
+    [
+      0.875,
+      [
+        103,
+        233,
+        213
+      ]
+    ],
+    [
+      1.0,
+      [
+        179,
+        242,
+        253
+      ]
+    ]
+  ],
+  "imola": [
+    [
+      0.0,
+      [
+        26,
+        51,
+        179
+      ]
+    ],
+    [
+      0.125,
+      [
+        37,
+        73,
+        168
+      ]
+    ],
+    [
+      0.25,
+      [
+        48,
+        94,
+        157
+      ]
+    ],
+    [
+      0.375,
+      [
+        63,
+        113,
+        142
+      ]
+    ],
+    [
+      0.5,
+      [
+        84,
+        134,
+        127
+      ]
+    ],
+    [
+      0.625,
+      [
+        113,
+        164,
+        119
+      ]
+    ],
+    [
+      0.75,
+      [
+        146,
+        196,
+        110
+      ]
+    ],
+    [
+      0.875,
+      [
+        191,
+        231,
+        103
+      ]
+    ],
+    [
+      1.0,
+      [
+        255,
+        255,
+        102
+      ]
+    ]
+  ],
+  "lajolla": [
+    [
+      0.0,
+      [
+        25,
+        25,
+        0
+      ]
+    ],
+    [
+      0.125,
+      [
+        55,
+        36,
+        17
+      ]
+    ],
+    [
+      0.25,
+      [
+        103,
+        52,
+        42
+      ]
+    ],
+    [
+      0.375,
+      [
+        166,
+        70,
+        68
+      ]
+    ],
+    [
+      0.5,
+      [
+        217,
+        96,
+        78
+      ]
+    ],
+    [
+      0.625,
+      [
+        229,
+        136,
+        81
+      ]
+    ],
+    [
+      0.75,
+      [
+        237,
+        174,
+        84
+      ]
+    ],
+    [
+      0.875,
+      [
+        247,
+        218,
+        116
+      ]
+    ],
+    [
+      1.0,
+      [
+        255,
+        254,
+        203
+      ]
+    ]
+  ],
+  "lapaz": [
+    [
+      0.0,
+      [
+        26,
+        12,
+        100
+      ]
+    ],
+    [
+      0.125,
+      [
+        36,
+        50,
+        126
+      ]
+    ],
+    [
+      0.25,
+      [
+        45,
+        83,
+        147
+      ]
+    ],
+    [
+      0.375,
+      [
+        61,
+        113,
+        160
+      ]
+    ],
+    [
+      0.5,
+      [
+        92,
+        140,
+        163
+      ]
+    ],
+    [
+      0.625,
+      [
+        134,
+        158,
+        155
+      ]
+    ],
+    [
+      0.75,
+      [
+        181,
+        173,
+        150
+      ]
+    ],
+    [
+      0.875,
+      [
+        235,
+        207,
+        187
+      ]
+    ],
+    [
+      1.0,
+      [
+        254,
+        242,
+        243
+      ]
+    ]
+  ],
+  "lipari": [
+    [
+      0.0,
+      [
+        3,
+        19,
+        38
+      ]
+    ],
+    [
+      0.125,
+      [
+        24,
+        62,
+        97
+      ]
+    ],
+    [
+      0.25,
+      [
+        82,
+        91,
+        122
+      ]
+    ],
+    [
+      0.375,
+      [
+        120,
+        95,
+        114
+      ]
+    ],
+    [
+      0.5,
+      [
+        165,
+        98,
+        103
+      ]
+    ],
+    [
+      0.625,
+      [
+        218,
+        111,
+        94
+      ]
+    ],
+    [
+      0.75,
+      [
+        233,
+        155,
+        116
+      ]
+    ],
+    [
+      0.875,
+      [
+        231,
+        196,
+        154
+      ]
+    ],
+    [
+      1.0,
+      [
+        253,
+        245,
+        218
+      ]
+    ]
+  ],
+  "navia": [
+    [
+      0.0,
+      [
+        3,
+        19,
+        39
+      ]
+    ],
+    [
+      0.125,
+      [
+        7,
+        57,
+        102
+      ]
+    ],
+    [
+      0.25,
+      [
+        27,
+        96,
+        143
+      ]
+    ],
+    [
+      0.375,
+      [
+        47,
+        121,
+        139
+      ]
+    ],
+    [
+      0.5,
+      [
+        65,
+        138,
+        128
+      ]
+    ],
+    [
+      0.625,
+      [
+        90,
+        161,
+        113
+      ]
+    ],
+    [
+      0.75,
+      [
+        137,
+        195,
+        106
+      ]
+    ],
+    [
+      0.875,
+      [
+        211,
+        227,
+        161
+      ]
+    ],
+    [
+      1.0,
+      [
+        252,
+        244,
+        217
+      ]
+    ]
+  ],
+  "nuuk": [
+    [
+      0.0,
+      [
+        5,
+        89,
+        140
+      ]
+    ],
+    [
+      0.125,
+      [
+        45,
+        100,
+        131
+      ]
+    ],
+    [
+      0.25,
+      [
+        83,
+        119,
+        133
+      ]
+    ],
+    [
+      0.375,
+      [
+        125,
+        143,
+        145
+      ]
+    ],
+    [
+      0.5,
+      [
+        161,
+        166,
+        152
+      ]
+    ],
+    [
+      0.625,
+      [
+        181,
+        181,
+        145
+      ]
+    ],
+    [
+      0.75,
+      [
+        195,
+        195,
+        133
+      ]
+    ],
+    [
+      0.875,
+      [
+        221,
+        221,
+        139
+      ]
+    ],
+    [
+      1.0,
+      [
+        254,
+        254,
+        178
+      ]
+    ]
+  ],
+  "oslo": [
+    [
+      0.0,
+      [
+        1,
+        1,
+        1
+      ]
+    ],
+    [
+      0.125,
+      [
+        14,
+        30,
+        46
+      ]
+    ],
+    [
+      0.25,
+      [
+        21,
+        57,
+        91
+      ]
+    ],
+    [
+      0.375,
+      [
+        38,
+        87,
+        140
+      ]
+    ],
+    [
+      0.5,
+      [
+        80,
+        123,
+        188
+      ]
+    ],
+    [
+      0.625,
+      [
+        125,
+        153,
+        202
+      ]
+    ],
+    [
+      0.75,
+      [
+        163,
+        177,
+        202
+      ]
+    ],
+    [
+      0.875,
+      [
+        207,
+        210,
+        216
+      ]
+    ],
+    [
+      1.0,
+      [
+        255,
+        255,
+        255
+      ]
+    ]
+  ],
+  "roma": [
+    [
+      0.0,
+      [
+        126,
+        23,
+        0
+      ]
+    ],
+    [
+      0.125,
+      [
+        157,
+        88,
+        24
+      ]
+    ],
+    [
+      0.25,
+      [
+        182,
+        140,
+        50
+      ]
+    ],
+    [
+      0.375,
+      [
+        208,
+        202,
+        114
+      ]
+    ],
+    [
+      0.5,
+      [
+        192,
+        234,
+        195
+      ]
+    ],
+    [
+      0.625,
+      [
+        118,
+        209,
+        215
+      ]
+    ],
+    [
+      0.75,
+      [
+        56,
+        156,
+        198
+      ]
+    ],
+    [
+      0.875,
+      [
+        34,
+        105,
+        176
+      ]
+    ],
+    [
+      1.0,
+      [
+        3,
+        49,
+        152
+      ]
+    ]
+  ],
+  "tokyo": [
+    [
+      0.0,
+      [
+        28,
+        14,
+        52
+      ]
+    ],
+    [
+      0.125,
+      [
+        81,
+        36,
+        70
+      ]
+    ],
+    [
+      0.25,
+      [
+        108,
+        71,
+        80
+      ]
+    ],
+    [
+      0.375,
+      [
+        113,
+        93,
+        82
+      ]
+    ],
+    [
+      0.5,
+      [
+        116,
+        112,
+        83
+      ]
+    ],
+    [
+      0.625,
+      [
+        121,
+        141,
+        87
+      ]
+    ],
+    [
+      0.75,
+      [
+        135,
+        184,
+        103
+      ]
+    ],
+    [
+      0.875,
+      [
+        186,
+        234,
+        164
+      ]
+    ],
+    [
+      1.0,
+      [
+        239,
+        252,
+        221
+      ]
+    ]
+  ],
+  "vik": [
+    [
+      0.0,
+      [
+        0,
+        18,
+        97
+      ]
+    ],
+    [
+      0.125,
+      [
+        3,
+        68,
+        129
+      ]
+    ],
+    [
+      0.25,
+      [
+        48,
+        125,
+        166
+      ]
+    ],
+    [
+      0.375,
+      [
+        148,
+        190,
+        210
+      ]
+    ],
+    [
+      0.5,
+      [
+        236,
+        229,
+        224
+      ]
+    ],
+    [
+      0.625,
+      [
+        219,
+        170,
+        141
+      ]
+    ],
+    [
+      0.75,
+      [
+        194,
+        112,
+        65
+      ]
+    ],
+    [
+      0.875,
+      [
+        145,
+        45,
+        6
+      ]
+    ],
+    [
+      1.0,
+      [
+        89,
+        0,
+        8
+      ]
+    ]
+  ]
 };
 
 const colourMapNames = Object.keys(colourStops);
@@ -817,6 +2537,139 @@ function horizontalSliceRawRange(field, z) {
     return [vmin - pad, vmax + pad];
   }
   return [vmin, vmax];
+}
+
+function makeGapFillerMaterial(opacity) {
+  const material = new THREE.MeshPhongMaterial({
+    color: new THREE.Color(0.62, 0.62, 0.62),
+    side: THREE.DoubleSide,
+    shininess: 4,
+  });
+  applyOpacityAndDepth(material, opacity);
+  return material;
+}
+
+function earthRadius() {
+  return Number(metadata?.r_outer || metadata?.radii?.outer || 1.0) * Number(params.earthRadiusScale);
+}
+
+function makeHorizontalGapFillerMesh(z, opacity) {
+  const np = metadata.nphi;
+  const rOuter = metadata.r_outer;
+  const rEarth = earthRadius();
+  const zAbs = Math.abs(z);
+  if (zAbs >= rEarth || rEarth <= rOuter) {
+    return new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial());
+  }
+
+  const sInner = zAbs < rOuter ? Math.sqrt(Math.max(0.0, rOuter * rOuter - z * z)) : 0.0;
+  const sOuter = Math.sqrt(Math.max(0.0, rEarth * rEarth - z * z));
+  if (!(sOuter > sInner + 1.0e-10)) {
+    return new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial());
+  }
+
+  const positions = [];
+  const indices = [];
+  for (let ir = 0; ir < 2; ir++) {
+    const s = ir === 0 ? sInner : sOuter;
+    for (let ip = 0; ip < np; ip++) {
+      const phi = phiAtIndex(ip);
+      positions.push(s * Math.cos(phi), s * Math.sin(phi), z);
+    }
+  }
+  for (let ip = 0; ip < np; ip++) {
+    const ip1 = (ip + 1) % np;
+    const a = ip;
+    const b = ip1;
+    const c = np + ip;
+    const d = np + ip1;
+    indices.push(a, c, b, b, c, d);
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  const mesh = new THREE.Mesh(geometry, makeGapFillerMaterial(opacity));
+  mesh.name = "horizontal-gap-filler";
+  return mesh;
+}
+
+function makeMeridionalGapFillerMesh(phiDeg, opacity) {
+  const requestedPhi = THREE.MathUtils.degToRad(phiDeg);
+  const cosPhi = Math.cos(requestedPhi);
+  const sinPhi = Math.sin(requestedPhi);
+  const rOuter = metadata.r_outer;
+  const rEarth = earthRadius();
+  if (rEarth <= rOuter) {
+    return new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial());
+  }
+
+  const nt = metadata.ntheta;
+  const thetaExt = [0.0];
+  for (let j = 0; j < nt; j++) thetaExt.push(thetaAtIndex(j));
+  thetaExt.push(Math.PI);
+
+  const columns = [];
+  for (let j = 0; j < thetaExt.length; j++) columns.push({ theta: thetaExt[j], sign: 1.0 });
+  for (let j = thetaExt.length - 1; j >= 0; j--) columns.push({ theta: thetaExt[j], sign: -1.0 });
+  const ncol = columns.length;
+
+  const positions = [];
+  const indices = [];
+  for (let ir = 0; ir < 2; ir++) {
+    const r = ir === 0 ? rOuter : rEarth;
+    for (const colInfo of columns) {
+      const signedS = colInfo.sign * r * Math.sin(colInfo.theta);
+      positions.push(
+        signedS * cosPhi,
+        signedS * sinPhi,
+        r * Math.cos(colInfo.theta)
+      );
+    }
+  }
+  for (let jc = 0; jc < ncol; jc++) {
+    const jn = (jc + 1) % ncol;
+    const a = jc;
+    const b = jn;
+    const c = ncol + jc;
+    const d = ncol + jn;
+    indices.push(a, c, b, b, c, d);
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  const mesh = new THREE.Mesh(geometry, makeGapFillerMaterial(opacity));
+  mesh.name = "meridional-gap-filler";
+  return mesh;
+}
+
+async function rebuildGapFillers() {
+  disposeObject(equatorFillerMesh); equatorFillerMesh = null;
+  disposeObject(equator2FillerMesh); equator2FillerMesh = null;
+  disposeObject(meridianFillerMesh); meridianFillerMesh = null;
+  disposeObject(meridian2FillerMesh); meridian2FillerMesh = null;
+
+  if (!params.showEarthSurface || !params.showSliceGapFiller) return;
+
+  equatorFillerMesh = makeHorizontalGapFillerMesh(0.0, params.sliceGapFillerOpacity);
+  equatorFillerMesh.visible = params.showEquator;
+  scene.add(equatorFillerMesh);
+
+  const z2 = clamp(Number(params.equator2Z), -1.0, 1.0) * metadata.r_outer;
+  equator2FillerMesh = makeHorizontalGapFillerMesh(z2, params.sliceGapFillerOpacity);
+  equator2FillerMesh.visible = params.showEquator2;
+  scene.add(equator2FillerMesh);
+
+  meridianFillerMesh = makeMeridionalGapFillerMesh(params.meridianPhiDeg, params.sliceGapFillerOpacity);
+  meridianFillerMesh.visible = params.showMeridian;
+  scene.add(meridianFillerMesh);
+
+  meridian2FillerMesh = makeMeridionalGapFillerMesh(params.meridian2PhiDeg, params.sliceGapFillerOpacity);
+  meridian2FillerMesh.visible = params.showMeridian2;
+  scene.add(meridian2FillerMesh);
 }
 
 function horizontalSliceRange(field, z, slot) {
@@ -1063,37 +2916,11 @@ async function rebuildCMB() {
   const [vmin, vmax] = cmbDisplayRange(fieldObject, metadata.nr - 1, "cmb");
   setColourbarForSlot("cmb", params.cmbField, vmin, vmax);
 
-  const mer1Shown = params.showMeridian;
-  const mer2Shown = params.showMeridian2;
-  const anyMeridianShown = mer1Shown || mer2Shown;
-  const activeMeridianPhiDeg = mer1Shown
-    ? params.meridianPhiDeg
-    : mer2Shown
-      ? params.meridian2PhiDeg
-      : params.meridianPhiDeg;
-
-  let cmbClip = { enabled: false };
-  if (params.cmbClipWithMeridian && anyMeridianShown && params.cmbClipMode !== "none") {
-    if (params.cmbClipMode === "between-meridians-behind" && mer1Shown && mer2Shown) {
-      cmbClip = {
-        enabled: true,
-        mode: "between-meridians-behind",
-        hasTwoPlanes: true,
-        phiA: THREE.MathUtils.degToRad(params.meridianPhiDeg),
-        phiB: THREE.MathUtils.degToRad(params.meridian2PhiDeg),
-      };
-    } else {
-      cmbClip = {
-        enabled: true,
-        mode: "rear-half",
-        phi0: THREE.MathUtils.degToRad(activeMeridianPhiDeg),
-        side: params.cmbRearSide,
-      };
-    }
-  }
+  const cmbClip = getActiveCmbClipOptions();
   cmbMesh = makeCmbSurfaceMesh(fieldObject, metadata.nr - 1, params.cmbOpacity, vmin, vmax, params.cmbColormap, cmbClip);
   cmbMesh.visible = params.showCMB;
   scene.add(cmbMesh);
+  await updateEarthSurface();
   setStatusSummary(`CMB:${params.cmbField}`);
 }
 
@@ -1127,6 +2954,7 @@ async function rebuildEquator() {
   equatorMesh = makeHorizontalSliceMesh(field, 0.0, params.equatorOpacity, vmin, vmax, params.equatorColormap);
   equatorMesh.visible = params.showEquator;
   scene.add(equatorMesh);
+  await rebuildGapFillers();
   setStatusSummary(`Equator:${params.equatorField}`);
 }
 
@@ -1142,6 +2970,7 @@ async function rebuildEquator2() {
   equator2Mesh = makeHorizontalSliceMesh(field, z, params.equator2Opacity, vmin, vmax, params.equator2Colormap);
   equator2Mesh.visible = params.showEquator2;
   scene.add(equator2Mesh);
+  await rebuildGapFillers();
   setStatusSummary(`Equator2:${params.equator2Field}`);
 }
 
@@ -1163,6 +2992,7 @@ async function rebuildMeridian() {
   );
   meridianMesh.visible = params.showMeridian;
   scene.add(meridianMesh);
+  await rebuildGapFillers();
   setStatusSummary(`Meridian:${params.meridianField}`);
 }
 
@@ -1184,6 +3014,7 @@ async function rebuildMeridian2() {
   );
   meridian2Mesh.visible = params.showMeridian2;
   scene.add(meridian2Mesh);
+  await rebuildGapFillers();
   setStatusSummary(`Meridian2:${params.meridian2Field}`);
 }
 
@@ -1206,6 +3037,11 @@ function updateVisibility() {
   if (equator2Mesh) equator2Mesh.visible = params.showEquator2;
   if (meridianMesh) meridianMesh.visible = params.showMeridian;
   if (meridian2Mesh) meridian2Mesh.visible = params.showMeridian2;
+  const fillerActive = params.showEarthSurface && params.showSliceGapFiller;
+  if (equatorFillerMesh) equatorFillerMesh.visible = fillerActive && params.showEquator;
+  if (equator2FillerMesh) equator2FillerMesh.visible = fillerActive && params.showEquator2;
+  if (meridianFillerMesh) meridianFillerMesh.visible = fillerActive && params.showMeridian;
+  if (meridian2FillerMesh) meridian2FillerMesh.visible = fillerActive && params.showMeridian2;
 
   if (colourbars.cmb?.row) colourbars.cmb.row.style.display = params.showCMB && cmbMesh ? "block" : "none";
   if (colourbars.icb?.row) colourbars.icb.row.style.display = params.showICB && icbMesh ? "block" : "none";
@@ -1215,14 +3051,18 @@ function updateVisibility() {
   if (colourbars.meridian2?.row) colourbars.meridian2.row.style.display = params.showMeridian2 && meridian2Mesh ? "block" : "none";
   if (!params.showFieldLines) {
     disposeFieldLineGroups();
+    hideFieldLineColourbar();
   } else {
     const requested = params.fieldLineDisplay;
     for (const [mode, group] of Object.entries(fieldLineGroups)) {
       if (!group) continue;
       group.visible = requested === "both" || requested === mode;
     }
+    if (params.lineColourMode === "polarity") hideFieldLineColourbar();
   }
+  setLineLegendMode(params.lineColourMode);
   axes.visible = params.showAxes;
+  updateEarthSurface();
 }
 
 function updateOpacities() {
@@ -1232,6 +3072,10 @@ function updateOpacities() {
   if (equator2Mesh) applyOpacityAndDepth(equator2Mesh.material, params.equator2Opacity);
   if (meridianMesh) applyOpacityAndDepth(meridianMesh.material, params.meridianOpacity);
   if (meridian2Mesh) applyOpacityAndDepth(meridian2Mesh.material, params.meridian2Opacity);
+  if (equatorFillerMesh) applyOpacityAndDepth(equatorFillerMesh.material, params.sliceGapFillerOpacity);
+  if (equator2FillerMesh) applyOpacityAndDepth(equator2FillerMesh.material, params.sliceGapFillerOpacity);
+  if (meridianFillerMesh) applyOpacityAndDepth(meridianFillerMesh.material, params.sliceGapFillerOpacity);
+  if (meridian2FillerMesh) applyOpacityAndDepth(meridian2FillerMesh.material, params.sliceGapFillerOpacity);
 }
 
 async function fetchFieldLineFile(filename) {
@@ -1320,31 +3164,40 @@ function makeFieldLineGroup(lines, mode) {
   group.userData.isMagneticFieldLineGroup = true;
   group.userData.lineMode = mode;
 
-  const positiveMaterial = new THREE.LineBasicMaterial({
-    color: mode === "exterior" ? 0xfff0a0 : 0xffd080,
-    transparent: true,
-    opacity: mode === "exterior" ? 0.72 : 0.90,
-  });
-
-  const negativeMaterial = new THREE.LineBasicMaterial({
-    color: mode === "exterior" ? 0x80e0ff : 0x80c0ff,
-    transparent: true,
-    opacity: mode === "exterior" ? 0.72 : 0.90,
-  });
-
   const stride = Math.max(1, params.lineStride);
+  const material = makeLineMaterial();
+  const loadedLines = [];
+
+  const [vmin, vmax] = getFieldLineRange(lines);
+  group.userData.strengthRange = [vmin, vmax];
+
   for (let i = 0; i < lines.length; i += stride) {
     const line = lines[i];
     if (!Array.isArray(line.points) || line.points.length < 2) continue;
 
-    const points = line.points.map((p) => new THREE.Vector3(p[0], p[1], p[2]));
-    const geometry = new THREE.BufferGeometry().setFromPoints(points);
-    const material = line.polarity >= 0 ? positiveMaterial : negativeMaterial;
-    const object = new THREE.Line(geometry, material);
+    const positions = [];
+    const colors = [];
+    const strengths = Array.isArray(line.strength) ? line.strength : null;
+    for (let j = 0; j < line.points.length; j++) {
+      const p = line.points[j];
+      positions.push(p[0], p[1], p[2]);
+      const rawStrength = strengths ? Number(strengths[j]) : NaN;
+      const sval = Number.isFinite(rawStrength) ? rawStrength : 0.5 * (vmin + vmax);
+      const c = getFieldLineVertexColor(sval, line.polarity ?? 1, vmin, vmax);
+      colors.push(c.r, c.g, c.b);
+    }
+
+    const geometry = new LineGeometry();
+    geometry.setPositions(positions);
+    geometry.setColors(colors);
+    const object = new Line2(geometry, material);
+    object.computeLineDistances();
     object.userData.lineMode = mode;
     group.add(object);
+    loadedLines.push(line);
   }
 
+  group.userData.lines = loadedLines;
   return group;
 }
 
@@ -1368,6 +3221,7 @@ async function loadFieldLines() {
 
   const modesToLoad = params.fieldLineDisplay === "both" ? ["shell", "exterior"] : [params.fieldLineDisplay];
 
+  let allLoadedLines = [];
   for (const mode of modesToLoad) {
     if (!availableModes.includes(mode)) continue;
 
@@ -1376,8 +3230,17 @@ async function loadFieldLines() {
     group.visible = params.showFieldLines;
     fieldLineGroups[mode] = group;
     scene.add(group);
+    allLoadedLines = allLoadedLines.concat(group.userData.lines || []);
   }
 
+  if (params.lineColourMode === "strength" && allLoadedLines.length > 0) {
+    const [vmin, vmax] = getFieldLineRange(allLoadedLines);
+    setFieldLineColourbar(vmin, vmax);
+  } else {
+    hideFieldLineColourbar();
+  }
+  setLineLegendMode(params.lineColourMode);
+  updateFieldLineVisuals();
   setStatusSummary();
 }
 
@@ -1436,10 +3299,113 @@ function addDisplayControls(gui, slot, label, fieldParam, showParam, opacityPara
   return folder;
 }
 
+
+const VIEW_STATE_PREFIX = "DTV1:";
+
+function getAvailableColormapNames() {
+  return Object.keys(colourStops || {});
+}
+
+function collectViewState() {
+  const snapshot = { version: 1, params: {} };
+  for (const [key, value] of Object.entries(params)) {
+    if (typeof value !== "function") snapshot.params[key] = value;
+  }
+  return snapshot;
+}
+
+function encodeViewState(snapshot) {
+  const json = JSON.stringify(snapshot);
+  const base64 = btoa(unescape(encodeURIComponent(json)));
+  return `${VIEW_STATE_PREFIX}${base64}`;
+}
+
+function decodeViewState(code) {
+  const raw = String(code || "").trim();
+  const payload = raw.startsWith(VIEW_STATE_PREFIX) ? raw.slice(VIEW_STATE_PREFIX.length) : raw;
+  const json = decodeURIComponent(escape(atob(payload)));
+  return JSON.parse(json);
+}
+
+function validFieldForState(key, value) {
+  if (!["cmbField", "icbField", "equatorField", "equator2Field", "meridianField", "meridian2Field"].includes(key)) return true;
+  if (key === "cmbField") return getCmbFieldNames().includes(value);
+  return getVolumeFieldNames().includes(value);
+}
+
+function applySnapshotParam(key, value) {
+  if (!(key in params)) return;
+  if (typeof params[key] === "function") return;
+  if (key.endsWith("Colormap") && !getAvailableColormapNames().includes(value)) return;
+  if (key.endsWith("Scale") && !["symmetric", "minmax", "manual"].includes(value)) return;
+  if (!validFieldForState(key, value)) return;
+  if (key === "fieldLineDisplay" && !getAvailableFieldLineModes().includes(value)) return;
+  params[key] = value;
+}
+
+async function applyViewState(snapshot) {
+  const snap = snapshot?.params ? snapshot : { params: snapshot || {} };
+  for (const [key, value] of Object.entries(snap.params || {})) {
+    applySnapshotParam(key, value);
+  }
+  updateLighting();
+  applyCameraViewFromParams();
+  buildGui();
+  await rebuildAllMeshes();
+  await loadFieldLines();
+  await updateEarthSurface();
+  updateFieldLineVisuals();
+  updateOpacities();
+  updateVisibility();
+  setStatus("View state loaded.");
+}
+
+async function copyViewStateCode() {
+  const code = encodeViewState(collectViewState());
+  try {
+    await navigator.clipboard.writeText(code);
+    setStatus("View state code copied to clipboard.");
+  } catch (err) {
+    window.prompt("Copy this view state code:", code);
+  }
+}
+
+function showViewStateCode() {
+  const code = encodeViewState(collectViewState());
+  window.prompt("Copy this view state code:", code);
+}
+
+async function loadViewStateCode() {
+  const code = window.prompt("Paste a saved view state code:");
+  if (!code) return;
+  try {
+    const snapshot = decodeViewState(code);
+    await applyViewState(snapshot);
+  } catch (err) {
+    console.error(err);
+    setStatus(`Could not load view state: ${err.message}`);
+    window.alert(`Could not load view state code.\n${err.message}`);
+  }
+}
+
+async function saveViewStateCode() {
+  const code = encodeViewState(collectViewState());
+  const blob = new Blob([code + "\n"], { type: "text/plain;charset=utf-8" });
+  await saveBlob(blob, `dynamo-view-state-${Date.now()}.txt`, "view-state");
+}
+
 function buildGui() {
+  if (guiRoot) guiRoot.destroy();
   const gui = new GUI({ title: "Controls" });
+  guiRoot = gui;
 
   gui.add(params, "resetCamera").name("Reset camera view");
+
+  const stateFolder = gui.addFolder("View state");
+  stateFolder.add(params, "copyViewStateCode").name("Copy code");
+  stateFolder.add(params, "showViewStateCode").name("Show code");
+  stateFolder.add(params, "loadViewStateCode").name("Load code");
+  stateFolder.add(params, "saveViewStateCode").name("Save code to file");
 
   const volumeFields = getVolumeFieldNames();
   const cmbFields = getCmbFieldNames();
@@ -1486,20 +3452,37 @@ function buildGui() {
   exportFolder.add(params, "videoRotationMode", { "360° in phi": "phi360", "360° phi + 180° theta": "phi360Theta180" }).name("Rotation mode");
   exportFolder.add(params, "recordFullRotation").name("Record video");
 
-  const other = gui.addFolder("Other visualisation");
+  const lineFolder = gui.addFolder("Magnetic field lines");
   const lineModes = getAvailableFieldLineModes();
   if (lineModes.length > 0) {
     if (!lineModes.includes(params.fieldLineDisplay)) params.fieldLineDisplay = lineModes[0];
-    other.add(params, "showFieldLines").name("Magnetic field lines").onChange(onFieldLineVisibilityChanged);
-    const lineModeOptions = {}
+    lineFolder.add(params, "showFieldLines").name("Show").onChange(onFieldLineVisibilityChanged);
+    const lineModeOptions = {};
     if (lineModes.includes("shell")) lineModeOptions["Shell/internal"] = "shell";
     if (lineModes.includes("exterior")) lineModeOptions["Exterior potential/poloidal"] = "exterior";
     if (lineModes.includes("both")) lineModeOptions["Both"] = "both";
-    other.add(params, "fieldLineDisplay", lineModeOptions).name("Line type").onChange(loadFieldLines);
-    other.add(params, "lineStride", 1, 10, 1).name("Line stride").onChange(loadFieldLines);
+    lineFolder.add(params, "fieldLineDisplay", lineModeOptions).name("Line type").onChange(loadFieldLines);
+    lineFolder.add(params, "lineStride", 1, 10, 1).name("Line stride").onChange(loadFieldLines);
+    lineFolder.add(params, "lineColourMode", { Strength: "strength", Polarity: "polarity" }).name("Colour by").onChange(loadFieldLines);
+    lineFolder.add(params, "lineColormap", colourMapNames).name("Colour map").onChange(loadFieldLines);
+    lineFolder.add(params, "lineScale", ["minmax", "manual"]).name("Scale").onChange(loadFieldLines);
+    lineFolder.add(params, "lineMin").name("Manual min").onChange(loadFieldLines);
+    lineFolder.add(params, "lineMax").name("Manual max").onChange(loadFieldLines);
+    lineFolder.add(params, "lineWidthPx", 1, 12, 0.25).name("Thickness px").onChange(updateFieldLineVisuals);
+    lineFolder.add(params, "lineOpacity", 0.05, 1.0, 0.01).name("Opacity").onChange(updateFieldLineVisuals);
   } else {
     params.showFieldLines = false;
   }
+
+  const earthFolder = gui.addFolder("Earth surface");
+  earthFolder.add(params, "showEarthSurface").name("Show").onChange(updateEarthSurface);
+  earthFolder.add(params, "earthLongitudeDeg", -180, 180, 1).name("Texture longitude").onChange(updateEarthSurface);
+  earthFolder.add(params, "earthRadiusScale", 1.0, 2.5, 0.01).name("Radius / core").onChange(updateEarthSurface);
+  earthFolder.add(params, "earthOpacity", 0.05, 1.0, 0.01).name("Opacity").onChange(updateEarthSurface);
+  earthFolder.add(params, "showSliceGapFiller").name("Slice gap filler").onChange(rebuildGapFillers);
+  earthFolder.add(params, "sliceGapFillerOpacity", 0.0, 1.0, 0.01).name("Filler opacity").onChange(updateOpacities);
+
+  const other = gui.addFolder("Other visualisation");
   other.add(params, "showAxes").name("Axes").onChange(updateVisibility);
 
   cmbFolder.open();
@@ -1563,13 +3546,6 @@ function withTemporaryWhiteBackground(renderCallback) {
   return result;
 }
 
-function getVisibleColourbarSlots() {
-  return displaySlots.filter((slot) => {
-    const bar = colourbars[slot];
-    return bar?.row && bar.row.style.display !== "none";
-  });
-}
-
 function drawRoundedRectPath(ctx, x, y, w, h, r) {
   const rr = Math.min(r, 0.5 * w, 0.5 * h);
   ctx.beginPath();
@@ -1599,6 +3575,14 @@ function drawColourbarGradient(ctx, x, y, w, h, scheme) {
   ctx.stroke();
 }
 
+
+function getVisibleColourbarSlots() {
+  return displaySlots.filter((slot) => {
+    const bar = colourbars[slot];
+    return bar?.row && bar.row.style.display !== "none";
+  });
+}
+
 function drawExportColourbars(ctx, width, height) {
   const slots = getVisibleColourbarSlots();
   if (slots.length === 0) return;
@@ -1615,7 +3599,7 @@ function drawExportColourbars(ctx, width, height) {
   ctx.save();
   for (const slot of slots) {
     const bar = colourbars[slot];
-    const scheme = params[`${slot}Colormap`] || "blue-white-red";
+    const scheme = slot === "fieldlines" ? (params.lineColormap || "viridis") : (params[`${slot}Colormap`] || "blue-white-red");
 
     ctx.fillStyle = "rgba(255,255,255,0.88)";
     ctx.strokeStyle = "rgba(0,0,0,0.22)";
@@ -1665,6 +3649,7 @@ function makeCompositeExportCanvas(widthPx = null) {
     const height = Math.round(width / prevAspect);
     renderer.setPixelRatio(1);
     renderer.setSize(width, height, false);
+    updateFieldLineVisuals();
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
     needResize = true;
@@ -1686,6 +3671,7 @@ function makeCompositeExportCanvas(widthPx = null) {
   if (needResize) {
     renderer.setPixelRatio(prevPixelRatio);
     renderer.setSize(prevSize.x, prevSize.y, false);
+    updateFieldLineVisuals();
     camera.aspect = prevAspect;
     camera.updateProjectionMatrix();
   }
@@ -1842,6 +3828,7 @@ function resizeRendererForVideoIfNeeded() {
   const height = Math.max(1, Math.round(width / camera.aspect));
   renderer.setPixelRatio(1);
   renderer.setSize(width, height, false);
+  updateFieldLineVisuals();
   camera.aspect = width / height;
   camera.updateProjectionMatrix();
   videoState.resizedRenderer = true;
@@ -1851,6 +3838,7 @@ function restoreRendererAfterVideo() {
   if (!videoState.resizedRenderer) return;
   renderer.setPixelRatio(videoState.previousPixelRatio);
   renderer.setSize(videoState.previousRendererSize.x, videoState.previousRendererSize.y, false);
+  updateFieldLineVisuals();
   camera.aspect = videoState.previousAspect;
   camera.updateProjectionMatrix();
   videoState.resizedRenderer = false;
@@ -1984,6 +3972,7 @@ async function init() {
 
     await rebuildAllMeshes();
     await loadFieldLines();
+    await updateEarthSurface();
 
     animate();
   } catch (err) {
@@ -1998,6 +3987,7 @@ window.addEventListener("resize", () => {
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  updateFieldLineVisuals();
   syncCameraParamsFromCamera(true);
 });
 

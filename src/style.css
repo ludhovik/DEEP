@@ -185,3 +185,21 @@ canvas {
   color: #bbbbbb;
   line-height: 1.25;
 }
+
+
+#earth-attribution {
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  color: rgba(255,255,255,0.8);
+  font-size: 11px;
+  background: rgba(0,0,0,0.45);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px;
+  padding: 6px 8px;
+  z-index: 15;
+  max-width: 340px;
+}
+#earth-attribution a {
+  color: #cfe6ff;
+}
