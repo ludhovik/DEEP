@@ -161,6 +161,53 @@ def downsample_3d(arr: np.ndarray, dr: int, dt: int, dp: int) -> np.ndarray:
     return np.ascontiguousarray(arr[::dr, ::dt, ::dp])
 
 
+def remove_m0_phi(arr: np.ndarray) -> np.ndarray:
+    """Remove the azimuthal m=0 component, i.e. subtract the phi-mean."""
+    return arr - np.mean(arr, axis=2, keepdims=True)
+
+
+def gradient_phi_periodic(arr: np.ndarray, phi: np.ndarray) -> np.ndarray:
+    """Periodic central-difference derivative along phi for arr[r,theta,phi]."""
+    phi = np.asarray(phi, dtype=np.float64)
+    if phi.size < 2:
+        return np.zeros_like(arr, dtype=np.float64)
+    dphi = float(np.mean(np.diff(phi)))
+    return (np.roll(arr, -1, axis=2) - np.roll(arr, 1, axis=2)) / (2.0 * dphi)
+
+
+def gradient_scalar_3d(field: np.ndarray, r: np.ndarray, theta: np.ndarray, phi: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return d/dr, d/dtheta, d/dphi for a scalar field[r,theta,phi]."""
+    dr = np.gradient(field, np.asarray(r, dtype=np.float64), axis=0, edge_order=2)
+    dtheta = np.gradient(field, np.asarray(theta, dtype=np.float64), axis=1, edge_order=2)
+    dphi = gradient_phi_periodic(field, phi)
+    return np.ascontiguousarray(dr), np.ascontiguousarray(dtheta), np.ascontiguousarray(dphi)
+
+
+def compute_helicity(Ur: np.ndarray, Ut: np.ndarray, Up: np.ndarray, r: np.ndarray, theta: np.ndarray, phi: np.ndarray) -> np.ndarray:
+    """Compute kinetic helicity u·(curl u) in spherical coordinates."""
+    r3 = np.asarray(r, dtype=np.float64)[:, None, None]
+    theta1 = np.asarray(theta, dtype=np.float64)[None, :, None]
+    sin_theta = np.sin(theta1)
+    sin_safe = np.where(np.abs(sin_theta) < 1.0e-8, 1.0e-8, sin_theta)
+
+    dtheta_up_sin = np.gradient(Up * sin_theta, np.asarray(theta, dtype=np.float64), axis=1, edge_order=2)
+    dphi_ut = gradient_phi_periodic(Ut, phi)
+
+    dphi_ur = gradient_phi_periodic(Ur, phi)
+    dphi_uterm = gradient_phi_periodic(Ur, phi)
+
+    dr_rup = np.gradient(r3 * Up, np.asarray(r, dtype=np.float64), axis=0, edge_order=2)
+    dr_rut = np.gradient(r3 * Ut, np.asarray(r, dtype=np.float64), axis=0, edge_order=2)
+    dtheta_ur = np.gradient(Ur, np.asarray(theta, dtype=np.float64), axis=1, edge_order=2)
+
+    omega_r = (dtheta_up_sin - dphi_ut) / (r3 * sin_safe)
+    omega_theta = ((dphi_uterm / sin_safe) - dr_rup) / r3
+    omega_phi = (dr_rut - dtheta_ur) / r3
+
+    helicity = Ur * omega_r + Ut * omega_theta + Up * omega_phi
+    return np.ascontiguousarray(helicity, dtype=np.float64)
+
+
 # -----------------------------------------------------------------------------
 # Spherical geometry / field-line helpers
 # -----------------------------------------------------------------------------
@@ -290,6 +337,36 @@ def interpolate_B_cartesian(
 
     return B / norm
 
+
+
+def sample_line_strengths(
+    points: list[list[float]],
+    Br: np.ndarray,
+    Bt: np.ndarray,
+    Bp: np.ndarray,
+    r_grid: np.ndarray,
+    theta_grid: np.ndarray,
+    phi_grid: np.ndarray,
+) -> list[float | None]:
+    """
+    Sample |B| along a traced field line.
+
+    JSON does not allow NaN/Inf.  Non-finite interpolation samples are written
+    as None, which becomes null in JSON and is safely ignored by the viewer.
+    """
+    strengths: list[float | None] = []
+    for p in points:
+        x = np.asarray(p, dtype=np.float64)
+        r, theta, phi = cart_to_sph(x)
+        br = interp_spherical_field(Br, r_grid, theta_grid, phi_grid, r, theta, phi)
+        bt = interp_spherical_field(Bt, r_grid, theta_grid, phi_grid, r, theta, phi)
+        bp = interp_spherical_field(Bp, r_grid, theta_grid, phi_grid, r, theta, phi)
+        if not np.isfinite([br, bt, bp]).all():
+            strengths.append(None)
+        else:
+            babs = float(math.sqrt(br * br + bt * bt + bp * bp))
+            strengths.append(babs if math.isfinite(babs) else None)
+    return strengths
 
 
 def radius_of(x: np.ndarray) -> float:
@@ -792,6 +869,7 @@ def compute_external_field_lines_from_cmb(
             polarity = 1 if br_cmb >= 0.0 else -1
             start_r = radius_of(np.asarray(points[0], dtype=np.float64)) if points else float("nan")
             end_r = radius_of(np.asarray(points[-1], dtype=np.float64)) if points else float("nan")
+            strengths = sample_line_strengths(points, Br_ext, Bt_ext, Bp_ext, r_ext, theta_grid, phi_grid)
             lines.append(
                 {
                     "seed": [float(seed[0]), float(seed[1]), float(seed[2])],
@@ -807,6 +885,8 @@ def compute_external_field_lines_from_cmb(
                     "start_r": float(start_r),
                     "end_r": float(end_r),
                     "end_r_error": float(abs(end_r - r_outer)) if math.isfinite(end_r) else None,
+                    "strength_kind": "Babs",
+                    "strength": strengths,
                     "points": points,
                 }
             )
@@ -908,6 +988,7 @@ def compute_shell_field_lines_from_cmb(
 
             start_r = radius_of(np.asarray(points[0], dtype=np.float64)) if points else float("nan")
             end_r = radius_of(np.asarray(points[-1], dtype=np.float64)) if points else float("nan")
+            strengths = sample_line_strengths(points, Br, Bt, Bp, r_grid, theta_grid, phi_grid)
             lines.append(
                 {
                     "seed": [float(seed[0]), float(seed[1]), float(seed[2])],
@@ -921,6 +1002,8 @@ def compute_shell_field_lines_from_cmb(
                     "endpoint_distance": endpoint_distance,
                     "start_r": float(start_r),
                     "end_r": float(end_r),
+                    "strength_kind": "Babs",
+                    "strength": strengths,
                     "points": points,
                 }
             )
@@ -1020,7 +1103,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--no-gradients",
         action="store_true",
-        help="Skip 3-D grad_rC and grad_rComp export. N2 profile is still computed from m=0 gradients.",
+        help="Skip exporting 3-D scalar gradient fields. N2 and helicity are still computed.",
     )
 
     return p
@@ -1130,27 +1213,36 @@ def main() -> None:
     Cspatnol0 = remove_global_mean(Cspat)
     Compspatnol0 = remove_global_mean(Compspat)
 
-    print("Computing m=0 gradients and N2 profile...")
-    Cspat_m0 = np.mean(Cspat, axis=2)
-    Compspat_m0 = np.mean(Compspat, axis=2)
+    print("Computing full 3-D scalar gradients, N2 fluctuations, and helicity...")
+    grad_rC_3d, grad_thetaC_3d, grad_phiC_3d = gradient_scalar_3d(Cspat, r, theta, phi)
+    grad_rComp_3d, grad_thetaComp_3d, grad_phiComp_3d = gradient_scalar_3d(Compspat, r, theta, phi)
 
-    grad_rC_m0, grad_theta_C_m0 = gradient_spat(Cspat_m0, r, theta)
-    grad_rComp_m0, grad_theta_Comp_m0 = gradient_spat(Compspat_m0, r, theta)
+    # Fluctuating (m != 0) gradient fields.
+    grad_rC_fluct = remove_m0_phi(grad_rC_3d)
+    grad_thetaC_fluct = remove_m0_phi(grad_thetaC_3d)
+    grad_phiC_fluct = remove_m0_phi(grad_phiC_3d)
+    grad_rComp_fluct = remove_m0_phi(grad_rComp_3d)
+    grad_thetaComp_fluct = remove_m0_phi(grad_thetaComp_3d)
+    grad_phiComp_fluct = remove_m0_phi(grad_phiComp_3d)
 
-    grad_rC_mean_r = np.mean(grad_rC_m0, axis=1)
-    grad_rComp_mean_r = np.mean(grad_rComp_m0, axis=1)
+    # Full N^2 everywhere, then remove the m=0 component so the viewer shows fluctuations only.
+    N2_full = r[:, None, None] * E**2 * (grad_rComp_3d * RaC / Sc + grad_rC_3d * RaT / Pr)
+    N2_volume = remove_m0_phi(N2_full)
 
-    # If any parameter is unavailable, this will become NaN. That is intentional.
-    N2_profile = r * E**2 * (grad_rComp_mean_r * RaC / Sc + grad_rC_mean_r * RaT / Pr)
+    helicity = compute_helicity(Ur, Ut, Up, r, theta, phi)
 
-    # Broadcast N2(r) to a 3-D volume so the current viewer can display it.
-    N2_volume = np.broadcast_to(N2_profile[:, None, None], (nr, ntheta, nphi)).copy()
+    # Keep simple 1-D profiles for reference.
+    N2_profile = np.mean(N2_full, axis=(1, 2))
+    N2_fluct_rms = np.sqrt(np.mean(N2_volume * N2_volume, axis=(1, 2)))
+    grad_rC_mean_r = np.mean(grad_rC_3d, axis=(1, 2))
+    grad_rComp_mean_r = np.mean(grad_rComp_3d, axis=(1, 2))
 
     fields: dict[str, np.ndarray] = {
         "ur": Ur,
         "ut": Ut,
         "up": Up,
         "Uabs": Uabs,
+        "helicity": helicity,
         "C": Cspat,
         "Comp": Compspat,
         "Cnom0": Cspatnom0,
@@ -1170,16 +1262,13 @@ def main() -> None:
         }
 
     if not args.no_gradients:
-        print("Computing full 3-D radial gradients of C and Comp...")
-        grad_rC_3d = np.empty_like(Cspat)
-        grad_rComp_3d = np.empty_like(Compspat)
-
-        for ip in range(nphi):
-            grad_rC_3d[:, :, ip], _ = gradient_spat(Cspat[:, :, ip], r, theta)
-            grad_rComp_3d[:, :, ip], _ = gradient_spat(Compspat[:, :, ip], r, theta)
-
-        fields["grad_rC"] = grad_rC_3d
-        fields["grad_rComp"] = grad_rComp_3d
+        print("Exporting full 3-D scalar gradient fluctuations for C and Comp...")
+        fields["grad_rC"] = grad_rC_fluct
+        fields["grad_thetaC"] = grad_thetaC_fluct
+        fields["grad_phiC"] = grad_phiC_fluct
+        fields["grad_rComp"] = grad_rComp_fluct
+        fields["grad_thetaComp"] = grad_thetaComp_fluct
+        fields["grad_phiComp"] = grad_phiComp_fluct
 
     # Downsample after all derived quantities are computed.
     dr = max(1, int(args.downsample_r))
@@ -1193,6 +1282,7 @@ def main() -> None:
         theta_out = theta[::dt]
         phi_out = phi[::dp]
         N2_profile_out = N2_profile[::dr]
+        N2_fluct_rms_out = N2_fluct_rms[::dr]
         grad_rC_mean_r_out = grad_rC_mean_r[::dr]
         grad_rComp_mean_r_out = grad_rComp_mean_r[::dr]
     else:
@@ -1200,6 +1290,7 @@ def main() -> None:
         theta_out = theta
         phi_out = phi
         N2_profile_out = N2_profile
+        N2_fluct_rms_out = N2_fluct_rms
         grad_rC_mean_r_out = grad_rC_mean_r
         grad_rComp_mean_r_out = grad_rComp_mean_r
 
@@ -1278,6 +1369,7 @@ def main() -> None:
     profiles = {
         "r": [json_number(x) for x in r_out],
         "N2": [json_number(x) for x in N2_profile_out],
+        "N2_fluct_rms": [json_number(x) for x in N2_fluct_rms_out],
         "grad_rC_mean_r": [json_number(x) for x in grad_rC_mean_r_out],
         "grad_rComp_mean_r": [json_number(x) for x in grad_rComp_mean_r_out],
     }
@@ -1327,7 +1419,7 @@ def main() -> None:
             shell_count = len(shell_lines)
             combined_lines.extend(shell_lines)
             with open(outdir / "B_lines_shell.json", "w", encoding="utf-8") as f:
-                json.dump(shell_lines, f)
+                json.dump(shell_lines, f, allow_nan=False)
             field_lines_meta["shell"] = "B_lines_shell.json"
             field_lines_meta["B_lines_shell"] = "B_lines_shell.json"
             field_lines_meta["counts"]["shell"] = shell_count
@@ -1394,7 +1486,7 @@ def main() -> None:
             exterior_count = len(exterior_lines)
             combined_lines.extend(exterior_lines)
             with open(outdir / "B_lines_exterior_poloidal.json", "w", encoding="utf-8") as f:
-                json.dump(exterior_lines, f)
+                json.dump(exterior_lines, f, allow_nan=False)
             field_lines_meta["exterior"] = "B_lines_exterior_poloidal.json"
             field_lines_meta["exterior_poloidal"] = "B_lines_exterior_poloidal.json"
             field_lines_meta["B_lines_exterior_poloidal"] = "B_lines_exterior_poloidal.json"
@@ -1411,7 +1503,7 @@ def main() -> None:
         # Backward-compatible combined file for older viewer versions.  The new
         # viewer reads the separate shell/exterior files when available.
         with open(outdir / "B_lines.json", "w", encoding="utf-8") as f:
-            json.dump(combined_lines, f)
+            json.dump(combined_lines, f, allow_nan=False)
 
         field_lines_meta["B_lines"] = "B_lines.json"
         field_lines_meta["count"] = len(combined_lines)
