@@ -2,6 +2,7 @@ import "./style.css";
 
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { MarchingCubes } from "three/examples/jsm/objects/MarchingCubes.js";
 import { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
@@ -100,6 +101,17 @@ const params = {
   meridianField: "C",
   meridian2Field: "C",
 
+  showIsosurfaces: false,
+  isoField: "ur",
+  showIsoPositive: true,
+  showIsoNegative: true,
+  isoPositiveValue: 0.10,
+  isoNegativeValue: -0.10,
+  isoResolution: 36,
+  isoOpacity: 0.45,
+  isoPositiveColor: "#d73027",
+  isoNegativeColor: "#4575b4",
+
   showCMB: true,
   showICB: true,
   showEquator: true,
@@ -159,6 +171,7 @@ const params = {
   lineColourMode: "strength",
   lineColormap: "viridis",
   lineScale: "minmax",
+  lineValueTransform: "linear",
   lineMin: 0.0,
   lineMax: 1.0,
   lineWidthPx: 2.0,
@@ -189,6 +202,13 @@ const params = {
   exportPngWhite: () => exportCurrentViewPNG(),
   exportPdfWhite: () => exportCurrentViewPDF(),
   recordFullRotation: () => startFullRotationRecording(),
+
+  sequenceFrame: 0,
+  sequenceFps: 4,
+  sequencePlaying: false,
+  playSequence: () => playSequence(),
+  pauseSequence: () => pauseSequence(),
+  reloadSequence: () => loadSequenceIndex(true),
 
   copyViewStateCode: () => copyViewStateCode(),
   showViewStateCode: () => showViewStateCode(),
@@ -221,6 +241,10 @@ const EARTH_TEXTURE_ATTRIBUTION = "Earth texture: NASA Blue Marble / Land shallo
 
 const dataCache = new Map();
 let guiRoot = null;
+let dataBasePath = "/data";
+let sequenceIndex = null;
+let sequenceTimer = null;
+const sequenceControllers = [];
 
 const videoState = {
   active: false,
@@ -330,11 +354,33 @@ function getLineColourbarState() {
   return bar;
 }
 
+function transformFieldLineStrength(value) {
+  const v = Number(value);
+  if (!Number.isFinite(v)) return NaN;
+  if (params.lineValueTransform === "log10") {
+    return v > 0 ? Math.log10(v) : NaN;
+  }
+  return v;
+}
+
+function inverseTransformFieldLineStrength(value) {
+  const v = Number(value);
+  if (!Number.isFinite(v)) return NaN;
+  if (params.lineValueTransform === "log10") {
+    return 10 ** v;
+  }
+  return v;
+}
+
+function fieldLineQuantityLabel() {
+  return params.lineValueTransform === "log10" ? "Field lines: log10(|B|)" : "Field lines: |B|";
+}
+
 function setFieldLineColourbar(vmin, vmax) {
   const bar = getLineColourbarState();
   if (!bar) return;
   const mid = 0.5 * (vmin + vmax);
-  bar.title.textContent = `Field lines: |B|`;
+  bar.title.textContent = fieldLineQuantityLabel();
   bar.min.textContent = formatNumber(vmin);
   if (bar.mid) bar.mid.textContent = formatNumber(mid);
   bar.max.textContent = formatNumber(vmax);
@@ -353,13 +399,14 @@ function strengthRangeFromLines(lines) {
   for (const line of lines) {
     if (!Array.isArray(line.strength)) continue;
     for (const val of line.strength) {
-      if (!Number.isFinite(val)) continue;
-      if (val < vmin) vmin = val;
-      if (val > vmax) vmax = val;
+      const tval = transformFieldLineStrength(val);
+      if (!Number.isFinite(tval)) continue;
+      if (tval < vmin) vmin = tval;
+      if (tval > vmax) vmax = tval;
     }
   }
   if (!Number.isFinite(vmin) || !Number.isFinite(vmax) || vmax <= vmin) {
-    vmin = 0.0;
+    vmin = params.lineValueTransform === "log10" ? -6.0 : 0.0;
     vmax = 1.0;
   }
   return [vmin, vmax];
@@ -368,7 +415,9 @@ function strengthRangeFromLines(lines) {
 function getFieldLineRange(lines) {
   const [autoMin, autoMax] = strengthRangeFromLines(lines);
   if (params.lineScale === "manual") {
-    return [Number(params.lineMin), Number(params.lineMax)];
+    const a = Number(params.lineMin);
+    const b = Number(params.lineMax);
+    if (Number.isFinite(a) && Number.isFinite(b) && b > a) return [a, b];
   }
   return [autoMin, autoMax];
 }
@@ -378,7 +427,9 @@ function getFieldLineVertexColor(strength, polarity, vmin, vmax) {
     const c = polarity >= 0 ? new THREE.Color(0xffd080) : new THREE.Color(0x80c0ff);
     return c;
   }
-  return colourMap(Number(strength), vmin, vmax, params.lineColormap || "viridis");
+  const value = transformFieldLineStrength(strength);
+  const safeValue = Number.isFinite(value) ? value : 0.5 * (vmin + vmax);
+  return colourMap(safeValue, vmin, vmax, params.lineColormap || "viridis");
 }
 
 function updateLineMaterialResolution(material) {
@@ -584,10 +635,106 @@ async function updateEarthSurface() {
   }
 }
 
+
+function dataUrl(path) {
+  const cleanBase = String(dataBasePath || "/data").replace(/\/+$/, "");
+  const cleanPath = String(path || "").replace(/^\/+/, "");
+  return `${cleanBase}/${cleanPath}`;
+}
+
+function clearLoadedDataCaches() {
+  dataCache.clear();
+  fieldLineDataCache.clear();
+}
+
+async function loadSequenceIndex(silent = false) {
+  try {
+    const response = await fetch("/data/sequence.json");
+    if (!response.ok) {
+      sequenceIndex = null;
+      if (!silent) setStatus("No /data/sequence.json found.");
+      return null;
+    }
+    sequenceIndex = await response.json();
+    const n = Array.isArray(sequenceIndex.frames) ? sequenceIndex.frames.length : 0;
+    if (n > 0) {
+      params.sequenceFrame = clamp(Math.round(params.sequenceFrame), 0, n - 1);
+      refreshSequenceControllers();
+      if (!silent) setStatus(`Loaded sequence with ${n} frames.`);
+    }
+    return sequenceIndex;
+  } catch (err) {
+    console.warn("Could not load sequence.json", err);
+    sequenceIndex = null;
+    if (!silent) setStatus(`Could not load sequence: ${err.message}`);
+    return null;
+  }
+}
+
+function refreshSequenceControllers() {
+  for (const controller of sequenceControllers) controller.updateDisplay();
+}
+
+async function loadFrameByIndex(index) {
+  if (!sequenceIndex || !Array.isArray(sequenceIndex.frames) || sequenceIndex.frames.length === 0) {
+    await loadSequenceIndex(false);
+  }
+  if (!sequenceIndex || !Array.isArray(sequenceIndex.frames) || sequenceIndex.frames.length === 0) return;
+
+  const n = sequenceIndex.frames.length;
+  const i = clamp(Math.round(index), 0, n - 1);
+  params.sequenceFrame = i;
+  refreshSequenceControllers();
+
+  const frame = sequenceIndex.frames[i];
+  dataBasePath = `/data/${String(frame.path).replace(/^\/+/, "")}`;
+  clearLoadedDataCaches();
+
+  metadata = await loadMetadata();
+  await loadCoordinates();
+
+  // Keep the current selected fields when available; otherwise fall back safely.
+  for (const key of ["cmbField", "icbField", "equatorField", "equator2Field", "meridianField", "meridian2Field"]) {
+    if (!validFieldForState(key, params[key])) {
+      applyDefaultFields();
+      break;
+    }
+  }
+
+  await rebuildAllMeshes();
+  await loadFieldLines();
+  await updateEarthSurface();
+  updateVisibility();
+  setStatus(`Frame ${i + 1}/${n}: ${frame.label || frame.state_number || i}`);
+}
+
+async function playSequence() {
+  if (!sequenceIndex) await loadSequenceIndex(false);
+  if (!sequenceIndex || !Array.isArray(sequenceIndex.frames) || sequenceIndex.frames.length === 0) return;
+
+  pauseSequence();
+  params.sequencePlaying = true;
+  const delayMs = 1000 / Math.max(0.1, Number(params.sequenceFps));
+  sequenceTimer = window.setInterval(async () => {
+    const n = sequenceIndex.frames.length;
+    const next = (Math.round(params.sequenceFrame) + 1) % n;
+    await loadFrameByIndex(next);
+  }, delayMs);
+  setStatus(`Playing sequence at ${params.sequenceFps} fps.`);
+}
+
+function pauseSequence() {
+  if (sequenceTimer) {
+    window.clearInterval(sequenceTimer);
+    sequenceTimer = null;
+  }
+  params.sequencePlaying = false;
+}
+
 async function loadMetadata() {
-  const response = await fetch("/data/metadata.json");
+  const response = await fetch(dataUrl("metadata.json"));
   if (!response.ok) {
-    throw new Error("Could not load /data/metadata.json. Run: npm run make-data or convert a state file.");
+    throw new Error(`Could not load ${dataUrl("metadata.json")}. Run the converter first.`);
   }
   return await response.json();
 }
@@ -597,9 +744,9 @@ async function loadCoordinates() {
 
   if (!metadata?.coordinates) return;
 
-  const response = await fetch(`/data/${metadata.coordinates}`);
+  const response = await fetch(dataUrl(metadata.coordinates));
   if (!response.ok) {
-    console.warn(`Could not load /data/${metadata.coordinates}; falling back to uniform coordinates.`);
+    console.warn(`Could not load ${dataUrl(metadata.coordinates)}; falling back to uniform coordinates.`);
     return;
   }
 
@@ -610,10 +757,11 @@ async function loadCoordinates() {
 }
 
 async function loadFloat32(filename, expectedLength) {
-  if (dataCache.has(filename)) return dataCache.get(filename);
+  const cacheKey = `${dataBasePath}/${filename}`;
+  if (dataCache.has(cacheKey)) return dataCache.get(cacheKey);
 
-  const response = await fetch(`/data/${filename}`);
-  if (!response.ok) throw new Error(`Could not load /data/${filename}`);
+  const response = await fetch(dataUrl(filename));
+  if (!response.ok) throw new Error(`Could not load ${dataUrl(filename)}`);
 
   const buffer = await response.arrayBuffer();
   const arr = new Float32Array(buffer);
@@ -624,7 +772,7 @@ async function loadFloat32(filename, expectedLength) {
     );
   }
 
-  dataCache.set(filename, arr);
+  dataCache.set(cacheKey, arr);
   return arr;
 }
 
@@ -765,6 +913,58 @@ function nearestPhiIndex(phi) {
   }
 
   return best;
+}
+
+function sphericalFromCartesian(x, y, z) {
+  const r = Math.sqrt(x * x + y * y + z * z);
+  const theta = r > 0 ? Math.acos(clamp(z / r, -1.0, 1.0)) : 0.0;
+  const phi = normalizePhi(Math.atan2(y, x));
+  return { r, theta, phi };
+}
+
+function sampleVolumeNearest(field, x, y, z) {
+  const sph = sphericalFromCartesian(x, y, z);
+  if (sph.r < metadata.r_inner || sph.r > metadata.r_outer) return NaN;
+  const ir = nearestRadiusIndex(sph.r);
+  const it = nearestThetaIndex(sph.theta);
+  const ip = nearestPhiIndex(sph.phi);
+  return field[idx(ir, it, ip)];
+}
+
+function makeIsoMaterial(color, opacity) {
+  const material = new THREE.MeshPhongMaterial({
+    color: new THREE.Color(color),
+    side: THREE.DoubleSide,
+    shininess: 25,
+    transparent: true,
+  });
+  applyOpacityAndDepth(material, opacity);
+  return material;
+}
+
+function populateMarchingCubesField(effect, field) {
+  const res = effect.resolution;
+  const rOuter = metadata.r_outer;
+  const fieldArray = effect.field;
+  let ptr = 0;
+  for (let z = 0; z < res; z++) {
+    const zz = ((z / (res - 1)) - 0.5) * 2.0 * rOuter;
+    for (let y = 0; y < res; y++) {
+      const yy = ((y / (res - 1)) - 0.5) * 2.0 * rOuter;
+      for (let x = 0; x < res; x++, ptr++) {
+        const xx = ((x / (res - 1)) - 0.5) * 2.0 * rOuter;
+        const v = sampleVolumeNearest(field, xx, yy, zz);
+        fieldArray[ptr] = Number.isFinite(v) ? v : -1.0e30;
+      }
+    }
+  }
+}
+
+function prepareMarchingCubesMesh(effect, isoValue) {
+  effect.isolation = Number(isoValue);
+  effect.position.set(0.0, 0.0, 0.0);
+  effect.scale.set(metadata.r_outer * 2.0, metadata.r_outer * 2.0, metadata.r_outer * 2.0);
+  if (typeof effect.update === "function") effect.update();
 }
 
 function rawMinMaxFromSamples(field, sampleIndexGenerator) {
@@ -3018,6 +3218,35 @@ async function rebuildMeridian2() {
   setStatusSummary(`Meridian2:${params.meridian2Field}`);
 }
 
+async function rebuildIsosurfaces() {
+  disposeObject(isoPositiveMesh); isoPositiveMesh = null;
+  disposeObject(isoNegativeMesh); isoNegativeMesh = null;
+
+  if (!params.showIsosurfaces) return;
+  if (!["ur", "ut", "up"].includes(params.isoField)) return;
+
+  const field = await loadField(params.isoField);
+  const resolution = Math.max(16, Math.min(96, Math.round(Number(params.isoResolution))));
+
+  if (params.showIsoPositive) {
+    isoPositiveMesh = new MarchingCubes(resolution, makeIsoMaterial(params.isoPositiveColor, params.isoOpacity), false, false);
+    populateMarchingCubesField(isoPositiveMesh, field);
+    prepareMarchingCubesMesh(isoPositiveMesh, Number(params.isoPositiveValue));
+    isoPositiveMesh.visible = params.showIsosurfaces;
+    scene.add(isoPositiveMesh);
+  }
+
+  if (params.showIsoNegative) {
+    isoNegativeMesh = new MarchingCubes(resolution, makeIsoMaterial(params.isoNegativeColor, params.isoOpacity), false, false);
+    populateMarchingCubesField(isoNegativeMesh, field);
+    prepareMarchingCubesMesh(isoNegativeMesh, Number(params.isoNegativeValue));
+    isoNegativeMesh.visible = params.showIsosurfaces;
+    scene.add(isoNegativeMesh);
+  }
+
+  setStatusSummary(`Isosurfaces:${params.isoField}`);
+}
+
 async function rebuildAllMeshes() {
   setStatus("Loading selected fields...");
   await rebuildCMB();
@@ -3026,6 +3255,7 @@ async function rebuildAllMeshes() {
   await rebuildEquator2();
   await rebuildMeridian();
   await rebuildMeridian2();
+  await rebuildIsosurfaces();
   updateVisibility();
   setStatusSummary();
 }
@@ -3037,6 +3267,8 @@ function updateVisibility() {
   if (equator2Mesh) equator2Mesh.visible = params.showEquator2;
   if (meridianMesh) meridianMesh.visible = params.showMeridian;
   if (meridian2Mesh) meridian2Mesh.visible = params.showMeridian2;
+  if (isoPositiveMesh) isoPositiveMesh.visible = params.showIsosurfaces && params.showIsoPositive;
+  if (isoNegativeMesh) isoNegativeMesh.visible = params.showIsosurfaces && params.showIsoNegative;
   const fillerActive = params.showEarthSurface && params.showSliceGapFiller;
   if (equatorFillerMesh) equatorFillerMesh.visible = fillerActive && params.showEquator;
   if (equator2FillerMesh) equator2FillerMesh.visible = fillerActive && params.showEquator2;
@@ -3072,6 +3304,8 @@ function updateOpacities() {
   if (equator2Mesh) applyOpacityAndDepth(equator2Mesh.material, params.equator2Opacity);
   if (meridianMesh) applyOpacityAndDepth(meridianMesh.material, params.meridianOpacity);
   if (meridian2Mesh) applyOpacityAndDepth(meridian2Mesh.material, params.meridian2Opacity);
+  if (isoPositiveMesh) applyOpacityAndDepth(isoPositiveMesh.material, params.isoOpacity);
+  if (isoNegativeMesh) applyOpacityAndDepth(isoNegativeMesh.material, params.isoOpacity);
   if (equatorFillerMesh) applyOpacityAndDepth(equatorFillerMesh.material, params.sliceGapFillerOpacity);
   if (equator2FillerMesh) applyOpacityAndDepth(equator2FillerMesh.material, params.sliceGapFillerOpacity);
   if (meridianFillerMesh) applyOpacityAndDepth(meridianFillerMesh.material, params.sliceGapFillerOpacity);
@@ -3081,18 +3315,19 @@ function updateOpacities() {
 async function fetchFieldLineFile(filename) {
   if (!filename) return [];
 
-  if (fieldLineDataCache.has(filename)) {
-    return fieldLineDataCache.get(filename);
+  const cacheKey = `${dataBasePath}/${filename}`;
+  if (fieldLineDataCache.has(cacheKey)) {
+    return fieldLineDataCache.get(cacheKey);
   }
 
-  const response = await fetch(`/data/${filename}`);
+  const response = await fetch(dataUrl(filename));
   if (!response.ok) {
     console.warn(`Could not load field lines: ${filename}`);
     return [];
   }
 
   const lines = await response.json();
-  fieldLineDataCache.set(filename, lines);
+  fieldLineDataCache.set(cacheKey, lines);
   return lines;
 }
 
@@ -3182,8 +3417,7 @@ function makeFieldLineGroup(lines, mode) {
       const p = line.points[j];
       positions.push(p[0], p[1], p[2]);
       const rawStrength = strengths ? Number(strengths[j]) : NaN;
-      const sval = Number.isFinite(rawStrength) ? rawStrength : 0.5 * (vmin + vmax);
-      const c = getFieldLineVertexColor(sval, line.polarity ?? 1, vmin, vmax);
+      const c = getFieldLineVertexColor(rawStrength, line.polarity ?? 1, vmin, vmax);
       colors.push(c.r, c.g, c.b);
     }
 
@@ -3396,10 +3630,18 @@ async function saveViewStateCode() {
 
 function buildGui() {
   if (guiRoot) guiRoot.destroy();
+  sequenceControllers.length = 0;
   const gui = new GUI({ title: "Controls" });
   guiRoot = gui;
 
   gui.add(params, "resetCamera").name("Reset camera view");
+
+  const sequenceFolder = gui.addFolder("Sequence playback");
+  sequenceFolder.add(params, "reloadSequence").name("Reload sequence.json");
+  sequenceControllers.push(sequenceFolder.add(params, "sequenceFrame", 0, Math.max(0, (sequenceIndex?.frames?.length || 1) - 1), 1).name("Frame").onChange(loadFrameByIndex));
+  sequenceFolder.add(params, "sequenceFps", 0.5, 30, 0.5).name("FPS").onChange(() => { if (sequenceTimer) playSequence(); });
+  sequenceFolder.add(params, "playSequence").name("Play");
+  sequenceFolder.add(params, "pauseSequence").name("Pause");
 
   const stateFolder = gui.addFolder("View state");
   stateFolder.add(params, "copyViewStateCode").name("Copy code");
@@ -3465,7 +3707,8 @@ function buildGui() {
     lineFolder.add(params, "lineStride", 1, 10, 1).name("Line stride").onChange(loadFieldLines);
     lineFolder.add(params, "lineColourMode", { Strength: "strength", Polarity: "polarity" }).name("Colour by").onChange(loadFieldLines);
     lineFolder.add(params, "lineColormap", colourMapNames).name("Colour map").onChange(loadFieldLines);
-    lineFolder.add(params, "lineScale", ["minmax", "manual"]).name("Scale").onChange(loadFieldLines);
+    lineFolder.add(params, "lineValueTransform", { Linear: "linear", "log10(|B|)": "log10" }).name("Value scale").onChange(loadFieldLines);
+    lineFolder.add(params, "lineScale", ["minmax", "manual"]).name("Range").onChange(loadFieldLines);
     lineFolder.add(params, "lineMin").name("Manual min").onChange(loadFieldLines);
     lineFolder.add(params, "lineMax").name("Manual max").onChange(loadFieldLines);
     lineFolder.add(params, "lineWidthPx", 1, 12, 0.25).name("Thickness px").onChange(updateFieldLineVisuals);
@@ -3473,6 +3716,18 @@ function buildGui() {
   } else {
     params.showFieldLines = false;
   }
+
+  const isoFolder = gui.addFolder("Velocity isosurfaces");
+  isoFolder.add(params, "showIsosurfaces").name("Show").onChange(rebuildIsosurfaces);
+  isoFolder.add(params, "isoField", { ur: "ur", utheta: "ut", uphi: "up" }).name("Field").onChange(rebuildIsosurfaces);
+  isoFolder.add(params, "isoResolution", 16, 80, 2).name("Resolution").onChange(rebuildIsosurfaces);
+  isoFolder.add(params, "showIsoPositive").name("Show positive").onChange(rebuildIsosurfaces);
+  isoFolder.add(params, "isoPositiveValue").name("Positive value").onChange(rebuildIsosurfaces);
+  isoFolder.addColor(params, "isoPositiveColor").name("Positive color").onChange(() => { if (isoPositiveMesh) isoPositiveMesh.material.color.set(params.isoPositiveColor); });
+  isoFolder.add(params, "showIsoNegative").name("Show negative").onChange(rebuildIsosurfaces);
+  isoFolder.add(params, "isoNegativeValue").name("Negative value").onChange(rebuildIsosurfaces);
+  isoFolder.addColor(params, "isoNegativeColor").name("Negative color").onChange(() => { if (isoNegativeMesh) isoNegativeMesh.material.color.set(params.isoNegativeColor); });
+  isoFolder.add(params, "isoOpacity", 0.05, 1.0, 0.01).name("Opacity").onChange(updateOpacities);
 
   const earthFolder = gui.addFolder("Earth surface");
   earthFolder.add(params, "showEarthSurface").name("Show").onChange(updateEarthSurface);
@@ -3963,6 +4218,7 @@ async function init() {
     setStatus("Loading metadata...");
     metadata = await loadMetadata();
     await loadCoordinates();
+    await loadSequenceIndex(true);
 
     applyDefaultFields();
     syncCameraParamsFromCamera(false);
