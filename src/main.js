@@ -205,9 +205,13 @@ const params = {
   sequenceFrame: 0,
   sequenceFps: 4,
   sequencePlaying: false,
+  sequenceMaxCachedFrames: 10,
+  sequenceCacheLimitMB: 1500,
   playSequence: () => playSequence(),
   pauseSequence: () => pauseSequence(),
   reloadSequence: () => loadSequenceIndex(true),
+  preloadSequenceFrames: () => preloadSequenceFrames(),
+  clearSequenceCache: () => clearLoadedDataCaches(true),
 
   copyViewStateCode: () => copyViewStateCode(),
   showViewStateCode: () => showViewStateCode(),
@@ -241,10 +245,15 @@ const EARTH_TEXTURE_URL = "/assets/earth_blue_marble.jpg";
 const EARTH_TEXTURE_ATTRIBUTION = "Earth texture: local file public/assets/earth_blue_marble.jpg."; 
 
 const dataCache = new Map();
+const dataCacheMeta = new Map();
+const jsonCache = new Map();
+let dataCacheBytes = 0;
+let dataCacheCounter = 0;
 let guiRoot = null;
 let dataBasePath = "/data";
 let sequenceIndex = null;
 let sequenceTimer = null;
+let sequenceFrameLoading = false;
 const sequenceControllers = [];
 
 const videoState = {
@@ -637,19 +646,50 @@ async function updateEarthSurface() {
 }
 
 
-function dataUrl(path) {
-  const cleanBase = String(dataBasePath || "/data").replace(/\/+$/, "");
+function dataUrlForBase(basePath, path) {
+  const cleanBase = String(basePath || "/data").replace(/\/+$/, "");
   const cleanPath = String(path || "").replace(/^\/+/, "");
   return `${cleanBase}/${cleanPath}`;
 }
 
-function clearLoadedDataCaches() {
+function dataUrl(path) {
+  return dataUrlForBase(dataBasePath, path);
+}
+
+function formatBytes(bytes) {
+  const b = Number(bytes) || 0;
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 ** 2) return `${(b / 1024).toFixed(1)} kB`;
+  if (b < 1024 ** 3) return `${(b / 1024 ** 2).toFixed(1)} MB`;
+  return `${(b / 1024 ** 3).toFixed(2)} GB`;
+}
+
+function enforceDataCacheLimit() {
+  const limitBytes = Math.max(32, Number(params.sequenceCacheLimitMB) || 1500) * 1024 * 1024;
+  if (dataCacheBytes <= limitBytes) return;
+
+  const entries = [...dataCacheMeta.entries()].sort((a, b) => a[1].last - b[1].last);
+  for (const [key, info] of entries) {
+    if (dataCacheBytes <= limitBytes) break;
+    dataCache.delete(key);
+    dataCacheMeta.delete(key);
+    dataCacheBytes -= info.bytes || 0;
+  }
+}
+
+function clearLoadedDataCaches(showMessage = false) {
   dataCache.clear();
+  dataCacheMeta.clear();
+  jsonCache.clear();
   fieldLineDataCache.clear();
+  dataCacheBytes = 0;
+  if (showMessage) setStatus("Sequence/data cache cleared.");
 }
 
 
 async function fetchJsonStrict(url, label) {
+  if (jsonCache.has(url)) return jsonCache.get(url);
+
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`${label} not found at ${url} (HTTP ${response.status}).`);
@@ -663,7 +703,9 @@ async function fetchJsonStrict(url, label) {
     );
   }
   try {
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    jsonCache.set(url, parsed);
+    return parsed;
   } catch (err) {
     throw new Error(`${label} at ${url} is not valid JSON: ${err.message}`);
   }
@@ -710,37 +752,116 @@ function refreshSequenceControllers() {
   for (const controller of sequenceControllers) controller.updateDisplay();
 }
 
-async function loadFrameByIndex(index) {
+
+function getPreloadFieldRequests(meta) {
+  const requests = new Map();
+  const nr = Number(meta.nr);
+  const nt = Number(meta.ntheta);
+  const np = Number(meta.nphi);
+  const volumeLength = nr * nt * np;
+  const surfaceLength = nt * np;
+
+  function addVolume(fieldName) {
+    if (!fieldName || !meta.fields?.[fieldName]) return;
+    requests.set(meta.fields[fieldName], volumeLength);
+  }
+
+  function addCmb(fieldName) {
+    if (!fieldName) return;
+    const surfaceInfo = meta.surface_fields?.[fieldName];
+    if (surfaceInfo?.surface === "cmb" && surfaceInfo.file) {
+      requests.set(surfaceInfo.file, surfaceLength);
+      return;
+    }
+    addVolume(fieldName);
+  }
+
+  if (params.showCMB) addCmb(params.cmbField);
+  if (params.showICB) addVolume(params.icbField);
+  if (params.showEquator) addVolume(params.equatorField);
+  if (params.showEquator2) addVolume(params.equator2Field);
+  if (params.showMeridian) addVolume(params.meridianField);
+  if (params.showMeridian2) addVolume(params.meridian2Field);
+  if (params.showIsosurfaces) addVolume(params.isoField);
+
+  return [...requests.entries()].map(([filename, expectedLength]) => ({ filename, expectedLength }));
+}
+
+async function preloadSequenceFrames() {
   if (!sequenceIndex || !Array.isArray(sequenceIndex.frames) || sequenceIndex.frames.length === 0) {
     await loadSequenceIndex(false);
   }
   if (!sequenceIndex || !Array.isArray(sequenceIndex.frames) || sequenceIndex.frames.length === 0) return;
 
   const n = sequenceIndex.frames.length;
-  const i = clamp(Math.round(index), 0, n - 1);
-  params.sequenceFrame = i;
-  refreshSequenceControllers();
+  const start = clamp(Math.round(params.sequenceFrame), 0, n - 1);
+  const maxFrames = Math.max(1, Math.min(n, Math.round(Number(params.sequenceMaxCachedFrames) || 10)));
 
-  const frame = sequenceIndex.frames[i];
-  dataBasePath = `/data/${normaliseSequenceFramePath(frame.path)}`;
-  clearLoadedDataCaches();
+  setStatus(`Preloading ${maxFrames} sequence frames...`);
 
-  metadata = await loadMetadata();
-  await loadCoordinates();
+  let loadedFiles = 0;
+  for (let k = 0; k < maxFrames; k++) {
+    const i = (start + k) % n;
+    const frame = sequenceIndex.frames[i];
+    const basePath = `/data/${normaliseSequenceFramePath(frame.path)}`;
+    const meta = await loadMetadataForBase(basePath);
+    await loadCoordinatesForBase(basePath, meta);
 
-  // Keep the current selected fields when available; otherwise fall back safely.
-  for (const key of ["cmbField", "icbField", "equatorField", "equator2Field", "meridianField", "meridian2Field"]) {
-    if (!validFieldForState(key, params[key])) {
-      applyDefaultFields();
-      break;
+    const requests = getPreloadFieldRequests(meta);
+    for (const req of requests) {
+      await loadFloat32ForBase(basePath, req.filename, req.expectedLength);
+      loadedFiles++;
     }
+
+    refreshSequenceControllers();
+    setStatus(
+      `Preloaded ${k + 1}/${maxFrames} frames, ${loadedFiles} arrays; cache=${formatBytes(dataCacheBytes)}.`
+    );
+
+    // Give the browser one frame to keep the UI responsive during preloading.
+    await new Promise((resolve) => requestAnimationFrame(resolve));
   }
 
-  await rebuildAllMeshes();
-  await loadFieldLines();
-  await updateEarthSurface();
-  updateVisibility();
-  setStatus(`Frame ${i + 1}/${n}: ${frame.label || frame.state_number || i}`);
+  setStatus(`Preload complete: cache=${formatBytes(dataCacheBytes)}.`);
+}
+
+async function loadFrameByIndex(index) {
+  if (sequenceFrameLoading) return;
+  sequenceFrameLoading = true;
+
+  try {
+    if (!sequenceIndex || !Array.isArray(sequenceIndex.frames) || sequenceIndex.frames.length === 0) {
+      await loadSequenceIndex(false);
+    }
+    if (!sequenceIndex || !Array.isArray(sequenceIndex.frames) || sequenceIndex.frames.length === 0) return;
+
+    const n = sequenceIndex.frames.length;
+    const i = clamp(Math.round(index), 0, n - 1);
+    params.sequenceFrame = i;
+    refreshSequenceControllers();
+
+    const frame = sequenceIndex.frames[i];
+    dataBasePath = `/data/${normaliseSequenceFramePath(frame.path)}`;
+
+    metadata = await loadMetadata();
+    await loadCoordinates();
+
+    // Keep the current selected fields when available; otherwise fall back safely.
+    for (const key of ["cmbField", "icbField", "equatorField", "equator2Field", "meridianField", "meridian2Field"]) {
+      if (!validFieldForState(key, params[key])) {
+        applyDefaultFields();
+        break;
+      }
+    }
+
+    await rebuildAllMeshes();
+    await loadFieldLines();
+    await updateEarthSurface();
+    updateVisibility();
+    setStatus(`Frame ${i + 1}/${n}: ${frame.label || frame.state_number || i}; cache=${formatBytes(dataCacheBytes)}`);
+  } finally {
+    sequenceFrameLoading = false;
+  }
 }
 
 async function playSequence() {
@@ -751,6 +872,7 @@ async function playSequence() {
   params.sequencePlaying = true;
   const delayMs = 1000 / Math.max(0.1, Number(params.sequenceFps));
   sequenceTimer = window.setInterval(async () => {
+    if (sequenceFrameLoading) return;
     const n = sequenceIndex.frames.length;
     const next = (Math.round(params.sequenceFrame) + 1) % n;
     await loadFrameByIndex(next);
@@ -766,33 +888,53 @@ function pauseSequence() {
   params.sequencePlaying = false;
 }
 
-async function loadMetadata() {
-  return await fetchJsonStrict(dataUrl("metadata.json"), "metadata.json");
+async function loadMetadataForBase(basePath) {
+  return await fetchJsonStrict(dataUrlForBase(basePath, "metadata.json"), "metadata.json");
 }
 
-async function loadCoordinates() {
-  coords = { r: null, theta: null, phi: null };
+async function loadMetadata() {
+  return await loadMetadataForBase(dataBasePath);
+}
 
-  if (!metadata?.coordinates) return;
+async function loadCoordinatesForBase(basePath, meta) {
+  const empty = { r: null, theta: null, phi: null };
+  if (!meta?.coordinates) return empty;
 
-  const response = await fetch(dataUrl(metadata.coordinates));
+  const url = dataUrlForBase(basePath, meta.coordinates);
+  if (jsonCache.has(url)) return jsonCache.get(url);
+
+  const response = await fetch(url);
   if (!response.ok) {
-    console.warn(`Could not load ${dataUrl(metadata.coordinates)}; falling back to uniform coordinates.`);
-    return;
+    console.warn(`Could not load ${url}; falling back to uniform coordinates.`);
+    return empty;
   }
 
   const raw = await response.json();
-  coords.r = Array.isArray(raw.r) ? raw.r : null;
-  coords.theta = Array.isArray(raw.theta) ? raw.theta : null;
-  coords.phi = Array.isArray(raw.phi) ? raw.phi : null;
+  const parsed = {
+    r: Array.isArray(raw.r) ? raw.r : null,
+    theta: Array.isArray(raw.theta) ? raw.theta : null,
+    phi: Array.isArray(raw.phi) ? raw.phi : null,
+  };
+  jsonCache.set(url, parsed);
+  return parsed;
 }
 
-async function loadFloat32(filename, expectedLength) {
-  const cacheKey = `${dataBasePath}/${filename}`;
-  if (dataCache.has(cacheKey)) return dataCache.get(cacheKey);
+async function loadCoordinates() {
+  coords = await loadCoordinatesForBase(dataBasePath, metadata);
+}
 
-  const response = await fetch(dataUrl(filename));
-  if (!response.ok) throw new Error(`Could not load ${dataUrl(filename)}`);
+async function loadFloat32ForBase(basePath, filename, expectedLength) {
+  const cleanBase = String(basePath || "/data").replace(/\/+$/, "");
+  const cacheKey = `${cleanBase}/${filename}`;
+  if (dataCache.has(cacheKey)) {
+    const info = dataCacheMeta.get(cacheKey);
+    if (info) info.last = ++dataCacheCounter;
+    return dataCache.get(cacheKey);
+  }
+
+  const url = dataUrlForBase(cleanBase, filename);
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Could not load ${url}`);
 
   const buffer = await response.arrayBuffer();
   const arr = new Float32Array(buffer);
@@ -804,7 +946,14 @@ async function loadFloat32(filename, expectedLength) {
   }
 
   dataCache.set(cacheKey, arr);
+  dataCacheMeta.set(cacheKey, { bytes: arr.byteLength, last: ++dataCacheCounter });
+  dataCacheBytes += arr.byteLength;
+  enforceDataCacheLimit();
   return arr;
+}
+
+async function loadFloat32(filename, expectedLength) {
+  return await loadFloat32ForBase(dataBasePath, filename, expectedLength);
 }
 
 async function loadField(fieldName) {
@@ -3814,6 +3963,10 @@ function buildGui() {
   sequenceFolder.add(params, "reloadSequence").name("Reload sequence.json");
   sequenceControllers.push(sequenceFolder.add(params, "sequenceFrame", 0, Math.max(0, (sequenceIndex?.frames?.length || 1) - 1), 1).name("Frame").onChange(loadFrameByIndex));
   sequenceFolder.add(params, "sequenceFps", 0.5, 30, 0.5).name("FPS").onChange(() => { if (sequenceTimer) playSequence(); });
+  sequenceFolder.add(params, "sequenceMaxCachedFrames", 1, 20, 1).name("Preload frames");
+  sequenceFolder.add(params, "sequenceCacheLimitMB", 128, 8192, 64).name("Cache limit MB").onChange(enforceDataCacheLimit);
+  sequenceFolder.add(params, "preloadSequenceFrames").name("Preload current view");
+  sequenceFolder.add(params, "clearSequenceCache").name("Clear cache");
   sequenceFolder.add(params, "playSequence").name("Play");
   sequenceFolder.add(params, "pauseSequence").name("Pause");
 
@@ -4396,7 +4549,6 @@ async function init() {
     if (sequenceIndex?.frames?.length > 0) {
       const frame = sequenceIndex.frames[clamp(Math.round(params.sequenceFrame), 0, sequenceIndex.frames.length - 1)];
       dataBasePath = `/data/${normaliseSequenceFramePath(frame.path)}`;
-      clearLoadedDataCaches();
     }
 
     metadata = await loadMetadata();
