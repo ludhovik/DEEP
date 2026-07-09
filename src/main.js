@@ -648,15 +648,49 @@ function clearLoadedDataCaches() {
   fieldLineDataCache.clear();
 }
 
+
+async function fetchJsonStrict(url, label) {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`${label} not found at ${url} (HTTP ${response.status}).`);
+  }
+  const raw = await response.text();
+  const trimmed = raw.trim();
+  if (trimmed.startsWith("<!doctype") || trimmed.startsWith("<html") || trimmed.startsWith("<")) {
+    throw new Error(
+      `${label} at ${url} returned HTML instead of JSON. ` +
+      `Check that the file exists under public/data and that the path in sequence.json is not prefixed by public/data.`
+    );
+  }
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`${label} at ${url} is not valid JSON: ${err.message}`);
+  }
+}
+
+function normaliseSequenceFramePath(path) {
+  let p = String(path || "").trim().replace(/\\/g, "/");
+  p = p.replace(/^\/+/, "");
+  p = p.replace(/^public\/data\//, "");
+  p = p.replace(/^data\//, "");
+  p = p.replace(/^\/?data\//, "");
+  p = p.replace(/^public\//, "");
+  return p;
+}
+
 async function loadSequenceIndex(silent = false) {
   try {
-    const response = await fetch("/data/sequence.json");
-    if (!response.ok) {
-      sequenceIndex = null;
-      if (!silent) setStatus("No /data/sequence.json found.");
-      return null;
+    sequenceIndex = await fetchJsonStrict("/data/sequence.json", "sequence.json");
+
+    if (Array.isArray(sequenceIndex.frames)) {
+      sequenceIndex.frames = sequenceIndex.frames.map((frame) => ({
+        ...frame,
+        path: normaliseSequenceFramePath(frame.path),
+        metadata: normaliseSequenceFramePath(frame.metadata || `${frame.path}/metadata.json`),
+      }));
     }
-    sequenceIndex = await response.json();
+
     const n = Array.isArray(sequenceIndex.frames) ? sequenceIndex.frames.length : 0;
     if (n > 0) {
       params.sequenceFrame = clamp(Math.round(params.sequenceFrame), 0, n - 1);
@@ -688,7 +722,7 @@ async function loadFrameByIndex(index) {
   refreshSequenceControllers();
 
   const frame = sequenceIndex.frames[i];
-  dataBasePath = `/data/${String(frame.path).replace(/^\/+/, "")}`;
+  dataBasePath = `/data/${normaliseSequenceFramePath(frame.path)}`;
   clearLoadedDataCaches();
 
   metadata = await loadMetadata();
@@ -733,11 +767,7 @@ function pauseSequence() {
 }
 
 async function loadMetadata() {
-  const response = await fetch(dataUrl("metadata.json"));
-  if (!response.ok) {
-    throw new Error(`Could not load ${dataUrl("metadata.json")}. Run the converter first.`);
-  }
-  return await response.json();
+  return await fetchJsonStrict(dataUrl("metadata.json"), "metadata.json");
 }
 
 async function loadCoordinates() {
@@ -4361,9 +4391,16 @@ function animate(now = performance.now()) {
 async function init() {
   try {
     setStatus("Loading metadata...");
+    await loadSequenceIndex(true);
+
+    if (sequenceIndex?.frames?.length > 0) {
+      const frame = sequenceIndex.frames[clamp(Math.round(params.sequenceFrame), 0, sequenceIndex.frames.length - 1)];
+      dataBasePath = `/data/${normaliseSequenceFramePath(frame.path)}`;
+      clearLoadedDataCaches();
+    }
+
     metadata = await loadMetadata();
     await loadCoordinates();
-    await loadSequenceIndex(true);
 
     applyDefaultFields();
     syncCameraParamsFromCamera(false);
