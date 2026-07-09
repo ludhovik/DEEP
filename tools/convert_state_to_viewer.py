@@ -34,6 +34,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -146,9 +147,45 @@ def remove_global_mean(arr: np.ndarray) -> np.ndarray:
     return arr - np.mean(arr, axis=(0, 1, 2))
 
 
-def phi_average_volume(arr: np.ndarray) -> np.ndarray:
-    """Phi-average a 3-D field and broadcast it back to full (r,theta,phi) shape."""
-    mean2d = np.mean(arr, axis=2, keepdims=True)
+def phi_average_volume(arr: np.ndarray, name: str = "field") -> np.ndarray:
+    """
+    Phi-average a 3-D field and broadcast it back to full (r,theta,phi) shape.
+
+    This intentionally ignores non-finite values and extreme floating-point
+    outliers on each longitude ring. A single corrupted value in phi should not
+    contaminate the whole m=0 diagnostic.
+    """
+    arr = np.asarray(arr, dtype=np.float64)
+    finite = np.isfinite(arr)
+
+    if not np.any(finite):
+        print(f"WARNING: {name}_phiavg has no finite input values; writing NaNs.")
+        mean2d = np.full(arr.shape[:2] + (1,), np.nan, dtype=np.float64)
+        return np.broadcast_to(mean2d, arr.shape).copy()
+
+    # Global sanity limit removes obvious uninitialised/sentinel values while
+    # keeping the real dynamic range. This is deliberately permissive.
+    abs_good = np.abs(arr[finite])
+    global_med = float(np.nanmedian(abs_good))
+    global_p99 = float(np.nanpercentile(abs_good, 99.9))
+    global_limit = min(max(1.0e8 * max(global_med, 1.0e-300), 100.0 * global_p99), 1.0e20)
+
+    good = finite & (np.abs(arr) <= global_limit)
+    counts = np.sum(good, axis=2, keepdims=True)
+    sums = np.sum(np.where(good, arr, 0.0), axis=2, keepdims=True)
+
+    with np.errstate(invalid="ignore", divide="ignore"):
+        mean2d = sums / counts
+
+    mean2d[counts == 0] = np.nan
+
+    rejected = int(arr.size - np.sum(good))
+    if rejected > 0:
+        print(
+            f"WARNING: {name}_phiavg ignored {rejected} non-finite/extreme values "
+            f"(limit={global_limit:.3e})."
+        )
+
     return np.broadcast_to(mean2d, arr.shape).copy()
 
 
@@ -1404,9 +1441,9 @@ def main() -> None:
     grad_rC_mean_r = np.mean(grad_rC_3d, axis=(1, 2))
     grad_rComp_mean_r = np.mean(grad_rComp_3d, axis=(1, 2))
 
-    Ur_phiavg = phi_average_volume(Ur)
-    Ut_phiavg = phi_average_volume(Ut)
-    Up_phiavg = phi_average_volume(Up)
+    Ur_phiavg = phi_average_volume(Ur, "ur")
+    Ut_phiavg = phi_average_volume(Ut, "ut")
+    Up_phiavg = phi_average_volume(Up, "up")
 
     fields: dict[str, np.ndarray] = {
         "ur": Ur,
@@ -1427,9 +1464,9 @@ def main() -> None:
     }
 
     if has_magnetic_field:
-        Br_phiavg = phi_average_volume(Br)
-        Bt_phiavg = phi_average_volume(Bt)
-        Bp_phiavg = phi_average_volume(Bp)
+        Br_phiavg = phi_average_volume(Br, "Br")
+        Bt_phiavg = phi_average_volume(Bt, "Bt")
+        Bp_phiavg = phi_average_volume(Bp, "Bp")
         fields = {
             "Br": Br,
             "Bt": Bt,
