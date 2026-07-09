@@ -34,6 +34,7 @@ import json
 import math
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -66,6 +67,24 @@ def latest_state_file(folder: str, pattern: str = "state*.cdf.dat") -> str:
     if not files:
         raise FileNotFoundError(f"No files matching {pattern!r} in {folder!r}")
     return max(files, key=parse_state_number)
+
+
+
+def list_state_files(folder: str, pattern: str = "state*.cdf.dat") -> list[str]:
+    files = glob.glob(os.path.join(folder, pattern))
+    if not files:
+        raise FileNotFoundError(f"No files matching {pattern!r} in {folder!r}")
+    return sorted(files, key=parse_state_number)
+
+
+def choose_regular_seed_grid(total_seeds: int) -> tuple[int, int]:
+    """Choose an approximately regular theta/phi seed grid for about total_seeds points."""
+    total = max(1, int(total_seeds))
+    # For a spherical lon/lat grid, roughly twice as many longitudes as colatitudes
+    # gives a visually regular sampling. For 360 this gives 13 x 28 ~= 364.
+    ntheta = max(2, int(round(math.sqrt(total / 2.0))))
+    nphi = max(4, int(math.ceil(total / ntheta)))
+    return ntheta, nphi
 
 
 def add_modules_dir(modules_dir: str | None) -> None:
@@ -125,6 +144,12 @@ def as_r_theta_phi(arr: np.ndarray, nr: int, ntheta: int | None = None, nphi: in
 
 def remove_global_mean(arr: np.ndarray) -> np.ndarray:
     return arr - np.mean(arr, axis=(0, 1, 2))
+
+
+def phi_average_volume(arr: np.ndarray) -> np.ndarray:
+    """Phi-average a 3-D field and broadcast it back to full (r,theta,phi) shape."""
+    mean2d = np.mean(arr, axis=2, keepdims=True)
+    return np.broadcast_to(mean2d, arr.shape).copy()
 
 
 def json_number(x: Any) -> float | None:
@@ -1090,6 +1115,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    p.add_argument("--line-seeds", type=int, default=None, help="Approximate total number of regular CMB seed points for field lines, e.g. 360. Overrides --line-seed-theta/--line-seed-phi.")
     p.add_argument("--line-seed-theta", type=int, default=9, help="Number of CMB seed colatitudes for field lines.")
     p.add_argument("--line-seed-phi", type=int, default=18, help="Number of CMB seed longitudes for field lines.")
     p.add_argument("--line-max-steps", type=int, default=1000, help="Maximum RK4 steps for each field-line branch.")
@@ -1106,11 +1132,147 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Skip exporting 3-D scalar gradient fields. N2 and helicity are still computed.",
     )
 
+    p.add_argument("--sequence-first", type=int, default=None, help="First state number to convert in a multi-frame sequence.")
+    p.add_argument("--sequence-last", type=int, default=None, help="Last state number to convert in a multi-frame sequence.")
+    p.add_argument("--sequence-step", type=int, default=1, help="State-number interval for multi-frame conversion.")
+    p.add_argument("--sequence-subdir", default="frames", help="Subdirectory under --out where sequence frames are written.")
+    p.add_argument("--sequence-clear", action="store_true", help="Delete the existing sequence frame directory before converting.")
+
     return p
+
+
+
+def run_sequence_conversion(args: argparse.Namespace) -> None:
+    """Convert several state files into public/data/frames/stateXXXXX and write sequence.json."""
+    if not args.folder:
+        raise ValueError("--sequence-first/--sequence-last requires --folder.")
+
+    first = int(args.sequence_first)
+    last = int(args.sequence_last)
+    step = max(1, int(args.sequence_step))
+    if last < first:
+        raise ValueError("--sequence-last must be >= --sequence-first.")
+
+    files = list_state_files(args.folder, args.pattern)
+    selected: list[str] = []
+    wanted = set(range(first, last + 1, step))
+    for path in files:
+        n = parse_state_number(path)
+        if n in wanted:
+            selected.append(path)
+
+    if not selected:
+        raise FileNotFoundError(f"No state files found for requested sequence {first}:{step}:{last}")
+
+    outdir = Path(args.out)
+    frames_root = outdir / str(args.sequence_subdir)
+    if args.sequence_clear and frames_root.exists():
+        shutil.rmtree(frames_root)
+    frames_root.mkdir(parents=True, exist_ok=True)
+
+    script_path = Path(__file__).resolve()
+    frames = []
+
+    for state_path in selected:
+        state_number = parse_state_number(state_path)
+        frame_name = f"state{state_number:05d}"
+        frame_out = frames_root / frame_name
+        frame_out.mkdir(parents=True, exist_ok=True)
+
+        cmd = [
+            sys.executable,
+            str(script_path),
+            "--state", str(state_path),
+            "--out", str(frame_out),
+            "--alpha-map", str(args.alpha_map),
+            "--magnetic-tol", str(args.magnetic_tol),
+            "--field-line-mode", str(args.field_line_mode),
+            "--line-max-steps", str(args.line_max_steps),
+            "--external-nr", str(args.external_nr),
+            "--external-btheta-sign", str(args.external_btheta_sign),
+        ]
+
+        if args.modules_dir:
+            cmd += ["--modules-dir", str(args.modules_dir)]
+        if args.cmb_br_ltrunc is not None:
+            cmd += ["--cmb-br-ltrunc", str(args.cmb_br_ltrunc)]
+        if args.external_rmax is not None:
+            cmd += ["--external-rmax", str(args.external_rmax)]
+        if args.line_step_size is not None:
+            cmd += ["--line-step-size", str(args.line_step_size)]
+        if args.line_seeds is not None:
+            cmd += ["--line-seeds", str(args.line_seeds)]
+        else:
+            cmd += ["--line-seed-theta", str(args.line_seed_theta), "--line-seed-phi", str(args.line_seed_phi)]
+        if args.skip_field_lines:
+            cmd += ["--skip-field-lines"]
+        if not args.external_closed_only:
+            cmd += ["--no-external-closed-only"]
+        if args.no_gradients:
+            cmd += ["--no-gradients"]
+        if args.downsample_r != 1:
+            cmd += ["--downsample-r", str(args.downsample_r)]
+        if args.downsample_theta != 1:
+            cmd += ["--downsample-theta", str(args.downsample_theta)]
+        if args.downsample_phi != 1:
+            cmd += ["--downsample-phi", str(args.downsample_phi)]
+
+        print(f"\n=== Converting frame {frame_name}: {state_path} ===")
+        subprocess.run(cmd, check=True)
+
+        metadata_path = frame_out / "metadata.json"
+        t = None
+        if metadata_path.exists():
+            try:
+                with open(metadata_path, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                t = meta.get("time")
+            except Exception:
+                t = None
+
+        frames.append({
+            "state_number": state_number,
+            "time": t,
+            "path": f"{args.sequence_subdir}/{frame_name}",
+            "metadata": f"{args.sequence_subdir}/{frame_name}/metadata.json",
+            "label": frame_name,
+        })
+
+    sequence = {
+        "version": 1,
+        "frame_count": len(frames),
+        "first": first,
+        "last": last,
+        "step": step,
+        "frames": frames,
+    }
+
+    outdir.mkdir(parents=True, exist_ok=True)
+    with open(outdir / "sequence.json", "w", encoding="utf-8") as f:
+        json.dump(sequence, f, indent=2, allow_nan=False)
+
+    # Also copy the first frame to --out so the viewer can load normally before playback starts.
+    first_frame_dir = frames_root / frames[0]["label"]
+    for item in first_frame_dir.iterdir():
+        dst = outdir / item.name
+        if item.is_file():
+            shutil.copy2(item, dst)
+
+    print("\nDone.")
+    print(f"Sequence written to: {(outdir / 'sequence.json').resolve()}")
+    print(f"Frames written under: {frames_root.resolve()}")
+    print(f"Copied first frame to: {outdir.resolve()}")
+
 
 
 def main() -> None:
     args = build_arg_parser().parse_args()
+
+    if args.sequence_first is not None or args.sequence_last is not None:
+        if args.sequence_first is None or args.sequence_last is None:
+            raise ValueError("Both --sequence-first and --sequence-last are required for sequence conversion.")
+        run_sequence_conversion(args)
+        return
 
     add_modules_dir(args.modules_dir)
 
@@ -1138,6 +1300,11 @@ def main() -> None:
 
     print(f"State file: {path}")
     print(f"State number: {state_number}")
+
+    if args.line_seeds is not None:
+        args.line_seed_theta, args.line_seed_phi = choose_regular_seed_grid(args.line_seeds)
+        print(f"Regular field-line seed grid requested: ~{args.line_seeds} seeds -> "
+              f"{args.line_seed_theta} x {args.line_seed_phi} = {args.line_seed_theta * args.line_seed_phi}")
 
     # Parameter extraction from path. Defaults avoid hard failure if a token is absent.
     E = parse_float_from_path(path, "Ek", np.nan)
@@ -1237,11 +1404,18 @@ def main() -> None:
     grad_rC_mean_r = np.mean(grad_rC_3d, axis=(1, 2))
     grad_rComp_mean_r = np.mean(grad_rComp_3d, axis=(1, 2))
 
+    Ur_phiavg = phi_average_volume(Ur)
+    Ut_phiavg = phi_average_volume(Ut)
+    Up_phiavg = phi_average_volume(Up)
+
     fields: dict[str, np.ndarray] = {
         "ur": Ur,
         "ut": Ut,
         "up": Up,
         "Uabs": Uabs,
+        "ur_phiavg": Ur_phiavg,
+        "ut_phiavg": Ut_phiavg,
+        "up_phiavg": Up_phiavg,
         "helicity": helicity,
         "C": Cspat,
         "Comp": Compspat,
@@ -1253,11 +1427,17 @@ def main() -> None:
     }
 
     if has_magnetic_field:
+        Br_phiavg = phi_average_volume(Br)
+        Bt_phiavg = phi_average_volume(Bt)
+        Bp_phiavg = phi_average_volume(Bp)
         fields = {
             "Br": Br,
             "Bt": Bt,
             "Bp": Bp,
             "Babs": Babs,
+            "Br_phiavg": Br_phiavg,
+            "Bt_phiavg": Bt_phiavg,
+            "Bp_phiavg": Bp_phiavg,
             **fields,
         }
 
