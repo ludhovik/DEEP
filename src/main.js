@@ -3355,7 +3355,9 @@ async function rebuildIsosurfaces() {
   disposeObject(isoNegativeMesh); isoNegativeMesh = null;
 
   if (!params.showIsosurfaces) return;
-  if (!["ur", "ut", "up"].includes(params.isoField)) return;
+
+  const volumeFields = getVolumeFieldNames();
+  if (!volumeFields.includes(params.isoField)) return;
 
   const field = await loadField(params.isoField);
   let triCount = 0;
@@ -3859,9 +3861,10 @@ function buildGui() {
     params.showFieldLines = false;
   }
 
-  const isoFolder = gui.addFolder("Velocity isosurfaces");
+  const isoFolder = gui.addFolder("Isosurfaces");
+  if (!volumeFields.includes(params.isoField) && volumeFields.length > 0) params.isoField = volumeFields[0];
   isoFolder.add(params, "showIsosurfaces").name("Show").onChange(rebuildIsosurfaces);
-  isoFolder.add(params, "isoField", { ur: "ur", utheta: "ut", uphi: "up" }).name("Field").onChange(rebuildIsosurfaces);
+  isoFolder.add(params, "isoField", volumeFields).name("Field").onChange(rebuildIsosurfaces);
   isoFolder.add(params, "isoResolution", 16, 80, 2).name("Resolution").onChange(rebuildIsosurfaces);
   isoFolder.add(params, "showIsoPositive").name("Show positive").onChange(rebuildIsosurfaces);
   isoFolder.add(params, "isoPositiveValue").name("Positive value").onChange(rebuildIsosurfaces);
