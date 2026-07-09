@@ -236,8 +236,8 @@ let earthMesh = null;
 let earthTexture = null;
 const fieldLineDataCache = new Map();
 
-const EARTH_TEXTURE_URL = "https://upload.wikimedia.org/wikipedia/commons/thumb/9/91/Land_shallow_topo_2048.jpg/1280px-Land_shallow_topo_2048.jpg";
-const EARTH_TEXTURE_ATTRIBUTION = "Earth texture: NASA Blue Marble / Land shallow topo 2048, public domain, served from Wikimedia Commons.";
+const EARTH_TEXTURE_URL = "/assets/earth_blue_marble.jpg";
+const EARTH_TEXTURE_ATTRIBUTION = "Earth texture: local file public/assets/earth_blue_marble.jpg."; 
 
 const dataCache = new Map();
 let guiRoot = null;
