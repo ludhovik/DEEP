@@ -2,7 +2,6 @@ import "./style.css";
 
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { MarchingCubes } from "three/examples/jsm/objects/MarchingCubes.js";
 import { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
@@ -227,6 +226,8 @@ let equatorMesh = null;
 let equator2Mesh = null;
 let meridianMesh = null;
 let meridian2Mesh = null;
+let isoPositiveMesh = null;
+let isoNegativeMesh = null;
 let equatorFillerMesh = null;
 let equator2FillerMesh = null;
 let meridianFillerMesh = null;
@@ -942,29 +943,160 @@ function makeIsoMaterial(color, opacity) {
   return material;
 }
 
-function populateMarchingCubesField(effect, field) {
-  const res = effect.resolution;
-  const rOuter = metadata.r_outer;
-  const fieldArray = effect.field;
-  let ptr = 0;
-  for (let z = 0; z < res; z++) {
-    const zz = ((z / (res - 1)) - 0.5) * 2.0 * rOuter;
-    for (let y = 0; y < res; y++) {
-      const yy = ((y / (res - 1)) - 0.5) * 2.0 * rOuter;
-      for (let x = 0; x < res; x++, ptr++) {
-        const xx = ((x / (res - 1)) - 0.5) * 2.0 * rOuter;
-        const v = sampleVolumeNearest(field, xx, yy, zz);
-        fieldArray[ptr] = Number.isFinite(v) ? v : -1.0e30;
+function sphericalPositionArray(r, theta, phi) {
+  const st = Math.sin(theta);
+  return [
+    r * st * Math.cos(phi),
+    r * st * Math.sin(phi),
+    r * Math.cos(theta),
+  ];
+}
+
+function makeSampleIndices(n, maxCount, includeLast = true) {
+  const count = Math.max(2, Math.min(n, Math.round(maxCount)));
+  const out = [];
+  if (includeLast) {
+    for (let k = 0; k < count; k++) {
+      out.push(Math.round((k * (n - 1)) / Math.max(1, count - 1)));
+    }
+  } else {
+    for (let k = 0; k < count; k++) {
+      out.push(Math.floor((k * n) / count) % n);
+    }
+  }
+  return [...new Set(out)].sort((a, b) => a - b);
+}
+
+function interpolateIsoPoint(a, b, isoValue) {
+  const denom = b.v - a.v;
+  const q = Math.abs(denom) > 1.0e-30 ? clamp((isoValue - a.v) / denom, 0.0, 1.0) : 0.5;
+  return [
+    a.p[0] + q * (b.p[0] - a.p[0]),
+    a.p[1] + q * (b.p[1] - a.p[1]),
+    a.p[2] + q * (b.p[2] - a.p[2]),
+  ];
+}
+
+function pushTri(positions, p0, p1, p2) {
+  positions.push(
+    p0[0], p0[1], p0[2],
+    p1[0], p1[1], p1[2],
+    p2[0], p2[1], p2[2]
+  );
+}
+
+function polygoniseTetra(positions, tet, isoValue) {
+  const inside = tet.map((v) => Number.isFinite(v.v) && v.v >= isoValue);
+  const insideIdx = [];
+  const outsideIdx = [];
+  for (let i = 0; i < 4; i++) {
+    if (inside[i]) insideIdx.push(i);
+    else outsideIdx.push(i);
+  }
+
+  if (insideIdx.length === 0 || insideIdx.length === 4) return;
+
+  if (insideIdx.length === 1 || insideIdx.length === 3) {
+    const singleInside = insideIdx.length === 1;
+    const a = singleInside ? insideIdx[0] : outsideIdx[0];
+    const others = singleInside ? outsideIdx : insideIdx;
+
+    const p0 = interpolateIsoPoint(tet[a], tet[others[0]], isoValue);
+    const p1 = interpolateIsoPoint(tet[a], tet[others[1]], isoValue);
+    const p2 = interpolateIsoPoint(tet[a], tet[others[2]], isoValue);
+
+    if (singleInside) pushTri(positions, p0, p1, p2);
+    else pushTri(positions, p0, p2, p1);
+    return;
+  }
+
+  // Two inside, two outside: quadrilateral split into two triangles.
+  const a = insideIdx[0];
+  const b = insideIdx[1];
+  const c = outsideIdx[0];
+  const d = outsideIdx[1];
+
+  const pAC = interpolateIsoPoint(tet[a], tet[c], isoValue);
+  const pAD = interpolateIsoPoint(tet[a], tet[d], isoValue);
+  const pBC = interpolateIsoPoint(tet[b], tet[c], isoValue);
+  const pBD = interpolateIsoPoint(tet[b], tet[d], isoValue);
+
+  pushTri(positions, pAC, pBC, pAD);
+  pushTri(positions, pAD, pBC, pBD);
+}
+
+function makeSphericalGridIsosurfaceMesh(field, isoValue, color, opacity, requestedResolution) {
+  const nr = metadata.nr;
+  const nt = metadata.ntheta;
+  const np = metadata.nphi;
+
+  const res = Math.max(8, Math.min(96, Math.round(Number(requestedResolution))));
+  const rIdx = makeSampleIndices(nr, res, true);
+  const tIdx = makeSampleIndices(nt, res, true);
+  const pIdx = makeSampleIndices(np, 2 * res, false);
+
+  const positions = [];
+  const tetrahedra = [
+    [0, 5, 1, 6],
+    [0, 1, 2, 6],
+    [0, 2, 3, 6],
+    [0, 3, 7, 6],
+    [0, 7, 4, 6],
+    [0, 4, 5, 6],
+  ];
+
+  function vertex(ir, it, ip, phiShift = 0.0) {
+    const r = radiusAtIndex(ir);
+    const theta = thetaAtIndex(it);
+    const phi = phiAtIndex(ip) + phiShift;
+    const v = field[idx(ir, it, ip)];
+    return { p: sphericalPositionArray(r, theta, phi), v };
+  }
+
+  for (let ar = 0; ar < rIdx.length - 1; ar++) {
+    const ir0 = rIdx[ar];
+    const ir1 = rIdx[ar + 1];
+
+    for (let at = 0; at < tIdx.length - 1; at++) {
+      const it0 = tIdx[at];
+      const it1 = tIdx[at + 1];
+
+      for (let ap = 0; ap < pIdx.length; ap++) {
+        const ip0 = pIdx[ap];
+        const ip1 = pIdx[(ap + 1) % pIdx.length];
+        const wraps = ip1 <= ip0;
+        const phiShift1 = wraps ? 2.0 * Math.PI : 0.0;
+
+        const cube = [
+          vertex(ir0, it0, ip0, 0.0),
+          vertex(ir1, it0, ip0, 0.0),
+          vertex(ir1, it1, ip0, 0.0),
+          vertex(ir0, it1, ip0, 0.0),
+          vertex(ir0, it0, ip1, phiShift1),
+          vertex(ir1, it0, ip1, phiShift1),
+          vertex(ir1, it1, ip1, phiShift1),
+          vertex(ir0, it1, ip1, phiShift1),
+        ];
+
+        for (const tet of tetrahedra) {
+          polygoniseTetra(
+            positions,
+            [cube[tet[0]], cube[tet[1]], cube[tet[2]], cube[tet[3]]],
+            Number(isoValue)
+          );
+        }
       }
     }
   }
-}
 
-function prepareMarchingCubesMesh(effect, isoValue) {
-  effect.isolation = Number(isoValue);
-  effect.position.set(0.0, 0.0, 0.0);
-  effect.scale.set(metadata.r_outer * 2.0, metadata.r_outer * 2.0, metadata.r_outer * 2.0);
-  if (typeof effect.update === "function") effect.update();
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.computeVertexNormals();
+
+  const mesh = new THREE.Mesh(geometry, makeIsoMaterial(color, opacity));
+  mesh.name = "velocity-isosurface";
+  mesh.userData.triangleCount = positions.length / 9;
+  return mesh;
 }
 
 function rawMinMaxFromSamples(field, sampleIndexGenerator) {
@@ -3226,25 +3358,35 @@ async function rebuildIsosurfaces() {
   if (!["ur", "ut", "up"].includes(params.isoField)) return;
 
   const field = await loadField(params.isoField);
-  const resolution = Math.max(16, Math.min(96, Math.round(Number(params.isoResolution))));
+  let triCount = 0;
 
   if (params.showIsoPositive) {
-    isoPositiveMesh = new MarchingCubes(resolution, makeIsoMaterial(params.isoPositiveColor, params.isoOpacity), false, false);
-    populateMarchingCubesField(isoPositiveMesh, field);
-    prepareMarchingCubesMesh(isoPositiveMesh, Number(params.isoPositiveValue));
+    isoPositiveMesh = makeSphericalGridIsosurfaceMesh(
+      field,
+      Number(params.isoPositiveValue),
+      params.isoPositiveColor,
+      params.isoOpacity,
+      params.isoResolution
+    );
     isoPositiveMesh.visible = params.showIsosurfaces;
+    triCount += isoPositiveMesh.userData.triangleCount || 0;
     scene.add(isoPositiveMesh);
   }
 
   if (params.showIsoNegative) {
-    isoNegativeMesh = new MarchingCubes(resolution, makeIsoMaterial(params.isoNegativeColor, params.isoOpacity), false, false);
-    populateMarchingCubesField(isoNegativeMesh, field);
-    prepareMarchingCubesMesh(isoNegativeMesh, Number(params.isoNegativeValue));
+    isoNegativeMesh = makeSphericalGridIsosurfaceMesh(
+      field,
+      Number(params.isoNegativeValue),
+      params.isoNegativeColor,
+      params.isoOpacity,
+      params.isoResolution
+    );
     isoNegativeMesh.visible = params.showIsosurfaces;
+    triCount += isoNegativeMesh.userData.triangleCount || 0;
     scene.add(isoNegativeMesh);
   }
 
-  setStatusSummary(`Isosurfaces:${params.isoField}`);
+  setStatusSummary(`Isosurfaces:${params.isoField}, triangles=${Math.round(triCount)}`);
 }
 
 async function rebuildAllMeshes() {
