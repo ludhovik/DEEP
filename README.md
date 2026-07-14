@@ -113,6 +113,71 @@ The browser cannot automatically list folders in `public/`, so the folder is ent
 
 ---
 
+
+---
+
+## Multi-dataset startup
+
+The viewer no longer requires one fixed dataset at:
+
+```text
+public/data/
+```
+
+You can keep several converted datasets under `public/`, for example:
+
+```text
+public/data_run1/
+public/data_run2/
+public/datasets/run_A/
+public/datasets/run_B/
+```
+
+When the viewer starts, it asks which dataset folder to load.
+
+Enter the browser/public path, not the filesystem path:
+
+```text
+/data_run1
+/data_run2
+/datasets/run_A
+/datasets/run_B
+```
+
+For example, if the files are here:
+
+```text
+public/datasets/run_A/metadata.json
+```
+
+enter:
+
+```text
+/datasets/run_A
+```
+
+For a sequence dataset, the folder should contain:
+
+```text
+public/datasets/run_A/sequence.json
+public/datasets/run_A/frames/state03100/metadata.json
+```
+
+and you should enter:
+
+```text
+/datasets/run_A
+```
+
+The viewer remembers the last dataset folder in browser storage.
+
+You can also open a dataset directly using a URL query parameter:
+
+```text
+http://127.0.0.1:5173/?dataset=/datasets/run_A
+```
+
+
 ## 2. Install and start the viewer
 
 From the project folder:

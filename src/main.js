@@ -659,6 +659,44 @@ function normaliseDatasetRoot(path) {
   return p;
 }
 
+function getDatasetPathFromQuery() {
+  try {
+    return new URLSearchParams(window.location.search).get("dataset");
+  } catch {
+    return null;
+  }
+}
+
+function askForDatasetRoot(message = null) {
+  const queryPath = getDatasetPathFromQuery();
+  if (queryPath) return normaliseDatasetRoot(queryPath);
+
+  const saved = localStorage.getItem("dynamoThreeViewer.datasetPath") || params.datasetPath || "/data";
+  const promptMessage = message || [
+    "Enter the dataset folder to load from public/.",
+    "",
+    "Examples:",
+    "  /data",
+    "  /data_run2",
+    "  /datasets/run_A",
+    "",
+    "If the data are in public/datasets/run_A, enter /datasets/run_A."
+  ].join("\n");
+
+  const chosen = window.prompt(promptMessage, saved);
+  return normaliseDatasetRoot(chosen || saved || "/data");
+}
+
+function rememberDatasetRoot(path) {
+  const p = normaliseDatasetRoot(path);
+  try {
+    localStorage.setItem("dynamoThreeViewer.datasetPath", p);
+  } catch {
+    // localStorage can be disabled; this is not fatal.
+  }
+  return p;
+}
+
 function dataUrlForBase(basePath, path) {
   const cleanBase = normaliseDatasetRoot(basePath);
   const cleanPath = String(path || "").replace(/^\/+/, "");
@@ -3995,7 +4033,7 @@ async function saveViewStateCode() {
 async function loadDatasetFromParams() {
   try {
     pauseSequence();
-    datasetRootPath = normaliseDatasetRoot(params.datasetPath);
+    datasetRootPath = rememberDatasetRoot(params.datasetPath);
     params.datasetPath = datasetRootPath;
     dataBasePath = datasetRootPath;
     sequenceIndex = null;
@@ -4623,36 +4661,59 @@ function animate(now = performance.now()) {
 }
 
 async function init() {
-  try {
-    datasetRootPath = normaliseDatasetRoot(params.datasetPath);
-    params.datasetPath = datasetRootPath;
-    dataBasePath = datasetRootPath;
+  let started = false;
 
-    setStatus(`Loading metadata from ${datasetRootPath}...`);
-    await loadSequenceIndex(true);
+  for (let attempt = 0; attempt < 3 && !started; attempt++) {
+    try {
+      const message = attempt === 0 ? null : [
+        `Could not load dataset: ${params.datasetPath}`,
+        "",
+        "Enter another dataset folder under public/.",
+        "",
+        "Examples:",
+        "  /data",
+        "  /data_run2",
+        "  /datasets/run_A"
+      ].join("\n");
 
-    if (sequenceIndex?.frames?.length > 0) {
-      const frame = sequenceIndex.frames[clamp(Math.round(params.sequenceFrame), 0, sequenceIndex.frames.length - 1)];
-      dataBasePath = sequenceFrameBasePath(frame);
+      datasetRootPath = rememberDatasetRoot(askForDatasetRoot(message));
+      params.datasetPath = datasetRootPath;
+      dataBasePath = datasetRootPath;
+      sequenceIndex = null;
+      params.sequenceFrame = 0;
+      clearLoadedDataCaches(false);
+
+      setStatus(`Loading metadata from ${datasetRootPath}...`);
+      await loadSequenceIndex(true);
+
+      if (sequenceIndex?.frames?.length > 0) {
+        const frame = sequenceIndex.frames[clamp(Math.round(params.sequenceFrame), 0, sequenceIndex.frames.length - 1)];
+        dataBasePath = sequenceFrameBasePath(frame);
+      }
+
+      metadata = await loadMetadata();
+      await loadCoordinates();
+
+      applyDefaultFields();
+      syncCameraParamsFromCamera(false);
+      buildGui();
+      bindExportPanelButtons();
+      updateLighting();
+
+      await rebuildAllMeshes();
+      await loadFieldLines();
+      await updateEarthSurface();
+
+      animate();
+      started = true;
+    } catch (err) {
+      console.error(err);
+      setStatus(`Error loading ${params.datasetPath}: ${err.message}`);
+      if (attempt === 2) {
+        buildGui();
+        bindExportPanelButtons();
+      }
     }
-
-    metadata = await loadMetadata();
-    await loadCoordinates();
-
-    applyDefaultFields();
-    syncCameraParamsFromCamera(false);
-    buildGui();
-    bindExportPanelButtons();
-    updateLighting();
-
-    await rebuildAllMeshes();
-    await loadFieldLines();
-    await updateEarthSurface();
-
-    animate();
-  } catch (err) {
-    console.error(err);
-    setStatus(`Error: ${err.message}`);
   }
 }
 
