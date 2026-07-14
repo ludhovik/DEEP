@@ -202,6 +202,9 @@ const params = {
   exportPdfWhite: () => exportCurrentViewPDF(),
   recordFullRotation: () => startFullRotationRecording(),
 
+  datasetPath: "/data",
+  reloadDataset: () => loadDatasetFromParams(),
+
   sequenceFrame: 0,
   sequenceFps: 4,
   sequencePlaying: false,
@@ -209,7 +212,7 @@ const params = {
   sequenceCacheLimitMB: 1500,
   playSequence: () => playSequence(),
   pauseSequence: () => pauseSequence(),
-  reloadSequence: () => loadSequenceIndex(true),
+  reloadSequence: () => reloadSequenceIndex(),
   preloadSequenceFrames: () => preloadSequenceFrames(),
   clearSequenceCache: () => clearLoadedDataCaches(true),
 
@@ -250,6 +253,7 @@ const jsonCache = new Map();
 let dataCacheBytes = 0;
 let dataCacheCounter = 0;
 let guiRoot = null;
+let datasetRootPath = "/data";
 let dataBasePath = "/data";
 let sequenceIndex = null;
 let sequenceTimer = null;
@@ -646,14 +650,27 @@ async function updateEarthSurface() {
 }
 
 
+function normaliseDatasetRoot(path) {
+  let p = String(path || "/data").trim().replace(/\\/g, "/");
+  p = p.replace(/^public\//, "");
+  p = p.replace(/\/+$/, "");
+  if (!p) p = "/data";
+  if (!p.startsWith("/")) p = `/${p}`;
+  return p;
+}
+
 function dataUrlForBase(basePath, path) {
-  const cleanBase = String(basePath || "/data").replace(/\/+$/, "");
+  const cleanBase = normaliseDatasetRoot(basePath);
   const cleanPath = String(path || "").replace(/^\/+/, "");
-  return `${cleanBase}/${cleanPath}`;
+  return cleanPath ? `${cleanBase}/${cleanPath}` : cleanBase;
 }
 
 function dataUrl(path) {
   return dataUrlForBase(dataBasePath, path);
+}
+
+function sequenceFrameBasePath(frame) {
+  return dataUrlForBase(datasetRootPath, normaliseSequenceFramePath(frame?.path || ""));
 }
 
 function formatBytes(bytes) {
@@ -683,7 +700,7 @@ function clearLoadedDataCaches(showMessage = false) {
   jsonCache.clear();
   fieldLineDataCache.clear();
   dataCacheBytes = 0;
-  if (showMessage) setStatus("Sequence/data cache cleared.");
+  if (showMessage) setStatus("Dataset/sequence cache cleared.");
 }
 
 
@@ -699,7 +716,7 @@ async function fetchJsonStrict(url, label) {
   if (trimmed.startsWith("<!doctype") || trimmed.startsWith("<html") || trimmed.startsWith("<")) {
     throw new Error(
       `${label} at ${url} returned HTML instead of JSON. ` +
-      `Check that the file exists under public/data and that the path in sequence.json is not prefixed by public/data.`
+      `Check that the file exists under public${datasetRootPath} and that paths in sequence.json are relative to that dataset folder.`
     );
   }
   try {
@@ -714,16 +731,24 @@ async function fetchJsonStrict(url, label) {
 function normaliseSequenceFramePath(path) {
   let p = String(path || "").trim().replace(/\\/g, "/");
   p = p.replace(/^\/+/, "");
-  p = p.replace(/^public\/data\//, "");
-  p = p.replace(/^data\//, "");
-  p = p.replace(/^\/?data\//, "");
   p = p.replace(/^public\//, "");
+
+  // Accept sequence.json entries written either as relative paths
+  // (frames/state03100) or mistakenly as dataset-prefixed paths
+  // (data_run2/frames/state03100, public/data_run2/frames/state03100).
+  const rootNoSlash = normaliseDatasetRoot(datasetRootPath).replace(/^\/+/, "");
+  if (rootNoSlash && p.startsWith(`${rootNoSlash}/`)) {
+    p = p.slice(rootNoSlash.length + 1);
+  }
+
+  // Backward compatibility for the original default public/data root.
+  p = p.replace(/^data\//, "");
   return p;
 }
 
 async function loadSequenceIndex(silent = false) {
   try {
-    sequenceIndex = await fetchJsonStrict("/data/sequence.json", "sequence.json");
+    sequenceIndex = await fetchJsonStrict(dataUrlForBase(datasetRootPath, "sequence.json"), "sequence.json");
 
     if (Array.isArray(sequenceIndex.frames)) {
       sequenceIndex.frames = sequenceIndex.frames.map((frame) => ({
@@ -737,7 +762,7 @@ async function loadSequenceIndex(silent = false) {
     if (n > 0) {
       params.sequenceFrame = clamp(Math.round(params.sequenceFrame), 0, n - 1);
       refreshSequenceControllers();
-      if (!silent) setStatus(`Loaded sequence with ${n} frames.`);
+      if (!silent) setStatus(`Loaded sequence with ${n} frames from ${datasetRootPath}.`);
     }
     return sequenceIndex;
   } catch (err) {
@@ -746,6 +771,13 @@ async function loadSequenceIndex(silent = false) {
     if (!silent) setStatus(`Could not load sequence: ${err.message}`);
     return null;
   }
+}
+
+
+async function reloadSequenceIndex() {
+  jsonCache.delete(dataUrlForBase(datasetRootPath, "sequence.json"));
+  await loadSequenceIndex(false);
+  buildGui();
 }
 
 function refreshSequenceControllers() {
@@ -803,7 +835,7 @@ async function preloadSequenceFrames() {
   for (let k = 0; k < maxFrames; k++) {
     const i = (start + k) % n;
     const frame = sequenceIndex.frames[i];
-    const basePath = `/data/${normaliseSequenceFramePath(frame.path)}`;
+    const basePath = sequenceFrameBasePath(frame);
     const meta = await loadMetadataForBase(basePath);
     await loadCoordinatesForBase(basePath, meta);
 
@@ -841,7 +873,7 @@ async function loadFrameByIndex(index) {
     refreshSequenceControllers();
 
     const frame = sequenceIndex.frames[i];
-    dataBasePath = `/data/${normaliseSequenceFramePath(frame.path)}`;
+    dataBasePath = sequenceFrameBasePath(frame);
 
     metadata = await loadMetadata();
     await loadCoordinates();
@@ -3410,13 +3442,14 @@ function disposeFieldLineGroups() {
 }
 
 function setStatusSummary(lastFieldName = null) {
+  const dataset = datasetRootPath ? `dataset=${datasetRootPath} | ` : "";
   const title = metadata.title ? `${metadata.title} | ` : "";
   const sim = metadata.magnetic?.classification ? `${metadata.magnetic.classification} | ` : "";
   const shownMap = {shell: "shell/internal", exterior: "exterior potential/poloidal", both: "both"};
   const lineMode = metadata.field_lines?.mode ? `B lines=${metadata.field_lines.mode}, shown=${shownMap[params.fieldLineDisplay] || params.fieldLineDisplay} | ` : "";
   const fieldText = `CMB=${params.cmbField}, ICB=${params.icbField}, Eq1=${params.equatorField}, Eq2=${params.equator2Field}, Mer1=${params.meridianField}, Mer2=${params.meridian2Field}`;
   const changed = lastFieldName ? ` | updated=${lastFieldName}` : "";
-  setStatus(`${title}${sim}${lineMode}${fieldText}${changed} | grid ${metadata.nr} x ${metadata.ntheta} x ${metadata.nphi}`);
+  setStatus(`${dataset}${title}${sim}${lineMode}${fieldText}${changed} | grid ${metadata.nr} x ${metadata.ntheta} x ${metadata.nphi}`);
 }
 
 async function rebuildCMB() {
@@ -3902,7 +3935,14 @@ function applySnapshotParam(key, value) {
 
 async function applyViewState(snapshot) {
   const snap = snapshot?.params ? snapshot : { params: snapshot || {} };
+  const requestedDataset = snap.params?.datasetPath ? normaliseDatasetRoot(snap.params.datasetPath) : null;
+  if (requestedDataset && requestedDataset !== datasetRootPath) {
+    params.datasetPath = requestedDataset;
+    await loadDatasetFromParams();
+  }
+
   for (const [key, value] of Object.entries(snap.params || {})) {
+    if (key === "datasetPath") continue;
     applySnapshotParam(key, value);
   }
   updateLighting();
@@ -3951,6 +3991,43 @@ async function saveViewStateCode() {
   await saveBlob(blob, `dynamo-view-state-${Date.now()}.txt`, "view-state");
 }
 
+
+async function loadDatasetFromParams() {
+  try {
+    pauseSequence();
+    datasetRootPath = normaliseDatasetRoot(params.datasetPath);
+    params.datasetPath = datasetRootPath;
+    dataBasePath = datasetRootPath;
+    sequenceIndex = null;
+    params.sequenceFrame = 0;
+    clearLoadedDataCaches(false);
+
+    setStatus(`Loading dataset ${datasetRootPath}...`);
+    await loadSequenceIndex(true);
+
+    if (sequenceIndex?.frames?.length > 0) {
+      const frame = sequenceIndex.frames[0];
+      dataBasePath = sequenceFrameBasePath(frame);
+    }
+
+    metadata = await loadMetadata();
+    await loadCoordinates();
+
+    applyDefaultFields();
+    buildGui();
+    updateLighting();
+
+    await rebuildAllMeshes();
+    await loadFieldLines();
+    await updateEarthSurface();
+    updateVisibility();
+    setStatusSummary(`dataset:${datasetRootPath}`);
+  } catch (err) {
+    console.error(err);
+    setStatus(`Could not load dataset ${params.datasetPath}: ${err.message}`);
+  }
+}
+
 function buildGui() {
   if (guiRoot) guiRoot.destroy();
   sequenceControllers.length = 0;
@@ -3958,6 +4035,10 @@ function buildGui() {
   guiRoot = gui;
 
   gui.add(params, "resetCamera").name("Reset camera view");
+
+  const datasetFolder = gui.addFolder("Dataset");
+  datasetFolder.add(params, "datasetPath").name("Public folder");
+  datasetFolder.add(params, "reloadDataset").name("Load dataset");
 
   const sequenceFolder = gui.addFolder("Sequence playback");
   sequenceFolder.add(params, "reloadSequence").name("Reload sequence.json");
@@ -4543,12 +4624,16 @@ function animate(now = performance.now()) {
 
 async function init() {
   try {
-    setStatus("Loading metadata...");
+    datasetRootPath = normaliseDatasetRoot(params.datasetPath);
+    params.datasetPath = datasetRootPath;
+    dataBasePath = datasetRootPath;
+
+    setStatus(`Loading metadata from ${datasetRootPath}...`);
     await loadSequenceIndex(true);
 
     if (sequenceIndex?.frames?.length > 0) {
       const frame = sequenceIndex.frames[clamp(Math.round(params.sequenceFrame), 0, sequenceIndex.frames.length - 1)];
-      dataBasePath = `/data/${normaliseSequenceFramePath(frame.path)}`;
+      dataBasePath = sequenceFrameBasePath(frame);
     }
 
     metadata = await loadMetadata();

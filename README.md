@@ -54,6 +54,63 @@ public/data/
 
 Do **not** put data directly in `src/`.
 
+### Multiple datasets in `public/`
+
+You can keep several converted datasets under `public/` and switch between them inside the viewer.
+
+Example layout:
+
+```text
+public/
+  data/
+    metadata.json
+  data_run2/
+    metadata.json
+  datasets/
+    run_A/
+      metadata.json
+    run_B/
+      sequence.json
+      frames/
+        state03100/
+```
+
+The viewer path is the public URL path, not the filesystem path. For example:
+
+```text
+public/data/             -> /data
+public/data_run2/        -> /data_run2
+public/datasets/run_A/   -> /datasets/run_A
+```
+
+In the viewer use:
+
+```text
+Dataset
+  Public folder
+  Load dataset
+```
+
+Enter, for example:
+
+```text
+/data_run2
+```
+
+or:
+
+```text
+/datasets/run_A
+```
+
+then click:
+
+```text
+Load dataset
+```
+
+The browser cannot automatically list folders in `public/`, so the folder is entered manually.
+
 ---
 
 ## 2. Install and start the viewer
@@ -121,6 +178,25 @@ The converter writes browser-readable files to:
 
 ```bash
 --out public/data
+```
+
+To create a second dataset, choose another folder under `public/`:
+
+```bash
+--out public/data_run2
+```
+
+or:
+
+```bash
+--out public/datasets/run_A
+```
+
+Then select the matching viewer path:
+
+```text
+/data_run2
+/datasets/run_A
 ```
 
 Typical useful options:
@@ -640,6 +716,45 @@ Available rotation modes:
 ---
 
 ## 15. Troubleshooting
+
+### Dataset selector cannot load a folder
+
+Use the public URL path, not the filesystem path.
+
+Correct examples:
+
+```text
+/data
+/data_run2
+/datasets/run_A
+```
+
+Incorrect examples:
+
+```text
+public/data_run2
+/mnt/c/Users/.../public/data_run2
+C:\Users\...\public\data_run2
+```
+
+For a dataset at:
+
+```text
+public/data_run2/metadata.json
+```
+
+enter this in the viewer:
+
+```text
+/data_run2
+```
+
+For a sequence dataset, check:
+
+```bash
+ls public/data_run2/sequence.json
+ls public/data_run2/frames/state03100/metadata.json
+```
 
 ### Error: `Unexpected token '<', "<!doctype "... is not valid JSON`
 
