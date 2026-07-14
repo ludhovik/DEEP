@@ -267,15 +267,29 @@ Then select the matching viewer path:
 Typical useful options:
 
 ```text
---cmb-br-ltrunc 13       synthesize low-degree CMB Br, e.g. l <= 13
---skip-field-lines       skip magnetic field-line generation
---field-line-mode both   generate shell and exterior magnetic field lines
---external-rmax 40       maximum radius for exterior magnetic lines
---line-seeds 360         approximate total number of regular CMB line seeds
---downsample-r 2         optional radial downsampling
---downsample-theta 2     optional theta downsampling
---downsample-phi 2       optional phi downsampling
+--spectral-lmax 128     angular spectral cutoff before physical-space synthesis; default is 128
+--spectral-lmax 0       disable angular spectral truncation and use the full state-file lmax
+--cmb-br-ltrunc 13      synthesize low-degree CMB Br, e.g. l <= 13
+--skip-field-lines      skip magnetic field-line generation
+--field-line-mode both  generate shell and exterior magnetic field lines
+--external-rmax 40      maximum radius for exterior magnetic lines
+--line-seeds 360        approximate total number of regular CMB line seeds
+--downsample-r 2        optional radial downsampling
 ```
+
+For angular reduction, prefer:
+
+```bash
+--spectral-lmax 128
+```
+
+over:
+
+```bash
+--downsample-theta 2 --downsample-phi 2
+```
+
+because `--spectral-lmax` removes high-degree spherical-harmonic content before the physical `theta/phi` grid is generated. The `--downsample-theta` and `--downsample-phi` options are still available, but they are a rough post-transform subsampling method.
 
 For large sequences, it is often better to start with:
 
@@ -298,6 +312,7 @@ python tools/convert_state_to_viewer.py \
   --file "/path/to/STATEFILES/state03125.cdf.dat" \
   --modules-dir "modules.py" \
   --out public/data \
+  --spectral-lmax 128 \
   --cmb-br-ltrunc 13 \
   --skip-field-lines
 ```
@@ -309,6 +324,7 @@ python tools/convert_state_to_viewer.py \
   --file "/path/to/STATEFILES/state03125.cdf.dat" \
   --modules-dir "modules.py" \
   --out public/data \
+  --spectral-lmax 128 \
   --cmb-br-ltrunc 13 \
   --field-line-mode both \
   --external-rmax 40 \
@@ -322,6 +338,7 @@ python tools/convert_state_to_viewer.py \
   --state "/path/to/STATEFILES/state03125.cdf.dat" \
   --modules-dir "modules.py" \
   --out public/data \
+  --spectral-lmax 128 \
   --cmb-br-ltrunc 13 \
   --skip-field-lines
 ```
@@ -348,6 +365,7 @@ python tools/convert_state_to_viewer.py \
   --folder "/path/to/STATEFILES/" \
   --modules-dir "modules.py" \
   --out public/data \
+  --spectral-lmax 128 \
   --cmb-br-ltrunc 13 \
   --skip-field-lines
 ```
@@ -359,6 +377,7 @@ python tools/convert_state_to_viewer.py \
   --folder "/path/to/STATEFILES/" \
   --modules-dir "modules.py" \
   --out public/data \
+  --spectral-lmax 128 \
   --cmb-br-ltrunc 13 \
   --field-line-mode both \
   --external-rmax 40 \
@@ -372,6 +391,7 @@ python tools/convert_state_to_viewer.py \
   --folder "/uolstore/Research/b/b0251/Data/FLAYER/DYN_C_VBC=1_CompBC=4_CBC=4_Ek=2e-5_Pm=5_Pr=1_Sc=10_Ra=120e6_RaC=1e9_rs=0.83_q=-100/STATEFILES/" \
   --modules-dir "modules.py" \
   --out public/data \
+  --spectral-lmax 128 \
   --cmb-br-ltrunc 13 \
   --skip-field-lines
 ```
@@ -404,6 +424,7 @@ python tools/convert_state_to_viewer.py \
   --folder "/path/to/STATEFILES/" \
   --modules-dir "modules.py" \
   --out public/data \
+  --spectral-lmax 128 \
   --cmb-br-ltrunc 13 \
   --sequence-first 3100 \
   --sequence-last 3125 \
@@ -419,6 +440,7 @@ python tools/convert_state_to_viewer.py \
   --folder "/path/to/STATEFILES/" \
   --modules-dir "modules.py" \
   --out public/data \
+  --spectral-lmax 128 \
   --cmb-br-ltrunc 13 \
   --field-line-mode both \
   --external-rmax 40 \
@@ -436,6 +458,7 @@ python tools/convert_state_to_viewer.py \
   --folder "/uolstore/Research/b/b0251/Data/FLAYER/DYN_C_VBC=1_CompBC=4_CBC=4_Ek=2e-5_Pm=5_Pr=1_Sc=10_Ra=120e6_RaC=1e9_rs=0.83_q=-100/STATEFILES/" \
   --modules-dir "modules.py" \
   --out public/data \
+  --spectral-lmax 128 \
   --cmb-br-ltrunc 13 \
   --sequence-first 3100 \
   --sequence-last 3125 \
@@ -600,7 +623,80 @@ For large sequences, generate field lines only if really needed, because they ca
 
 ---
 
-## 10. Converted fields
+## 10. Angular spectral truncation
+
+The converter supports angular spectral truncation before the physical-space transform:
+
+```bash
+--spectral-lmax 128
+```
+
+This is now the default.
+
+If the original state has, for example:
+
+```text
+lmax = 191
+mmax = 191
+```
+
+then the converter remaps the LSD coefficients onto a smaller `(l,m)` basis:
+
+```text
+lmax = 128
+mmax = 128
+```
+
+before calling:
+
+```python
+PolTor_to_spat
+SH_to_spat
+SH_to_spat_nom0
+```
+
+This is preferable to downsampling in `theta` or `phi` because it removes unresolved high-degree content before synthesis rather than aliasing it onto a coarser grid.
+
+Disable spectral truncation with:
+
+```bash
+--spectral-lmax 0
+```
+
+Use a different cutoff with:
+
+```bash
+--spectral-lmax 96
+--spectral-lmax 160
+```
+
+The effective cutoff is written to `metadata.json` under:
+
+```json
+"spectral": {
+  "enabled": true,
+  "requested_lmax": 128,
+  "lmax_original": 191,
+  "mmax_original": 191,
+  "lmax_effective": 128,
+  "mmax_effective": 128
+}
+```
+
+Radial downsampling is still separate:
+
+```bash
+--downsample-r 2
+```
+
+For most cases, leave angular post-downsampling off:
+
+```bash
+--downsample-theta 1
+--downsample-phi 1
+```
+
+## 11. Converted fields
 
 The converter writes the available fields into `metadata.json`.
 
@@ -627,7 +723,7 @@ Notes:
 
 ---
 
-## 11. Isosurfaces
+## 12. Isosurfaces
 
 The viewer has an `Isosurfaces` folder.
 
@@ -676,7 +772,7 @@ then increase if needed.
 
 ---
 
-## 12. Earth surface texture
+## 13. Earth surface texture
 
 The Earth surface uses a local texture:
 
@@ -717,7 +813,7 @@ Earth surface
 
 ---
 
-## 13. View-state code
+## 14. View-state code
 
 The viewer can save and reload a complete visual setup.
 
@@ -751,7 +847,7 @@ This is useful for reproducing the same view on another converted state or seque
 
 ---
 
-## 14. Export PNG/PDF/video
+## 15. Export PNG/PDF/video
 
 The viewer has export controls:
 
@@ -780,7 +876,7 @@ Available rotation modes:
 
 ---
 
-## 15. Troubleshooting
+## 16. Troubleshooting
 
 ### Dataset selector cannot load a folder
 
@@ -929,7 +1025,7 @@ npm run dev
 
 ---
 
-## 16. Useful complete commands
+## 17. Useful complete commands
 
 ### One statefile, no field lines
 
@@ -938,6 +1034,7 @@ python tools/convert_state_to_viewer.py \
   --file "/path/to/state03125.cdf.dat" \
   --modules-dir "modules.py" \
   --out public/data \
+  --spectral-lmax 128 \
   --cmb-br-ltrunc 13 \
   --skip-field-lines
 ```
@@ -949,6 +1046,7 @@ python tools/convert_state_to_viewer.py \
   --folder "/path/to/STATEFILES/" \
   --modules-dir "modules.py" \
   --out public/data \
+  --spectral-lmax 128 \
   --cmb-br-ltrunc 13 \
   --skip-field-lines
 ```
@@ -960,6 +1058,7 @@ python tools/convert_state_to_viewer.py \
   --folder "/path/to/STATEFILES/" \
   --modules-dir "modules.py" \
   --out public/data \
+  --spectral-lmax 128 \
   --cmb-br-ltrunc 13 \
   --sequence-first 3100 \
   --sequence-last 3125 \
@@ -975,6 +1074,7 @@ python tools/convert_state_to_viewer.py \
   --folder "/path/to/STATEFILES/" \
   --modules-dir "modules.py" \
   --out public/data \
+  --spectral-lmax 128 \
   --cmb-br-ltrunc 13 \
   --field-line-mode both \
   --external-rmax 40 \
@@ -987,7 +1087,7 @@ python tools/convert_state_to_viewer.py \
 
 ---
 
-## 17. Notes on performance
+## 18. Notes on performance
 
 Large 3-D fields are loaded as `Float32Array` objects in the browser.
 
@@ -1031,6 +1131,7 @@ python tools/convert_state_to_viewer.py \
   --folder "/path/to/STATEFILES/" \
   --modules-dir "modules.py" \
   --out public/data \
+  --spectral-lmax 128 \
   --cmb-br-ltrunc 13 \
   --sequence-first 3100 \
   --sequence-last 3125 \

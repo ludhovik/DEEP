@@ -223,6 +223,120 @@ def downsample_3d(arr: np.ndarray, dr: int, dt: int, dp: int) -> np.ndarray:
     return np.ascontiguousarray(arr[::dr, ::dt, ::dp])
 
 
+def truncate_lsd_coefficients(
+    coeffs_lsd: np.ndarray | None,
+    lmax_in: int,
+    mmax_in: int,
+    lmax_out: int,
+    mmax_out: int,
+    user_modules: Any,
+) -> np.ndarray | None:
+    """
+    Return LSD coefficients truncated to l <= lmax_out and m <= mmax_out.
+
+    The Leeds modules.py helper lsd_to_shtns assumes the LSD coefficient ordering
+    matches the SHTns (l,m) list for the chosen lmax/mmax. Therefore, reducing
+    lmax must build a smaller LSD array rather than simply passing a smaller
+    lmax to PolTor_to_spat/SH_to_spat.
+    """
+    if coeffs_lsd is None:
+        return None
+
+    if lmax_out >= lmax_in and mmax_out >= mmax_in:
+        return coeffs_lsd
+
+    if not hasattr(user_modules, "shtns"):
+        raise RuntimeError("modules.py must expose shtns for --spectral-lmax truncation.")
+
+    arr = np.asarray(coeffs_lsd)
+    if arr.ndim < 2 or arr.shape[0] != 2:
+        raise ValueError(f"Expected LSD coefficients shaped like (2, nlm, ...), got {arr.shape}")
+
+    shtns = user_modules.shtns
+    sh_in = shtns.sht(int(lmax_in), int(mmax_in), 1, shtns.sht_schmidt | shtns.SHT_NO_CS_PHASE)
+    sh_out = shtns.sht(int(lmax_out), int(mmax_out), 1, shtns.sht_schmidt | shtns.SHT_NO_CS_PHASE)
+
+    in_map = {(int(l), int(m)): i for i, (l, m) in enumerate(zip(sh_in.l, sh_in.m))}
+    out = np.zeros((2, len(sh_out.l)) + tuple(arr.shape[2:]), dtype=arr.dtype)
+
+    missing = 0
+    for j, (l, m) in enumerate(zip(sh_out.l, sh_out.m)):
+        src = in_map.get((int(l), int(m)))
+        if src is None:
+            missing += 1
+            continue
+        out[:, j, ...] = arr[:, src, ...]
+
+    if missing:
+        print(f"WARNING: spectral truncation could not map {missing} (l,m) coefficients.")
+
+    return np.ascontiguousarray(out)
+
+
+def apply_spectral_lmax_to_state(
+    uP: np.ndarray,
+    uT: np.ndarray,
+    BP: np.ndarray | None,
+    BT: np.ndarray | None,
+    C: np.ndarray,
+    Comp: np.ndarray | None,
+    lmax: int,
+    mmax: int,
+    spectral_lmax: int | None,
+    user_modules: Any,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None, np.ndarray, np.ndarray | None, int, int, dict[str, Any]]:
+    """
+    Apply an angular spectral cutoff before transforming to physical space.
+    """
+    if spectral_lmax is None or int(spectral_lmax) <= 0:
+        return uP, uT, BP, BT, C, Comp, int(lmax), int(mmax), {
+            "enabled": False,
+            "requested_lmax": None if spectral_lmax is None else int(spectral_lmax),
+            "lmax_original": int(lmax),
+            "mmax_original": int(mmax),
+            "lmax_effective": int(lmax),
+            "mmax_effective": int(mmax),
+        }
+
+    l_eff = min(int(spectral_lmax), int(lmax))
+    m_eff = min(int(mmax), l_eff)
+
+    if l_eff == int(lmax) and m_eff == int(mmax):
+        return uP, uT, BP, BT, C, Comp, int(lmax), int(mmax), {
+            "enabled": False,
+            "requested_lmax": int(spectral_lmax),
+            "lmax_original": int(lmax),
+            "mmax_original": int(mmax),
+            "lmax_effective": int(lmax),
+            "mmax_effective": int(mmax),
+        }
+
+    print(
+        f"Applying angular spectral truncation before spatial transform: "
+        f"lmax {int(lmax)} -> {l_eff}, mmax {int(mmax)} -> {m_eff}"
+    )
+
+    return (
+        truncate_lsd_coefficients(uP, lmax, mmax, l_eff, m_eff, user_modules),
+        truncate_lsd_coefficients(uT, lmax, mmax, l_eff, m_eff, user_modules),
+        truncate_lsd_coefficients(BP, lmax, mmax, l_eff, m_eff, user_modules),
+        truncate_lsd_coefficients(BT, lmax, mmax, l_eff, m_eff, user_modules),
+        truncate_lsd_coefficients(C, lmax, mmax, l_eff, m_eff, user_modules),
+        truncate_lsd_coefficients(Comp, lmax, mmax, l_eff, m_eff, user_modules),
+        l_eff,
+        m_eff,
+        {
+            "enabled": True,
+            "requested_lmax": int(spectral_lmax),
+            "lmax_original": int(lmax),
+            "mmax_original": int(mmax),
+            "lmax_effective": int(l_eff),
+            "mmax_effective": int(m_eff),
+            "method": "LSD coefficients remapped by (l,m) before physical-space synthesis",
+        },
+    )
+
+
 def remove_m0_phi(arr: np.ndarray) -> np.ndarray:
     """Remove the azimuthal m=0 component, i.e. subtract the phi-mean."""
     return arr - np.mean(arr, axis=2, keepdims=True)
@@ -1118,9 +1232,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=96,
         help="Number of radial points in the exterior potential-field grid used for field lines.",
     )
+    p.add_argument(
+        "--spectral-lmax",
+        type=int,
+        default=128,
+        help=(
+            "Angular spectral cutoff applied before physical-space synthesis. "
+            "Default is 128. Use --spectral-lmax 0 to disable. "
+            "This is preferred over --downsample-theta/--downsample-phi because it removes high-l modes "
+            "before creating the theta/phi grid."
+        ),
+    )
     p.add_argument("--downsample-r", type=int, default=1, help="Keep every Nth radial point.")
-    p.add_argument("--downsample-theta", type=int, default=1, help="Keep every Nth theta point.")
-    p.add_argument("--downsample-phi", type=int, default=1, help="Keep every Nth phi point.")
+    p.add_argument("--downsample-theta", type=int, default=1, help="Keep every Nth theta point after spectral synthesis. Usually leave at 1 when using --spectral-lmax.")
+    p.add_argument("--downsample-phi", type=int, default=1, help="Keep every Nth phi point after spectral synthesis. Usually leave at 1 when using --spectral-lmax.")
 
     p.add_argument("--skip-field-lines", action="store_true", help="Do not compute magnetic field lines.")
     p.add_argument(
@@ -1223,6 +1348,7 @@ def run_sequence_conversion(args: argparse.Namespace) -> None:
             "--out", str(frame_out),
             "--alpha-map", str(args.alpha_map),
             "--magnetic-tol", str(args.magnetic_tol),
+            "--spectral-lmax", str(args.spectral_lmax),
             "--field-line-mode", str(args.field_line_mode),
             "--line-max-steps", str(args.line_max_steps),
             "--external-nr", str(args.external_nr),
@@ -1366,8 +1492,33 @@ def main() -> None:
     time = float(np.asarray(state.get("t", np.nan)).item())
 
     print(f"lmax={lmax}, mmax={mmax}, nr={len(r)}, time={time:.8e}")
+
+    (
+        uP,
+        uT,
+        BP,
+        BT,
+        C,
+        Comp,
+        lmax_transform,
+        mmax_transform,
+        spectral_meta,
+    ) = apply_spectral_lmax_to_state(
+        uP,
+        uT,
+        BP,
+        BT,
+        C,
+        Comp,
+        lmax,
+        mmax,
+        args.spectral_lmax,
+        user_modules,
+    )
+
+    print(f"Transform grid: lmax={lmax_transform}, mmax={mmax_transform}")
     print("Transforming velocity to physical space...")
-    Ur, Ut, Up, theta, phi = PolTor_to_spat(uP, uT, r, lmax, mmax, alpha_map=args.alpha_map)
+    Ur, Ut, Up, theta, phi = PolTor_to_spat(uP, uT, r, lmax_transform, mmax_transform, alpha_map=args.alpha_map)
 
     BP_abs_max = float(np.nanmax(np.abs(BP))) if BP is not None else 0.0
     BT_abs_max = float(np.nanmax(np.abs(BT))) if BT is not None else 0.0
@@ -1376,7 +1527,7 @@ def main() -> None:
     if has_magnetic_field:
         print(f"Magnetic state detected: max(abs(BP))={BP_abs_max:.6e}, max(abs(BT))={BT_abs_max:.6e}")
         print("Transforming magnetic field to physical space...")
-        Br, Bt, Bp, theta_B, phi_B = PolTor_to_spat(BP, BT, r, lmax, mmax, alpha_map=args.alpha_map)
+        Br, Bt, Bp, theta_B, phi_B = PolTor_to_spat(BP, BT, r, lmax_transform, mmax_transform, alpha_map=args.alpha_map)
     else:
         print(f"No magnetic/dynamo field detected: max(abs(BP))={BP_abs_max:.6e} <= {args.magnetic_tol:.6e}")
         if BT_abs_max > args.magnetic_tol:
@@ -1384,11 +1535,11 @@ def main() -> None:
         Br = Bt = Bp = None
 
     print("Transforming scalar fields to physical space...")
-    Cspat, theta_C, phi_C = SH_to_spat(C, lmax, mmax)
-    Compspat, theta_Comp, phi_Comp = SH_to_spat(Comp, lmax, mmax)
+    Cspat, theta_C, phi_C = SH_to_spat(C, lmax_transform, mmax_transform)
+    Compspat, theta_Comp, phi_Comp = SH_to_spat(Comp, lmax_transform, mmax_transform)
 
-    Cspatnom0, _, _ = SH_to_spat_nom0(C, lmax, mmax)
-    Compspatnom0, _, _ = SH_to_spat_nom0(Comp, lmax, mmax)
+    Cspatnom0, _, _ = SH_to_spat_nom0(C, lmax_transform, mmax_transform)
+    Compspatnom0, _, _ = SH_to_spat_nom0(Comp, lmax_transform, mmax_transform)
 
     theta = np.ascontiguousarray(np.asarray(theta, dtype=np.float64))
     phi = np.ascontiguousarray(np.asarray(phi, dtype=np.float64))
@@ -1545,12 +1696,15 @@ def main() -> None:
         else:
             lcut = int(args.cmb_br_ltrunc)
             print(f"Synthesizing CMB Br truncated to l <= {lcut}...")
+            effective_lcut = min(lcut, lmax_transform)
+            if effective_lcut != lcut:
+                print(f"Requested --cmb-br-ltrunc {lcut} exceeds transform lmax {lmax_transform}; using {effective_lcut}.")
             Br_cmb_lcut, theta_lcut, phi_lcut = synthesize_cmb_Br_ltrunc(
                 BP,
                 r,
-                lmax,
-                mmax,
-                lcut,
+                lmax_transform,
+                mmax_transform,
+                effective_lcut,
                 user_modules,
             )
 
@@ -1668,8 +1822,8 @@ def main() -> None:
                     BP,
                     r,
                     r_ext,
-                    lmax,
-                    mmax,
+                    lmax_transform,
+                    mmax_transform,
                     user_modules,
                     btheta_sign=btheta_sign,
                 )
@@ -1754,6 +1908,7 @@ def main() -> None:
             "RaC": json_number(RaC),
             "Cps": json_number(Cps),
         },
+        "spectral": spectral_meta,
         "magnetic": {
             "has_magnetic_field": bool(has_magnetic_field),
             "classification": "dynamo" if has_magnetic_field else "non_magnetic",
