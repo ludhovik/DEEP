@@ -734,6 +734,7 @@ Isosurfaces
   Show
   Field
   Resolution
+  Clip with meridians
   Show positive
   Positive value
   Positive color
@@ -744,6 +745,8 @@ Isosurfaces
 ```
 
 The `Field` selector uses all available volume fields.
+
+`Clip with meridians` uses the active meridional-slice clipping geometry, so you can open the isosurface on the front side and see inside the shell more clearly. It follows the current meridian positions and the current CMB clip mode / side settings.
 
 Examples:
 

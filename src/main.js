@@ -108,6 +108,7 @@ const params = {
   isoNegativeValue: -0.10,
   isoResolution: 36,
   isoOpacity: 0.45,
+  isoClipWithMeridian: false,
   isoPositiveColor: "#d73027",
   isoNegativeColor: "#4575b4",
 
@@ -538,6 +539,31 @@ function getActiveCmbClipOptions() {
   return cmbClip;
 }
 
+function shouldKeepPhiForClip(phiValue, clipOptions = null) {
+  if (!clipOptions?.enabled) return true;
+
+  const phiMid = normalizePhi(phiValue);
+  if (clipOptions.mode === "between-meridians-behind" && clipOptions.hasTwoPlanes) {
+    const a = normalizePhi(clipOptions.phiA);
+    const b = normalizePhi(clipOptions.phiB);
+    const spanAB = (b - a + 2.0 * Math.PI) % (2.0 * Math.PI);
+    const useAB = spanAB <= Math.PI;
+    const inFrontOpening = useAB
+      ? isAngleInCCWSector(phiMid, a, b)
+      : isAngleInCCWSector(phiMid, b, a);
+    return !inFrontOpening;
+  }
+
+  const sideValue = Math.sin(phiMid - clipOptions.phi0);
+  return clipOptions.side === "negative" ? sideValue < 0.0 : sideValue > 0.0;
+}
+
+function triangleCentroidPhi(p0, p1, p2) {
+  const x = (p0[0] + p1[0] + p2[0]) / 3.0;
+  const y = (p0[1] + p1[1] + p2[1]) / 3.0;
+  return normalizePhi(Math.atan2(y, x));
+}
+
 function makeEarthSurfaceMesh(radius, opacity, texture, longitudeDeg, clipOptions = null) {
   const nTheta = 96;
   const nPhi = 192;
@@ -571,22 +597,7 @@ function makeEarthSurfaceMesh(radius, opacity, texture, longitudeDeg, clipOption
 
   for (let it = 0; it < nTheta; it++) {
     for (let ip = 0; ip < nPhi; ip++) {
-      if (clipOptions?.enabled) {
-        const phiMid = normalizePhi(2.0 * Math.PI * (ip + 0.5) / nPhi);
-        let keep = true;
-        if (clipOptions.mode === "between-meridians-behind" && clipOptions.hasTwoPlanes) {
-          const a = normalizePhi(clipOptions.phiA);
-          const b = normalizePhi(clipOptions.phiB);
-          const spanAB = (b - a + 2.0 * Math.PI) % (2.0 * Math.PI);
-          const useAB = spanAB <= Math.PI;
-          const inFrontOpening = useAB ? isAngleInCCWSector(phiMid, a, b) : isAngleInCCWSector(phiMid, b, a);
-          keep = !inFrontOpening;
-        } else {
-          const sideValue = Math.sin(phiMid - clipOptions.phi0);
-          keep = clipOptions.side === "negative" ? sideValue < 0.0 : sideValue > 0.0;
-        }
-        if (!keep) continue;
-      }
+      if (!shouldKeepPhiForClip(2.0 * Math.PI * (ip + 0.5) / nPhi, clipOptions)) continue;
       const row = nPhi + 1;
       const a = it * row + ip;
       const b = it * row + (ip + 1);
@@ -1226,7 +1237,8 @@ function interpolateIsoPoint(a, b, isoValue) {
   ];
 }
 
-function pushTri(positions, p0, p1, p2) {
+function pushTri(positions, p0, p1, p2, clipOptions = null) {
+  if (!shouldKeepPhiForClip(triangleCentroidPhi(p0, p1, p2), clipOptions)) return;
   positions.push(
     p0[0], p0[1], p0[2],
     p1[0], p1[1], p1[2],
@@ -1234,7 +1246,7 @@ function pushTri(positions, p0, p1, p2) {
   );
 }
 
-function polygoniseTetra(positions, tet, isoValue) {
+function polygoniseTetra(positions, tet, isoValue, clipOptions = null) {
   const inside = tet.map((v) => Number.isFinite(v.v) && v.v >= isoValue);
   const insideIdx = [];
   const outsideIdx = [];
@@ -1254,8 +1266,8 @@ function polygoniseTetra(positions, tet, isoValue) {
     const p1 = interpolateIsoPoint(tet[a], tet[others[1]], isoValue);
     const p2 = interpolateIsoPoint(tet[a], tet[others[2]], isoValue);
 
-    if (singleInside) pushTri(positions, p0, p1, p2);
-    else pushTri(positions, p0, p2, p1);
+    if (singleInside) pushTri(positions, p0, p1, p2, clipOptions);
+    else pushTri(positions, p0, p2, p1, clipOptions);
     return;
   }
 
@@ -1270,11 +1282,11 @@ function polygoniseTetra(positions, tet, isoValue) {
   const pBC = interpolateIsoPoint(tet[b], tet[c], isoValue);
   const pBD = interpolateIsoPoint(tet[b], tet[d], isoValue);
 
-  pushTri(positions, pAC, pBC, pAD);
-  pushTri(positions, pAD, pBC, pBD);
+  pushTri(positions, pAC, pBC, pAD, clipOptions);
+  pushTri(positions, pAD, pBC, pBD, clipOptions);
 }
 
-function makeSphericalGridIsosurfaceMesh(field, isoValue, color, opacity, requestedResolution) {
+function makeSphericalGridIsosurfaceMesh(field, isoValue, color, opacity, requestedResolution, clipOptions = null) {
   const nr = metadata.nr;
   const nt = metadata.ntheta;
   const np = metadata.nphi;
@@ -1331,7 +1343,8 @@ function makeSphericalGridIsosurfaceMesh(field, isoValue, color, opacity, reques
           polygoniseTetra(
             positions,
             [cube[tet[0]], cube[tet[1]], cube[tet[2]], cube[tet[3]]],
-            Number(isoValue)
+            Number(isoValue),
+            clipOptions
           );
         }
       }
@@ -3027,26 +3040,7 @@ function makeCmbSurfaceMesh(fieldObject, radiusIndex, opacity, vmin, vmax, color
     for (let ip = 0; ip < np; ip++) {
       const ip1 = (ip + 1) % np;
 
-      if (clipOptions?.enabled) {
-        const phiMid = normalizePhi(phiAtIndex(ip));
-        let keep = true;
-
-        if (clipOptions.mode === "between-meridians-behind" && clipOptions.hasTwoPlanes) {
-          const a = normalizePhi(clipOptions.phiA);
-          const b = normalizePhi(clipOptions.phiB);
-          const spanAB = (b - a + 2.0 * Math.PI) % (2.0 * Math.PI);
-          const useAB = spanAB <= Math.PI;
-          const inFrontOpening = useAB
-            ? isAngleInCCWSector(phiMid, a, b)
-            : isAngleInCCWSector(phiMid, b, a);
-          keep = !inFrontOpening;
-        } else {
-          const sideValue = Math.sin(phiMid - clipOptions.phi0);
-          keep = clipOptions.side === "negative" ? sideValue < 0.0 : sideValue > 0.0;
-        }
-
-        if (!keep) continue;
-      }
+      if (!shouldKeepPhiForClip(phiAtIndex(ip), clipOptions)) continue;
 
       const a = it * np + ip;
       const b = it * np + ip1;
@@ -3610,6 +3604,7 @@ async function rebuildIsosurfaces() {
   if (!volumeFields.includes(params.isoField)) return;
 
   const field = await loadField(params.isoField);
+  const isoClipOptions = params.isoClipWithMeridian ? getActiveCmbClipOptions() : { enabled: false };
   let triCount = 0;
 
   if (params.showIsoPositive) {
@@ -3618,7 +3613,8 @@ async function rebuildIsosurfaces() {
       Number(params.isoPositiveValue),
       params.isoPositiveColor,
       params.isoOpacity,
-      params.isoResolution
+      params.isoResolution,
+      isoClipOptions
     );
     isoPositiveMesh.visible = params.showIsosurfaces;
     triCount += isoPositiveMesh.userData.triangleCount || 0;
@@ -3631,14 +3627,15 @@ async function rebuildIsosurfaces() {
       Number(params.isoNegativeValue),
       params.isoNegativeColor,
       params.isoOpacity,
-      params.isoResolution
+      params.isoResolution,
+      isoClipOptions
     );
     isoNegativeMesh.visible = params.showIsosurfaces;
     triCount += isoNegativeMesh.userData.triangleCount || 0;
     scene.add(isoNegativeMesh);
   }
 
-  setStatusSummary(`Isosurfaces:${params.isoField}, triangles=${Math.round(triCount)}`);
+  setStatusSummary(`Isosurfaces:${params.isoField}, triangles=${Math.round(triCount)}${params.isoClipWithMeridian ? ", clipped" : ""}`);
 }
 
 async function rebuildAllMeshes() {
@@ -3916,7 +3913,7 @@ function applyDefaultFields() {
 function addDisplayControls(gui, slot, label, fieldParam, showParam, opacityParam, rebuildFn, availableFields) {
   const folder = gui.addFolder(label);
 
-  folder.add(params, showParam).name("Show").onChange(() => { updateVisibility(); if (slot === "meridian" || slot === "meridian2") rebuildCMB(); });
+  folder.add(params, showParam).name("Show").onChange(() => { updateVisibility(); if (slot === "meridian" || slot === "meridian2") { rebuildCMB(); rebuildIsosurfaces(); } });
   folder.add(params, fieldParam, availableFields).name("Field").onChange(rebuildFn);
   folder.add(params, `${slot}Scale`, ["symmetric", "minmax", "manual"]).name("Scale").onChange(rebuildFn);
   folder.add(params, `${slot}Colormap`, colourMapNames).name("Colour map").onChange(rebuildFn);
@@ -4104,14 +4101,14 @@ function buildGui() {
   const eq2Folder = addDisplayControls(gui, "equator2", "Equatorial slice 2", "equator2Field", "showEquator2", "equator2Opacity", rebuildEquator2, volumeFields);
   eq2Folder.add(params, "equator2Z", -0.95, 0.95, 0.01).name("z / r_o").onChange(rebuildEquator2);
   const merFolder = addDisplayControls(gui, "meridian", "Meridional slice 1", "meridianField", "showMeridian", "meridianOpacity", rebuildMeridian, volumeFields);
-  merFolder.add(params, "meridianPhiDeg", 0, 360, 1).name("Longitude phi").onChange(() => { rebuildMeridian(); rebuildCMB(); });
+  merFolder.add(params, "meridianPhiDeg", 0, 360, 1).name("Longitude phi").onChange(() => { rebuildMeridian(); rebuildCMB(); rebuildIsosurfaces(); });
 
   const mer2Folder = addDisplayControls(gui, "meridian2", "Meridional slice 2", "meridian2Field", "showMeridian2", "meridian2Opacity", rebuildMeridian2, volumeFields);
-  mer2Folder.add(params, "meridian2PhiDeg", 0, 360, 1).name("Longitude phi").onChange(() => { rebuildMeridian2(); rebuildCMB(); });
+  mer2Folder.add(params, "meridian2PhiDeg", 0, 360, 1).name("Longitude phi").onChange(() => { rebuildMeridian2(); rebuildCMB(); rebuildIsosurfaces(); });
 
-  merFolder.add(params, "cmbClipWithMeridian").name("Clip CMB with meridians").onChange(rebuildCMB);
-  merFolder.add(params, "cmbClipMode", { None: "none", "Rear half": "rear-half", "Between meridional planes (behind)": "between-meridians-behind" }).name("CMB clip mode").onChange(rebuildCMB);
-  merFolder.add(params, "cmbRearSide", { Rear: "positive", Front: "negative" }).name("CMB side").onChange(rebuildCMB);
+  merFolder.add(params, "cmbClipWithMeridian").name("Clip CMB with meridians").onChange(() => { rebuildCMB(); rebuildIsosurfaces(); });
+  merFolder.add(params, "cmbClipMode", { None: "none", "Rear half": "rear-half", "Between meridional planes (behind)": "between-meridians-behind" }).name("CMB clip mode").onChange(() => { rebuildCMB(); rebuildIsosurfaces(); });
+  merFolder.add(params, "cmbRearSide", { Rear: "positive", Front: "negative" }).name("CMB side").onChange(() => { rebuildCMB(); rebuildIsosurfaces(); });
 
   const lighting = gui.addFolder("Lighting");
   lighting.add(params, "ambientIntensity", 0.0, 2.0, 0.01).name("Ambient").onChange(updateLighting);
@@ -4168,6 +4165,7 @@ function buildGui() {
   isoFolder.add(params, "showIsosurfaces").name("Show").onChange(rebuildIsosurfaces);
   isoFolder.add(params, "isoField", volumeFields).name("Field").onChange(rebuildIsosurfaces);
   isoFolder.add(params, "isoResolution", 16, 80, 2).name("Resolution").onChange(rebuildIsosurfaces);
+  isoFolder.add(params, "isoClipWithMeridian").name("Clip with meridians").onChange(rebuildIsosurfaces);
   isoFolder.add(params, "showIsoPositive").name("Show positive").onChange(rebuildIsosurfaces);
   isoFolder.add(params, "isoPositiveValue").name("Positive value").onChange(rebuildIsosurfaces);
   isoFolder.addColor(params, "isoPositiveColor").name("Positive color").onChange(() => { if (isoPositiveMesh) isoPositiveMesh.material.color.set(params.isoPositiveColor); });
