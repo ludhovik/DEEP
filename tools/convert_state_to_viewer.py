@@ -1710,7 +1710,9 @@ def main() -> None:
     grad_thetaComp_fluct = remove_m0_phi(grad_thetaComp_3d)
     grad_phiComp_fluct = remove_m0_phi(grad_phiComp_3d)
 
-    # Full N^2 everywhere, then remove the m=0 component so the viewer shows fluctuations only.
+    # Full N^2 everywhere, plus its fluctuating m != 0 component.
+    # N2 is kept as the historical/default fluctuating field for compatibility.
+    # N2_full keeps the axisymmetric m=0 component.
     N2_full = r[:, None, None] * E**2 * (grad_rComp_3d * RaC / Sc + grad_rC_3d * RaT / Pr)
     N2_volume = remove_m0_phi(N2_full)
 
@@ -1742,6 +1744,7 @@ def main() -> None:
         "Cnol0": Cspatnol0,
         "Compnol0": Compspatnol0,
         "N2": N2_volume,
+        "N2_full": N2_full,
     }
 
     if has_magnetic_field:
@@ -1760,13 +1763,23 @@ def main() -> None:
         }
 
     if not args.no_gradients:
-        print("Exporting full 3-D scalar gradient fluctuations for C and Comp...")
+        print("Exporting 3-D scalar gradients for C and Comp, both fluctuating and full m=0-included fields...")
+
+        # Historical/default names: m=0 removed, i.e. non-axisymmetric fluctuations.
         fields["grad_rC"] = grad_rC_fluct
         fields["grad_thetaC"] = grad_thetaC_fluct
         fields["grad_phiC"] = grad_phiC_fluct
         fields["grad_rComp"] = grad_rComp_fluct
         fields["grad_thetaComp"] = grad_thetaComp_fluct
         fields["grad_phiComp"] = grad_phiComp_fluct
+
+        # Full fields: m=0 retained.
+        fields["grad_rC_full"] = grad_rC_3d
+        fields["grad_thetaC_full"] = grad_thetaC_3d
+        fields["grad_phiC_full"] = grad_phiC_3d
+        fields["grad_rComp_full"] = grad_rComp_3d
+        fields["grad_thetaComp_full"] = grad_thetaComp_3d
+        fields["grad_phiComp_full"] = grad_phiComp_3d
 
     # Downsample after all derived quantities are computed.
     dr = max(1, int(args.downsample_r))

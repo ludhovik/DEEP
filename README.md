@@ -781,10 +781,12 @@ Typical volume fields include:
 ur, ut, up, Uabs
 Br, Bt, Bp, Babs
 C, Comp
-N2
+N2, N2_full
 helicity
 grad_rC, grad_thetaC, grad_phiC
 grad_rComp, grad_thetaComp, grad_phiComp
+grad_rC_full, grad_thetaC_full, grad_phiC_full
+grad_rComp_full, grad_thetaComp_full, grad_phiComp_full
 ur_phiavg, ut_phiavg, up_phiavg
 Br_phiavg, Bt_phiavg, Bp_phiavg
 ```
@@ -792,7 +794,9 @@ Br_phiavg, Bt_phiavg, Bp_phiavg
 Notes:
 
 - `N2` is computed in 3-D and exported with the azimuthal `m=0` component removed.
-- scalar gradients are exported with their azimuthal `m=0` component removed.
+- `N2_full` is the same quantity but with the azimuthal `m=0` component retained.
+- scalar gradients named `grad_*` are exported with their azimuthal `m=0` component removed.
+- scalar gradients named `grad_*_full` retain the azimuthal `m=0` component.
 - `*_phiavg` fields are azimuthal averages broadcast back to 3-D so they can be shown with the same slice/surface tools.
 - phi averages ignore non-finite or extreme outlier values.
 
