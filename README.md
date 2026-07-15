@@ -178,6 +178,85 @@ http://127.0.0.1:5173/?dataset=/datasets/run_A
 ```
 
 
+
+---
+
+## Loading two datasets at the same time
+
+The viewer can load one **primary dataset** and one **secondary dataset**.
+
+The primary dataset controls the geometry:
+
+```text
+r, theta, phi, nr, ntheta, nphi
+```
+
+The secondary dataset is added only if its grid matches the primary dataset:
+
+```text
+same nr
+same ntheta
+same nphi
+```
+
+This avoids silently plotting one dataset on the wrong spherical grid.
+
+Example folder layout:
+
+```text
+public/datasets/run_A/
+  metadata.json
+  coordinates.json
+  *_volume.f32
+
+public/datasets/run_B/
+  metadata.json
+  coordinates.json
+  *_volume.f32
+```
+
+In the viewer:
+
+```text
+Dataset
+  Primary public folder      /datasets/run_A
+  Load primary dataset
+
+  Secondary public folder    /datasets/run_B
+  Secondary label            D2
+  Load secondary dataset
+```
+
+After loading the secondary dataset, its fields appear in all field selectors with the label prefix:
+
+```text
+D2:C
+D2:Comp
+D2:N2
+D2:N2_full
+D2:grad_rC_full
+D2:Br
+```
+
+So, for example, you can show:
+
+```text
+CMB surface       Br
+Equatorial slice  D2:N2_full
+Meridional slice  C
+Isosurface        D2:Comp
+```
+
+If the secondary dataset is a sequence folder, the viewer uses the first frame of that sequence as the secondary static dataset:
+
+```text
+public/datasets/run_B/sequence.json
+public/datasets/run_B/frames/state03100/metadata.json
+```
+
+The secondary dataset is not animated by the primary sequence controls. It is loaded as a static comparison field source.
+
+
 ## 2. Install and start the viewer
 
 From the project folder:
@@ -814,6 +893,8 @@ Isosurfaces
   Field
   Resolution
   Clip with meridians
+  Clip offset M1
+  Clip offset M2
   Show positive
   Positive value
   Positive color
@@ -826,6 +907,8 @@ Isosurfaces
 The `Field` selector uses all available volume fields.
 
 `Clip with meridians` uses the active meridional-slice clipping geometry, so you can open the isosurface on the front side and see inside the shell more clearly. It follows the current meridian positions and the current CMB clip mode / side settings.
+
+`Clip offset M1` and `Clip offset M2` shift the isosurface clipping plane(s) perpendicular to meridional slice 1 and slice 2. The offsets are in the viewer's normalized length units (outer-core radius scale). Use positive or negative values to move the clipping plane sideways while keeping it parallel to the meridional plane. When only one meridional slice is active, the corresponding offset is used. When both meridional slices are active with `Between meridional planes (behind)`, both offsets are used.
 
 Examples:
 

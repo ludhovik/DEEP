@@ -109,6 +109,8 @@ const params = {
   isoResolution: 36,
   isoOpacity: 0.45,
   isoClipWithMeridian: false,
+  isoClipOffsetMeridian1: 0.0,
+  isoClipOffsetMeridian2: 0.0,
   isoPositiveColor: "#d73027",
   isoNegativeColor: "#4575b4",
 
@@ -206,6 +208,11 @@ const params = {
   datasetPath: "/data",
   reloadDataset: () => loadDatasetFromParams(),
 
+  secondaryDatasetPath: "/data2",
+  secondaryDatasetLabel: "D2",
+  loadSecondaryDataset: () => loadSecondaryDatasetFromParams(),
+  clearSecondaryDataset: () => clearSecondaryDataset(),
+
   sequenceFrame: 0,
   sequenceFps: 4,
   sequencePlaying: false,
@@ -256,6 +263,7 @@ let dataCacheCounter = 0;
 let guiRoot = null;
 let datasetRootPath = "/data";
 let dataBasePath = "/data";
+let secondaryDataset = null;
 let sequenceIndex = null;
 let sequenceTimer = null;
 let sequenceFrameLoading = false;
@@ -537,6 +545,77 @@ function getActiveCmbClipOptions() {
     }
   }
   return cmbClip;
+}
+
+function getActiveIsoClipOptions() {
+  if (!params.isoClipWithMeridian) return { enabled: false };
+
+  const mer1Shown = params.showMeridian;
+  const mer2Shown = params.showMeridian2;
+  const anyMeridianShown = mer1Shown || mer2Shown;
+  const activeMeridianPhiDeg = mer1Shown
+    ? params.meridianPhiDeg
+    : mer2Shown
+      ? params.meridian2PhiDeg
+      : params.meridianPhiDeg;
+  const activeOffset = mer1Shown
+    ? Number(params.isoClipOffsetMeridian1 || 0.0)
+    : mer2Shown
+      ? Number(params.isoClipOffsetMeridian2 || 0.0)
+      : Number(params.isoClipOffsetMeridian1 || 0.0);
+
+  let isoClip = { enabled: false };
+  if (params.cmbClipWithMeridian && anyMeridianShown && params.cmbClipMode !== "none") {
+    if (params.cmbClipMode === "between-meridians-behind" && mer1Shown && mer2Shown) {
+      isoClip = {
+        enabled: true,
+        mode: "between-meridians-behind",
+        hasTwoPlanes: true,
+        phiA: THREE.MathUtils.degToRad(params.meridianPhiDeg),
+        phiB: THREE.MathUtils.degToRad(params.meridian2PhiDeg),
+        offsetA: Number(params.isoClipOffsetMeridian1 || 0.0),
+        offsetB: Number(params.isoClipOffsetMeridian2 || 0.0),
+      };
+    } else {
+      isoClip = {
+        enabled: true,
+        mode: "rear-half",
+        phi0: THREE.MathUtils.degToRad(activeMeridianPhiDeg),
+        side: params.cmbRearSide,
+        offset: activeOffset,
+      };
+    }
+  }
+  return isoClip;
+}
+
+function planeValueAtPoint(point, phi0) {
+  const x = point[0];
+  const y = point[1];
+  return -Math.sin(phi0) * x + Math.cos(phi0) * y;
+}
+
+function shouldKeepPointForIsoClip(point, clipOptions = null) {
+  if (!clipOptions?.enabled) return true;
+
+  if (clipOptions.mode === "between-meridians-behind" && clipOptions.hasTwoPlanes) {
+    const a = normalizePhi(clipOptions.phiA);
+    const b = normalizePhi(clipOptions.phiB);
+    const spanAB = (b - a + 2.0 * Math.PI) % (2.0 * Math.PI);
+    const useAB = spanAB <= Math.PI;
+    const valA = planeValueAtPoint(point, a);
+    const valB = planeValueAtPoint(point, b);
+    const offA = Number(clipOptions.offsetA || 0.0);
+    const offB = Number(clipOptions.offsetB || 0.0);
+    const inFrontOpening = useAB
+      ? (valA >= offA && valB <= offB)
+      : (valB >= offB && valA <= offA);
+    return !inFrontOpening;
+  }
+
+  const val = planeValueAtPoint(point, clipOptions.phi0);
+  const off = Number(clipOptions.offset || 0.0);
+  return clipOptions.side === "negative" ? val < off : val > off;
 }
 
 function shouldKeepPhiForClip(phiValue, clipOptions = null) {
@@ -1004,6 +1083,104 @@ async function loadCoordinates() {
   coords = await loadCoordinatesForBase(dataBasePath, metadata);
 }
 
+function normaliseDatasetLabel(label) {
+  const raw = String(label || "D2").trim();
+  const clean = raw.replace(/[:\s]+/g, "_").replace(/[^A-Za-z0-9_.-]/g, "_");
+  return clean || "D2";
+}
+
+function secondaryPrefix() {
+  return `${normaliseDatasetLabel(params.secondaryDatasetLabel)}:`;
+}
+
+function isSecondaryFieldName(fieldName) {
+  return secondaryDataset && String(fieldName || "").startsWith(secondaryPrefix());
+}
+
+function rawSecondaryFieldName(fieldName) {
+  return String(fieldName || "").slice(secondaryPrefix().length);
+}
+
+function prefixedSecondaryFieldName(rawName) {
+  return `${secondaryPrefix()}${rawName}`;
+}
+
+function primaryGridSignature(meta) {
+  return {
+    nr: Number(meta?.nr),
+    ntheta: Number(meta?.ntheta),
+    nphi: Number(meta?.nphi),
+  };
+}
+
+function sameGridSignature(a, b) {
+  const aa = primaryGridSignature(a);
+  const bb = primaryGridSignature(b);
+  return aa.nr === bb.nr && aa.ntheta === bb.ntheta && aa.nphi === bb.nphi;
+}
+
+async function resolveDatasetBasePath(rootPath) {
+  const root = normaliseDatasetRoot(rootPath);
+
+  try {
+    await fetchJsonStrict(dataUrlForBase(root, "metadata.json"), "metadata.json");
+    return root;
+  } catch (metadataError) {
+    const seq = await fetchJsonStrict(dataUrlForBase(root, "sequence.json"), "sequence.json");
+    if (!Array.isArray(seq.frames) || seq.frames.length === 0) {
+      throw new Error(`${root}/sequence.json exists but contains no frames.`);
+    }
+    const frame = seq.frames[0];
+    return dataUrlForBase(root, normaliseSequenceFramePath(frame.path));
+  }
+}
+
+async function loadSecondaryDatasetFromParams() {
+  try {
+    const root = normaliseDatasetRoot(params.secondaryDatasetPath);
+    const basePath = await resolveDatasetBasePath(root);
+    const meta2 = await loadMetadataForBase(basePath);
+    const coords2 = await loadCoordinatesForBase(basePath, meta2);
+
+    if (!sameGridSignature(metadata, meta2)) {
+      const a = primaryGridSignature(metadata);
+      const b = primaryGridSignature(meta2);
+      throw new Error(
+        `Secondary grid does not match primary grid. ` +
+        `Primary nr/ntheta/nphi=${a.nr}/${a.ntheta}/${a.nphi}; ` +
+        `secondary=${b.nr}/${b.ntheta}/${b.nphi}.`
+      );
+    }
+
+    secondaryDataset = {
+      rootPath: root,
+      basePath,
+      metadata: meta2,
+      coords: coords2,
+      label: normaliseDatasetLabel(params.secondaryDatasetLabel),
+    };
+    params.secondaryDatasetPath = root;
+    params.secondaryDatasetLabel = secondaryDataset.label;
+
+    buildGui();
+    setStatus(`Loaded secondary dataset ${secondaryDataset.label} from ${basePath}.`);
+  } catch (err) {
+    console.error(err);
+    secondaryDataset = null;
+    buildGui();
+    setStatus(`Could not load secondary dataset: ${err.message}`);
+  }
+}
+
+async function clearSecondaryDataset() {
+  secondaryDataset = null;
+  applyDefaultFields();
+  buildGui();
+  await rebuildAllMeshes();
+  updateVisibility();
+  setStatus("Secondary dataset cleared.");
+}
+
 async function loadFloat32ForBase(basePath, filename, expectedLength) {
   const cleanBase = String(basePath || "/data").replace(/\/+$/, "");
   const cacheKey = `${cleanBase}/${filename}`;
@@ -1037,24 +1214,53 @@ async function loadFloat32(filename, expectedLength) {
   return await loadFloat32ForBase(dataBasePath, filename, expectedLength);
 }
 
+function resolveFieldSource(fieldName) {
+  if (isSecondaryFieldName(fieldName)) {
+    const rawName = rawSecondaryFieldName(fieldName);
+    return {
+      source: "secondary",
+      displayName: String(fieldName),
+      rawName,
+      meta: secondaryDataset.metadata,
+      basePath: secondaryDataset.basePath,
+    };
+  }
+
+  return {
+    source: "primary",
+    displayName: String(fieldName),
+    rawName: String(fieldName),
+    meta: metadata,
+    basePath: dataBasePath,
+  };
+}
+
 async function loadField(fieldName) {
-  const filename = metadata.fields[fieldName];
+  const ref = resolveFieldSource(fieldName);
+  const filename = ref.meta.fields?.[ref.rawName];
   if (!filename) throw new Error(`Field not found: ${fieldName}`);
-  const expectedLength = metadata.nr * metadata.ntheta * metadata.nphi;
-  return await loadFloat32(filename, expectedLength);
+  if (!sameGridSignature(metadata, ref.meta)) {
+    throw new Error(`Field ${fieldName} is on a grid that does not match the primary dataset.`);
+  }
+  const expectedLength = ref.meta.nr * ref.meta.ntheta * ref.meta.nphi;
+  return await loadFloat32ForBase(ref.basePath, filename, expectedLength);
 }
 
 async function loadCmbDisplayField(fieldName) {
-  const surfaceInfo = metadata.surface_fields?.[fieldName];
+  const ref = resolveFieldSource(fieldName);
+  const surfaceInfo = ref.meta.surface_fields?.[ref.rawName];
 
   if (surfaceInfo) {
     if (surfaceInfo.surface !== "cmb") {
       throw new Error(`Surface field ${fieldName} is not a CMB field.`);
     }
+    if (ref.meta.ntheta !== metadata.ntheta || ref.meta.nphi !== metadata.nphi) {
+      throw new Error(`CMB surface field ${fieldName} does not match the primary theta/phi grid.`);
+    }
 
-    const expectedLength = metadata.ntheta * metadata.nphi;
-    const data = await loadFloat32(surfaceInfo.file, expectedLength);
-    return { kind: "cmb_surface", name: fieldName, data };
+    const expectedLength = ref.meta.ntheta * ref.meta.nphi;
+    const data = await loadFloat32ForBase(ref.basePath, surfaceInfo.file, expectedLength);
+    return { kind: "cmb_surface", name: fieldName, data, nphi: ref.meta.nphi };
   }
 
   const data = await loadField(fieldName);
@@ -1063,7 +1269,8 @@ async function loadCmbDisplayField(fieldName) {
 
 function cmbValue(fieldObject, radiusIndex, it, ip) {
   if (fieldObject.kind === "cmb_surface") {
-    return fieldObject.data[it * metadata.nphi + ip];
+    const nphi = fieldObject.nphi || metadata.nphi;
+    return fieldObject.data[it * nphi + ip];
   }
   return fieldObject.data[idx(radiusIndex, it, ip)];
 }
@@ -1238,7 +1445,12 @@ function interpolateIsoPoint(a, b, isoValue) {
 }
 
 function pushTri(positions, p0, p1, p2, clipOptions = null) {
-  if (!shouldKeepPhiForClip(triangleCentroidPhi(p0, p1, p2), clipOptions)) return;
+  const centroid = [
+    (p0[0] + p1[0] + p2[0]) / 3.0,
+    (p0[1] + p1[1] + p2[1]) / 3.0,
+    (p0[2] + p1[2] + p2[2]) / 3.0,
+  ];
+  if (!shouldKeepPointForIsoClip(centroid, clipOptions)) return;
   positions.push(
     p0[0], p0[1], p0[2],
     p1[0], p1[1], p1[2],
@@ -3604,7 +3816,7 @@ async function rebuildIsosurfaces() {
   if (!volumeFields.includes(params.isoField)) return;
 
   const field = await loadField(params.isoField);
-  const isoClipOptions = params.isoClipWithMeridian ? getActiveCmbClipOptions() : { enabled: false };
+  const isoClipOptions = getActiveIsoClipOptions();
   let triCount = 0;
 
   if (params.showIsoPositive) {
@@ -3885,21 +4097,43 @@ function chooseField(preferredList, fallbackFields) {
   return fallbackFields[0];
 }
 
-function getVolumeFieldNames() {
+function getPrimaryVolumeFieldNames() {
   return Object.keys(metadata.fields || {});
 }
 
-function getCmbFieldNames() {
-  const volumeFields = getVolumeFieldNames();
+function getSecondaryVolumeFieldNames() {
+  if (!secondaryDataset?.metadata?.fields) return [];
+  return Object.keys(secondaryDataset.metadata.fields).map(prefixedSecondaryFieldName);
+}
+
+function getVolumeFieldNames() {
+  return [...getPrimaryVolumeFieldNames(), ...getSecondaryVolumeFieldNames()];
+}
+
+function getPrimaryCmbFieldNames() {
+  const volumeFields = getPrimaryVolumeFieldNames();
   const surfaceFields = Object.entries(metadata.surface_fields || {})
     .filter(([, info]) => info.surface === "cmb")
     .map(([name]) => name);
-
   return [...volumeFields, ...surfaceFields];
 }
 
+function getSecondaryCmbFieldNames() {
+  if (!secondaryDataset?.metadata) return [];
+  const meta2 = secondaryDataset.metadata;
+  const volumeFields = Object.keys(meta2.fields || {}).map(prefixedSecondaryFieldName);
+  const surfaceFields = Object.entries(meta2.surface_fields || {})
+    .filter(([, info]) => info.surface === "cmb")
+    .map(([name]) => prefixedSecondaryFieldName(name));
+  return [...volumeFields, ...surfaceFields];
+}
+
+function getCmbFieldNames() {
+  return [...getPrimaryCmbFieldNames(), ...getSecondaryCmbFieldNames()];
+}
+
 function applyDefaultFields() {
-  const fields = Object.keys(metadata.fields);
+  const fields = getVolumeFieldNames();
   if (fields.length === 0) throw new Error("metadata.fields is empty.");
 
   params.cmbField = chooseField(["Br", "Br_CMB_lmax10", "C", "Comp", "ur", "Uabs"], getCmbFieldNames());
@@ -4034,6 +4268,7 @@ async function loadDatasetFromParams() {
     params.datasetPath = datasetRootPath;
     dataBasePath = datasetRootPath;
     sequenceIndex = null;
+    secondaryDataset = null;
     params.sequenceFrame = 0;
     clearLoadedDataCaches(false);
 
@@ -4072,8 +4307,15 @@ function buildGui() {
   gui.add(params, "resetCamera").name("Reset camera view");
 
   const datasetFolder = gui.addFolder("Dataset");
-  datasetFolder.add(params, "datasetPath").name("Public folder");
-  datasetFolder.add(params, "reloadDataset").name("Load dataset");
+  datasetFolder.add(params, "datasetPath").name("Primary public folder");
+  datasetFolder.add(params, "reloadDataset").name("Load primary dataset");
+  datasetFolder.add(params, "secondaryDatasetPath").name("Secondary public folder");
+  datasetFolder.add(params, "secondaryDatasetLabel").name("Secondary label");
+  datasetFolder.add(params, "loadSecondaryDataset").name("Load secondary dataset");
+  datasetFolder.add(params, "clearSecondaryDataset").name("Clear secondary");
+  if (secondaryDataset) {
+    datasetFolder.add({ loaded: `${secondaryDataset.label}: ${secondaryDataset.basePath}` }, "loaded").name("Loaded secondary");
+  }
 
   const sequenceFolder = gui.addFolder("Sequence playback");
   sequenceFolder.add(params, "reloadSequence").name("Reload sequence.json");
@@ -4166,6 +4408,8 @@ function buildGui() {
   isoFolder.add(params, "isoField", volumeFields).name("Field").onChange(rebuildIsosurfaces);
   isoFolder.add(params, "isoResolution", 16, 80, 2).name("Resolution").onChange(rebuildIsosurfaces);
   isoFolder.add(params, "isoClipWithMeridian").name("Clip with meridians").onChange(rebuildIsosurfaces);
+  isoFolder.add(params, "isoClipOffsetMeridian1", -1.0, 1.0, 0.01).name("Clip offset M1").onChange(rebuildIsosurfaces);
+  isoFolder.add(params, "isoClipOffsetMeridian2", -1.0, 1.0, 0.01).name("Clip offset M2").onChange(rebuildIsosurfaces);
   isoFolder.add(params, "showIsoPositive").name("Show positive").onChange(rebuildIsosurfaces);
   isoFolder.add(params, "isoPositiveValue").name("Positive value").onChange(rebuildIsosurfaces);
   isoFolder.addColor(params, "isoPositiveColor").name("Positive color").onChange(() => { if (isoPositiveMesh) isoPositiveMesh.material.color.set(params.isoPositiveColor); });
