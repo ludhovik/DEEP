@@ -58,6 +58,106 @@ def parse_float_from_path(path: str, key: str, default: float | None = None) -> 
     return float(match.group(1))
 
 
+def parse_float_from_path_aliases(path: str, aliases: list[str] | tuple[str, ...], default: float = np.nan) -> float:
+    """Extract a float from a path using several possible parameter names."""
+    for key in aliases:
+        value = parse_float_from_path(path, key, None)
+        if value is not None:
+            return float(value)
+    return default
+
+
+PARAMETER_SPECS = {
+    "Ek": {
+        "label": "Ekman number",
+        "aliases": ("Ek", "E"),
+        "arg": "Ek",
+    },
+    "Pr": {
+        "label": "thermal Prandtl number",
+        "aliases": ("Pr", "PrT", "Pr_T"),
+        "arg": "Pr",
+    },
+    "Sc": {
+        "label": "compositional Prandtl/Schmidt number",
+        "aliases": ("Sc", "PrC", "Pr_C"),
+        "arg": "Sc",
+    },
+    "RaT": {
+        "label": "thermal Rayleigh number",
+        "aliases": ("RaT", "Ra_T", "Ra"),
+        "arg": "RaT",
+    },
+    "RaC": {
+        "label": "compositional Rayleigh number",
+        "aliases": ("RaC", "Ra_C"),
+        "arg": "RaC",
+    },
+    "Cps": {
+        "label": "Cps",
+        "aliases": ("Cps",),
+        "arg": "Cps",
+    },
+}
+
+
+def prompt_float_parameter(name: str, label: str, aliases: list[str] | tuple[str, ...]) -> float:
+    """Ask the user for a missing parameter. Blank input keeps NaN."""
+    aliases_text = "/".join(aliases)
+    prompt = f"Enter {name} ({label}; aliases: {aliases_text}); blank = NaN: "
+    while True:
+        value = input(prompt).strip()
+        if value == "":
+            return float("nan")
+        try:
+            return float(value)
+        except ValueError:
+            print(f"Could not parse {value!r} as a float. Try again, or press Enter for NaN.")
+
+
+def resolve_parameter_values(path: str, args: argparse.Namespace, prompt_missing: bool = True) -> dict[str, float]:
+    """
+    Resolve physical/control parameters from CLI overrides, path aliases, or prompt.
+
+    Used for metadata and for N2. Sequence conversion calls this once and passes
+    resolved values to each frame so the user is not prompted for every frame.
+    """
+    values: dict[str, float] = {}
+
+    for name, spec in PARAMETER_SPECS.items():
+        cli_value = getattr(args, spec["arg"], None)
+        if cli_value is not None:
+            values[name] = float(cli_value)
+            continue
+
+        values[name] = parse_float_from_path_aliases(path, spec["aliases"], np.nan)
+
+    missing = [name for name, value in values.items() if not np.isfinite(value)]
+    if missing and prompt_missing:
+        if sys.stdin is not None and sys.stdin.isatty():
+            print("\nSome parameters were not found in the path or command line.")
+            print("These values are used in metadata and, for Ek/Pr/Sc/RaT/RaC, in N2.")
+            for name in missing:
+                spec = PARAMETER_SPECS[name]
+                values[name] = prompt_float_parameter(name, spec["label"], spec["aliases"])
+            print("")
+        else:
+            print(
+                "WARNING: missing parameters could not be prompted because stdin is not interactive: "
+                + ", ".join(missing)
+            )
+
+    return values
+
+
+def append_parameter_overrides(cmd: list[str], args: argparse.Namespace) -> None:
+    """Forward explicitly resolved parameter values to subprocess conversion."""
+    for name, spec in PARAMETER_SPECS.items():
+        value = getattr(args, spec["arg"], None)
+        if value is not None and np.isfinite(value):
+            cmd += [f"--{spec['arg']}", str(value)]
+
+
 def parse_state_number(path: str) -> int:
     match = re.search(r"state(\d+)\.cdf\.dat", Path(path).name)
     return int(match.group(1)) if match else -1
@@ -1203,6 +1303,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--pattern", default="state*.cdf.dat", help="State filename pattern when using --folder.")
     p.add_argument("--out", default="public/data", help="Output directory for viewer data.")
     p.add_argument("--modules-dir", default=None, help="Directory containing modules.py, if not in the current directory.")
+
+    # Optional explicit parameter overrides. If omitted, the converter tries to
+    # parse them from the path and then asks interactively when missing.
+    p.add_argument("--Ek", "--E", dest="Ek", type=float, default=None, help="Ekman number metadata/N2 override. Aliases: --Ek, --E.")
+    p.add_argument("--Pr", "--PrT", "--Pr_T", dest="Pr", type=float, default=None, help="Thermal Prandtl number metadata/N2 override.")
+    p.add_argument("--Sc", "--PrC", "--Pr_C", dest="Sc", type=float, default=None, help="Compositional Prandtl/Schmidt number metadata/N2 override.")
+    p.add_argument("--RaT", "--Ra", "--Ra_T", dest="RaT", type=float, default=None, help="Thermal Rayleigh number metadata/N2 override.")
+    p.add_argument("--RaC", "--Ra_C", dest="RaC", type=float, default=None, help="Compositional Rayleigh number metadata/N2 override.")
+    p.add_argument("--Cps", dest="Cps", type=float, default=None, help="Cps metadata override.")
+    p.add_argument(
+        "--no-parameter-prompt",
+        action="store_true",
+        help="Do not prompt for missing Ek/Pr/Sc/RaT/RaC/Cps; keep missing values as NaN.",
+    )
+
     p.add_argument("--alpha-map", type=int, default=-1, help="alpha_map argument passed to PolTor_to_spat.")
     p.add_argument(
         "--magnetic-tol",
@@ -1326,6 +1441,12 @@ def run_sequence_conversion(args: argparse.Namespace) -> None:
     if not selected:
         raise FileNotFoundError(f"No state files found for requested sequence {first}:{step}:{last}")
 
+    # Resolve parameters once for the sequence and pass them to each frame.
+    # This avoids prompting once per frame when folder names do not contain all tokens.
+    sequence_params = resolve_parameter_values(selected[0], args, prompt_missing=not args.no_parameter_prompt)
+    for name, value in sequence_params.items():
+        setattr(args, PARAMETER_SPECS[name]["arg"], value)
+
     outdir = Path(args.out)
     frames_root = outdir / str(args.sequence_subdir)
     if args.sequence_clear and frames_root.exists():
@@ -1353,10 +1474,12 @@ def run_sequence_conversion(args: argparse.Namespace) -> None:
             "--line-max-steps", str(args.line_max_steps),
             "--external-nr", str(args.external_nr),
             "--external-btheta-sign", str(args.external_btheta_sign),
+            "--no-parameter-prompt",
         ]
 
         if args.modules_dir:
             cmd += ["--modules-dir", str(args.modules_dir)]
+        append_parameter_overrides(cmd, args)
         if args.cmb_br_ltrunc is not None:
             cmd += ["--cmb-br-ltrunc", str(args.cmb_br_ltrunc)]
         if args.external_rmax is not None:
@@ -1469,13 +1592,20 @@ def main() -> None:
         print(f"Regular field-line seed grid requested: ~{args.line_seeds} seeds -> "
               f"{args.line_seed_theta} x {args.line_seed_phi} = {args.line_seed_theta * args.line_seed_phi}")
 
-    # Parameter extraction from path. Defaults avoid hard failure if a token is absent.
-    E = parse_float_from_path(path, "Ek", np.nan)
-    Pr = parse_float_from_path(path, "Pr", np.nan)
-    Sc = parse_float_from_path(path, "Sc", np.nan)
-    RaT = parse_float_from_path(path, "Ra", np.nan)
-    RaC = parse_float_from_path(path, "RaC", np.nan)
-    Cps = parse_float_from_path(path, "Cps", np.nan)
+    # Parameter extraction from CLI overrides, path aliases, or interactive prompt.
+    params_resolved = resolve_parameter_values(path, args, prompt_missing=not args.no_parameter_prompt)
+    E = params_resolved["Ek"]
+    Pr = params_resolved["Pr"]
+    Sc = params_resolved["Sc"]
+    RaT = params_resolved["RaT"]
+    RaC = params_resolved["RaC"]
+    Cps = params_resolved["Cps"]
+
+    print(
+        "Parameters: "
+        f"Ek={E:.6g}, Pr={Pr:.6g}, Sc={Sc:.6g}, "
+        f"RaT={RaT:.6g}, RaC={RaC:.6g}, Cps={Cps:.6g}"
+    )
 
     print("Loading spectral state...")
     state = load_state(path)

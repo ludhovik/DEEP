@@ -301,6 +301,81 @@ because field-line generation can be expensive.
 
 ---
 
+
+---
+
+## Parameter extraction and prompts
+
+The converter uses these parameters in `metadata.json` and in the computation of `N2`:
+
+```text
+Ek, Pr, Sc, RaT, RaC, Cps
+```
+
+It first tries to read them from the path. The following aliases are accepted:
+
+```text
+Ek:   Ek, E
+Pr:   Pr, PrT, Pr_T
+Sc:   Sc, PrC, Pr_C
+RaT:  RaT, Ra_T, Ra
+RaC:  RaC, Ra_C
+Cps:  Cps
+```
+
+For example, this path is now parsed correctly:
+
+```text
+Pm=0/Pr_T=1/Pr_C=10/q=0.0/E=1e-5/Ra_T=90/Ra_C=30000/
+```
+
+which gives:
+
+```text
+Ek  = 1e-5
+Pr  = 1
+Sc  = 10
+RaT = 90
+RaC = 30000
+```
+
+If one of the parameters is missing, the converter asks for it interactively:
+
+```text
+Enter Ek (Ekman number; aliases: Ek/E); blank = NaN:
+```
+
+Press Enter to keep a missing value as `NaN`.
+
+You can also give the values explicitly on the command line:
+
+```bash
+python tools/convert_state_to_viewer.py \
+  --file "/path/to/state_last.cdf.dat" \
+  --modules-dir "modules.py" \
+  --out public/data_SN_fig2 \
+  --Ek 1e-5 \
+  --Pr 1 \
+  --Sc 10 \
+  --RaT 90 \
+  --RaC 30000
+```
+
+Aliases also work:
+
+```bash
+--E 1e-5 --Pr_T 1 --Pr_C 10 --Ra_T 90 --Ra_C 30000
+```
+
+For non-interactive scripts, disable prompts with:
+
+```bash
+--no-parameter-prompt
+```
+
+For sequence conversion, the converter resolves missing parameters once from the first selected frame and forwards the resolved values to each frame, so it does not ask repeatedly for every state.
+
+
 ## 5. Convert one given statefile
 
 Use `--state` or the alias `--file`.
