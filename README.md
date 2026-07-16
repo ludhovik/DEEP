@@ -257,6 +257,33 @@ public/datasets/run_B/frames/state03100/metadata.json
 The secondary dataset is not animated by the primary sequence controls. It is loaded as a static comparison field source.
 
 
+
+### 8-quarter surface selection
+
+For the CMB surface and the Earth surface, you can now use a quarter-based visibility mode tied to the two meridional slices.
+
+In the **Meridional slice 1** panel:
+
+```text
+Clip CMB with meridians
+CMB clip mode = Selected 8 quarters
+8-quarter selection
+  North Q1 ... North Q4
+  South Q1 ... South Q4
+```
+
+If **both meridional slices** are shown, their two planes define the 4 longitudinal sectors. If only one meridional slice is shown, the viewer uses that meridional plane plus an automatically generated perpendicular meridional plane to define the 4 sectors. The equator then splits each sector into north and south, giving 8 selectable regions in total.
+
+The same selection is applied to both:
+
+- the CMB surface
+- the Earth surface layer
+
+So you can show any combination of the 8 regions instead of only front/rear clipping.
+
+`Q1..Q4` are ordered by the 4 azimuthal sectors created by the two meridional planes as you go around the sphere in longitude.
+
+
 ## 2. Install and start the viewer
 
 From the project folder:

@@ -130,6 +130,14 @@ const params = {
   cmbClipWithMeridian: true,
   cmbClipMode: "rear-half",
   cmbRearSide: "positive",
+  quarterN1: true,
+  quarterN2: true,
+  quarterN3: true,
+  quarterN4: true,
+  quarterS1: true,
+  quarterS2: true,
+  quarterS3: true,
+  quarterS4: true,
 
   ambientIntensity: 0.55,
   directionalIntensity: 2.0,
@@ -527,7 +535,22 @@ function getActiveCmbClipOptions() {
 
   let cmbClip = { enabled: false };
   if (params.cmbClipWithMeridian && anyMeridianShown && params.cmbClipMode !== "none") {
-    if (params.cmbClipMode === "between-meridians-behind" && mer1Shown && mer2Shown) {
+    if (params.cmbClipMode === "selected-eight-quarters") {
+      const phiA = THREE.MathUtils.degToRad(activeMeridianPhiDeg);
+      const phiB = mer1Shown && mer2Shown
+        ? THREE.MathUtils.degToRad(params.meridian2PhiDeg)
+        : phiA + 0.5 * Math.PI;
+      cmbClip = {
+        enabled: true,
+        mode: "selected-eight-quarters",
+        hasTwoPlanes: true,
+        phiA,
+        phiB,
+        generatedPerpendicularPlane: !(mer1Shown && mer2Shown),
+        northMask: [params.quarterN1, params.quarterN2, params.quarterN3, params.quarterN4],
+        southMask: [params.quarterS1, params.quarterS2, params.quarterS3, params.quarterS4],
+      };
+    } else if (params.cmbClipMode === "between-meridians-behind" && mer1Shown && mer2Shown) {
       cmbClip = {
         enabled: true,
         mode: "between-meridians-behind",
@@ -619,9 +642,38 @@ function shouldKeepPointForIsoClip(point, clipOptions = null) {
 }
 
 function shouldKeepPhiForClip(phiValue, clipOptions = null) {
+  return shouldKeepSurfaceCellForClip(0.25 * Math.PI, phiValue, clipOptions);
+}
+
+function getFourSectorBoundaries(phiA, phiB) {
+  return [
+    normalizePhi(phiA),
+    normalizePhi(phiB),
+    normalizePhi(phiA + Math.PI),
+    normalizePhi(phiB + Math.PI),
+  ].sort((a, b) => a - b);
+}
+
+function getSectorIndexForPhi(phiValue, phiA, phiB) {
+  const phi = normalizePhi(phiValue);
+  const bounds = getFourSectorBoundaries(phiA, phiB);
+  for (let i = 0; i < bounds.length - 1; i++) {
+    if (phi >= bounds[i] && phi < bounds[i + 1]) return i;
+  }
+  return bounds.length - 1;
+}
+
+function shouldKeepSurfaceCellForClip(thetaValue, phiValue, clipOptions = null) {
   if (!clipOptions?.enabled) return true;
 
   const phiMid = normalizePhi(phiValue);
+  if (clipOptions.mode === "selected-eight-quarters" && clipOptions.hasTwoPlanes) {
+    const sectorIndex = getSectorIndexForPhi(phiMid, clipOptions.phiA, clipOptions.phiB);
+    const isNorth = thetaValue <= 0.5 * Math.PI;
+    const mask = isNorth ? clipOptions.northMask : clipOptions.southMask;
+    return Array.isArray(mask) ? Boolean(mask[sectorIndex]) : true;
+  }
+
   if (clipOptions.mode === "between-meridians-behind" && clipOptions.hasTwoPlanes) {
     const a = normalizePhi(clipOptions.phiA);
     const b = normalizePhi(clipOptions.phiB);
@@ -676,7 +728,9 @@ function makeEarthSurfaceMesh(radius, opacity, texture, longitudeDeg, clipOption
 
   for (let it = 0; it < nTheta; it++) {
     for (let ip = 0; ip < nPhi; ip++) {
-      if (!shouldKeepPhiForClip(2.0 * Math.PI * (ip + 0.5) / nPhi, clipOptions)) continue;
+      const thetaMid = 0.5 * (theta0 + theta1);
+      const phiMid = 2.0 * Math.PI * (ip + 0.5) / nPhi;
+      if (!shouldKeepSurfaceCellForClip(thetaMid, phiMid, clipOptions)) continue;
       const row = nPhi + 1;
       const a = it * row + ip;
       const b = it * row + (ip + 1);
@@ -3252,7 +3306,9 @@ function makeCmbSurfaceMesh(fieldObject, radiusIndex, opacity, vmin, vmax, color
     for (let ip = 0; ip < np; ip++) {
       const ip1 = (ip + 1) % np;
 
-      if (!shouldKeepPhiForClip(phiAtIndex(ip), clipOptions)) continue;
+      const thetaMid = 0.5 * (thetaAtIndex(it) + thetaAtIndex(it + 1));
+      const phiMid = phiAtIndex(ip);
+      if (!shouldKeepSurfaceCellForClip(thetaMid, phiMid, clipOptions)) continue;
 
       const a = it * np + ip;
       const b = it * np + ip1;
@@ -4349,8 +4405,22 @@ function buildGui() {
   mer2Folder.add(params, "meridian2PhiDeg", 0, 360, 1).name("Longitude phi").onChange(() => { rebuildMeridian2(); rebuildCMB(); rebuildIsosurfaces(); });
 
   merFolder.add(params, "cmbClipWithMeridian").name("Clip CMB with meridians").onChange(() => { rebuildCMB(); rebuildIsosurfaces(); });
-  merFolder.add(params, "cmbClipMode", { None: "none", "Rear half": "rear-half", "Between meridional planes (behind)": "between-meridians-behind" }).name("CMB clip mode").onChange(() => { rebuildCMB(); rebuildIsosurfaces(); });
+  merFolder.add(params, "cmbClipMode", {
+    None: "none",
+    "Rear half": "rear-half",
+    "Between meridional planes (behind)": "between-meridians-behind",
+    "Selected 8 quarters": "selected-eight-quarters"
+  }).name("CMB clip mode").onChange(() => { rebuildCMB(); rebuildIsosurfaces(); });
   merFolder.add(params, "cmbRearSide", { Rear: "positive", Front: "negative" }).name("CMB side").onChange(() => { rebuildCMB(); rebuildIsosurfaces(); });
+  const quarterFolder = merFolder.addFolder("8-quarter selection");
+  quarterFolder.add(params, "quarterN1").name("North Q1").onChange(() => { rebuildCMB(); });
+  quarterFolder.add(params, "quarterN2").name("North Q2").onChange(() => { rebuildCMB(); });
+  quarterFolder.add(params, "quarterN3").name("North Q3").onChange(() => { rebuildCMB(); });
+  quarterFolder.add(params, "quarterN4").name("North Q4").onChange(() => { rebuildCMB(); });
+  quarterFolder.add(params, "quarterS1").name("South Q1").onChange(() => { rebuildCMB(); });
+  quarterFolder.add(params, "quarterS2").name("South Q2").onChange(() => { rebuildCMB(); });
+  quarterFolder.add(params, "quarterS3").name("South Q3").onChange(() => { rebuildCMB(); });
+  quarterFolder.add(params, "quarterS4").name("South Q4").onChange(() => { rebuildCMB(); });
 
   const lighting = gui.addFolder("Lighting");
   lighting.add(params, "ambientIntensity", 0.0, 2.0, 0.01).name("Ambient").onChange(updateLighting);
