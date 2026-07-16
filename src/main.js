@@ -1,7 +1,7 @@
 import "./style.css";
 
 import * as THREE from "three";
-import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { TrackballControls } from "three/examples/jsm/controls/TrackballControls.js";
 import { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
@@ -9,6 +9,7 @@ import GUI from "lil-gui";
 
 const statusEl = document.getElementById("status");
 const exportMessageEl = document.getElementById("export-message");
+const axesOverlayEl = document.getElementById("axes-overlay");
 
 const displaySlots = ["cmb", "icb", "equator", "equator2", "meridian", "meridian2", "fieldlines"];
 const displayNames = {
@@ -57,9 +58,23 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 document.body.appendChild(renderer.domElement);
 
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-controls.dampingFactor = 0.06;
+const axesScene = new THREE.Scene();
+const axesCamera = new THREE.PerspectiveCamera(50, 1, 0.01, 10.0);
+const axesRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+axesRenderer.setClearColor(0x000000, 0.0);
+axesRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+axesRenderer.setSize(120, 120);
+if (axesOverlayEl) axesOverlayEl.appendChild(axesRenderer.domElement);
+const axesCornerHelper = new THREE.AxesHelper(0.9);
+axesScene.add(axesCornerHelper);
+
+const controls = new TrackballControls(camera, renderer.domElement);
+controls.rotateSpeed = 4.2;
+controls.zoomSpeed = 1.25;
+controls.panSpeed = 0.9;
+controls.dynamicDampingFactor = 0.12;
+controls.staticMoving = false;
+controls.noRoll = false;
 controls.target.set(0.0, 0.0, 0.0);
 
 function resetCameraView() {
@@ -86,6 +101,19 @@ function updateLighting() {
     rho * Math.cos(el) * Math.sin(az),
     rho * Math.sin(el)
   );
+}
+
+function updateAxesOverlay() {
+  if (!axesOverlayEl) return;
+  axesOverlayEl.style.display = params.showAxes ? "block" : "none";
+  if (!params.showAxes) return;
+
+  const offset = camera.position.clone().sub(controls.target);
+  if (offset.lengthSq() < 1.0e-12) return;
+  axesCamera.position.copy(offset.normalize().multiplyScalar(2.4));
+  axesCamera.up.copy(camera.up).normalize();
+  axesCamera.lookAt(0.0, 0.0, 0.0);
+  axesRenderer.render(axesScene, axesCamera);
 }
 
 const axes = new THREE.AxesHelper(1.25);
@@ -269,6 +297,7 @@ const jsonCache = new Map();
 let dataCacheBytes = 0;
 let dataCacheCounter = 0;
 let guiRoot = null;
+let povGuiRoot = null;
 let datasetRootPath = "/data";
 let dataBasePath = "/data";
 let secondaryDataset = null;
@@ -3952,8 +3981,9 @@ function updateVisibility() {
     if (params.lineColourMode === "polarity") hideFieldLineColourbar();
   }
   setLineLegendMode(params.lineColourMode);
-  axes.visible = params.showAxes;
+  axes.visible = false;
   updateEarthSurface();
+  updateAxesOverlay();
 }
 
 function updateOpacities() {
@@ -4354,10 +4384,42 @@ async function loadDatasetFromParams() {
   }
 }
 
+function closeGuiFolder(folder) {
+  if (folder && typeof folder.close === "function") folder.close();
+}
+
+function buildPointOfViewGui() {
+  if (povGuiRoot) povGuiRoot.destroy();
+  cameraParamControllers.length = 0;
+
+  const povGui = new GUI({ title: "Point of view" });
+  povGui.domElement.classList.add("point-of-view-gui");
+  povGuiRoot = povGui;
+
+  cameraParamControllers.push(povGui.add(params, "cameraDistance", 0.2, 20.0, 0.01).name("Distance").onChange(applyCameraViewFromParams));
+  cameraParamControllers.push(povGui.add(params, "cameraAzimuthDeg", -180, 180, 1).name("Azimuth phi").onChange(applyCameraViewFromParams));
+  cameraParamControllers.push(povGui.add(params, "cameraElevationDeg", -89, 89, 1).name("Elevation theta").onChange(applyCameraViewFromParams));
+  cameraParamControllers.push(povGui.add(params, "cameraTargetX", -2.0, 2.0, 0.01).name("Target x").onChange(applyCameraViewFromParams));
+  cameraParamControllers.push(povGui.add(params, "cameraTargetY", -2.0, 2.0, 0.01).name("Target y").onChange(applyCameraViewFromParams));
+  cameraParamControllers.push(povGui.add(params, "cameraTargetZ", -2.0, 2.0, 0.01).name("Target z").onChange(applyCameraViewFromParams));
+  cameraParamControllers.push(povGui.add(params, "cameraFovDeg", 10, 90, 1).name("FOV").onChange(applyCameraViewFromParams));
+  povGui.add(params, "captureCameraView").name("Use current mouse view");
+  povGui.add(params, "applyCameraView").name("Apply view");
+
+  // Start collapsed so the viewer opens with controls out of the way.
+  povGui.close();
+}
+
 function buildGui() {
   if (guiRoot) guiRoot.destroy();
+  if (povGuiRoot) {
+    povGuiRoot.destroy();
+    povGuiRoot = null;
+  }
   sequenceControllers.length = 0;
+  cameraParamControllers.length = 0;
   const gui = new GUI({ title: "Controls" });
+  gui.domElement.classList.add("main-controls-gui");
   guiRoot = gui;
 
   gui.add(params, "resetCamera").name("Reset camera view");
@@ -4428,17 +4490,6 @@ function buildGui() {
   lighting.add(params, "lightAzimuthDeg", 0, 360, 1).name("Light azimuth").onChange(updateLighting);
   lighting.add(params, "lightElevationDeg", -89, 89, 1).name("Light elevation").onChange(updateLighting);
 
-  const viewFolder = gui.addFolder("Point of view");
-  cameraParamControllers.push(viewFolder.add(params, "cameraDistance", 0.2, 20.0, 0.01).name("Distance").onChange(applyCameraViewFromParams));
-  cameraParamControllers.push(viewFolder.add(params, "cameraAzimuthDeg", -180, 180, 1).name("Azimuth phi").onChange(applyCameraViewFromParams));
-  cameraParamControllers.push(viewFolder.add(params, "cameraElevationDeg", -89, 89, 1).name("Elevation theta").onChange(applyCameraViewFromParams));
-  cameraParamControllers.push(viewFolder.add(params, "cameraTargetX", -2.0, 2.0, 0.01).name("Target x").onChange(applyCameraViewFromParams));
-  cameraParamControllers.push(viewFolder.add(params, "cameraTargetY", -2.0, 2.0, 0.01).name("Target y").onChange(applyCameraViewFromParams));
-  cameraParamControllers.push(viewFolder.add(params, "cameraTargetZ", -2.0, 2.0, 0.01).name("Target z").onChange(applyCameraViewFromParams));
-  cameraParamControllers.push(viewFolder.add(params, "cameraFovDeg", 10, 90, 1).name("FOV").onChange(applyCameraViewFromParams));
-  viewFolder.add(params, "captureCameraView").name("Use current mouse view");
-  viewFolder.add(params, "applyCameraView").name("Apply view");
-
   const exportFolder = gui.addFolder("Export");
   exportFolder.add(params, "exportWidthPx", 800, 6000, 100).name("PNG/PDF width px");
   exportFolder.add(params, "exportPngWhite").name("Save PNG + colourbars");
@@ -4499,8 +4550,28 @@ function buildGui() {
   const other = gui.addFolder("Other visualisation");
   other.add(params, "showAxes").name("Axes").onChange(updateVisibility);
 
-  cmbFolder.open();
-  eqFolder.open();
+  // Open the viewer with all control panels collapsed.
+  [
+    datasetFolder,
+    sequenceFolder,
+    cmbFolder,
+    icbFolder,
+    eqFolder,
+    eq2Folder,
+    merFolder,
+    mer2Folder,
+    quarterFolder,
+    lighting,
+    exportFolder,
+    lineFolder,
+    isoFolder,
+    earthFolder,
+    viewStateFolder,
+    other,
+  ].forEach(closeGuiFolder);
+  gui.close();
+
+  buildPointOfViewGui();
 }
 
 
@@ -4970,6 +5041,7 @@ function animate(now = performance.now()) {
     controls.update();
   }
   renderer.render(scene, camera);
+  updateAxesOverlay();
 }
 
 async function init() {
@@ -5035,8 +5107,11 @@ window.addEventListener("resize", () => {
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  if (typeof controls.handleResize === "function") controls.handleResize();
+  axesRenderer.setSize(120, 120);
   updateFieldLineVisuals();
   syncCameraParamsFromCamera(true);
+  updateAxesOverlay();
 });
 
 init();

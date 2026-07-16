@@ -1334,3 +1334,17 @@ python tools/convert_state_to_viewer.py \
   --downsample-theta 2 \
   --downsample-phi 2
 ```
+
+### Mouse rotation and corner axes
+
+The viewer now uses **TrackballControls** instead of OrbitControls, which allows freer mouse rotation in all directions and avoids the blocked feeling near the poles.
+
+When `Axes` is enabled in the GUI, the orientation axes are displayed in a small **top-right corner** overlay instead of in the middle of the model.
+
+
+### GUI layout
+
+The main `Controls` panel now opens collapsed, and its folders also start collapsed by default.
+
+The `Point of view` controls are separated into their own GUI panel fixed at the bottom-left of the window. This panel also starts collapsed, so it is available without covering the main model view.
+

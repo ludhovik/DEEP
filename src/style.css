@@ -203,3 +203,44 @@ canvas {
 #earth-attribution a {
   color: #cfe6ff;
 }
+
+
+#axes-overlay {
+  position: fixed;
+  top: 14px;
+  right: 14px;
+  width: 120px;
+  height: 120px;
+  z-index: 25;
+  pointer-events: none;
+  background: rgba(0,0,0,0.18);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 10px;
+  display: none;
+  overflow: hidden;
+  backdrop-filter: blur(2px);
+}
+
+#axes-overlay canvas {
+  width: 120px !important;
+  height: 120px !important;
+  display: block;
+}
+
+
+/* Separate bottom-left GUI for camera controls. */
+.point-of-view-gui {
+  position: fixed !important;
+  left: 18px !important;
+  right: auto !important;
+  top: auto !important;
+  bottom: 18px !important;
+  z-index: 45 !important;
+  max-height: 65vh;
+  overflow-y: auto;
+}
+
+/* Keep the line legend above the bottom-left camera GUI. */
+#line-legend {
+  bottom: 72px;
+}
