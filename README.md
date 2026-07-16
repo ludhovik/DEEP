@@ -1348,3 +1348,9 @@ The main `Controls` panel now opens collapsed, and its folders also start collap
 
 The `Point of view` controls are separated into their own GUI panel fixed at the bottom-left of the window. This panel also starts collapsed, so it is available without covering the main model view.
 
+
+
+### GUI layout fix
+
+The main GUI now uses a safe folder-collapse list and no longer references a missing `viewStateFolder` variable. This fixes the runtime `buildGui()` failure that could prevent datasets from loading.
+

@@ -4566,9 +4566,9 @@ function buildGui() {
     lineFolder,
     isoFolder,
     earthFolder,
-    viewStateFolder,
+    stateFolder,
     other,
-  ].forEach(closeGuiFolder);
+  ].filter(Boolean).forEach(closeGuiFolder);
   gui.close();
 
   buildPointOfViewGui();
