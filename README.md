@@ -1354,3 +1354,158 @@ The `Point of view` controls are separated into their own GUI panel fixed at the
 
 The main GUI now uses a safe folder-collapse list and no longer references a missing `viewStateFolder` variable. This fixes the runtime `buildGui()` failure that could prevent datasets from loading.
 
+
+---
+
+## Convert XSHELLS fields with `pyxshells`
+
+A separate converter is provided:
+
+```text
+tools/convert_xshells_to_viewer.py
+```
+
+XSHELLS stores a snapshot as separate field files, commonly:
+
+```text
+fieldU.<tag>   velocity
+fieldB.<tag>   magnetic field
+fieldT.<tag>   temperature
+fieldC.<tag>   composition/concentration
+```
+
+Install the Python dependencies in the environment used for conversion:
+
+```bash
+python -m pip install numpy pyxshells
+```
+
+`pyxshells` uses the Python SHTns module, so SHTns must also be installed and importable:
+
+```bash
+python -c "import pyxshells, shtns; print('pyxshells/SHTns OK')"
+```
+
+### Automatic discovery from a folder and tag
+
+For files such as `fieldU.bench`, `fieldB.bench`, `fieldT.bench`, and `fieldC.bench`:
+
+```bash
+python tools/convert_xshells_to_viewer.py \
+  --folder "/path/to/xshells/run" \
+  --tag bench \
+  --out public/data_xshells \
+  --Ek 1e-5 \
+  --Pr 1 \
+  --Sc 10 \
+  --RaT 90 \
+  --RaC 30000
+```
+
+Without `--tag`, the converter selects the newest matching `fieldU.*`, `fieldB.*`, `fieldT.*`, and `fieldC.*` files in the folder.
+
+### Explicit field paths
+
+```bash
+python tools/convert_xshells_to_viewer.py \
+  --velocity "/path/to/fieldU.snapshot" \
+  --magnetic "/path/to/fieldB.snapshot" \
+  --temperature "/path/to/fieldT.snapshot" \
+  --composition "/path/to/fieldC.snapshot" \
+  --out public/data_xshells
+```
+
+Any subset can be converted. For example, a non-magnetic thermal run can use only `--velocity` and `--temperature`.
+
+### Output fields
+
+Depending on the supplied files, the converter writes:
+
+```text
+ur, ut, up, Uabs
+Br, Bt, Bp, Babs
+T, Comp
+```
+
+Axisymmetric and non-axisymmetric variants include:
+
+```text
+ur_phiavg, ut_phiavg, up_phiavg
+Br_phiavg, Bt_phiavg, Bp_phiavg
+T_phiavg, Comp_phiavg
+
+ur_nom0, ut_nom0, up_nom0
+Br_nom0, Bt_nom0, Bp_nom0
+T_nom0, Comp_nom0
+```
+
+Scalar gradients are exported as both full and m=0-removed fields:
+
+```text
+grad_rT_full, grad_thetaT_full, grad_phiT_full
+grad_rComp_full, grad_thetaComp_full, grad_phiComp_full
+
+grad_rT, grad_thetaT, grad_phiT
+grad_rComp, grad_thetaComp, grad_phiComp
+```
+
+When the required parameters are available, it also writes:
+
+```text
+N2_full   full N² including m=0
+N2        N² with m=0 removed
+```
+
+The implemented scaling is consistent with the Leeds converter:
+
+```text
+N² = r Ek² [ RaT/Pr dT/dr + RaC/Sc dComp/dr ]
+```
+
+### Control the SHTns physical grid
+
+By default, `pyxshells`/SHTns chooses its physical grid. To specify it explicitly:
+
+```bash
+--nlat 256 --nphi 512
+```
+
+Both options must be supplied together. Viewer output can then be reduced further with:
+
+```bash
+--downsample-r 2 --downsample-theta 2 --downsample-phi 2
+```
+
+### Parameters and prompts
+
+The converter accepts the same aliases used by the Leeds converter:
+
+```text
+--Ek or --E
+--Pr, --PrT or --Pr_T
+--Sc, --PrC or --Pr_C
+--RaT, --Ra or --Ra_T
+--RaC or --Ra_C
+```
+
+It first checks command-line values, then tries to parse values from the input paths. Missing values are requested interactively unless:
+
+```bash
+--no-parameter-prompt
+```
+
+### Load in the viewer
+
+Start the viewer normally:
+
+```bash
+npm run dev
+```
+
+At the dataset prompt, enter:
+
+```text
+/data_xshells
+```
+
+The initial XSHELLS converter exports fields and surfaces usable by the CMB/ICB/slice/isosurface controls. It does not yet generate magnetic field-line JSON files.

@@ -1,0 +1,2 @@
+numpy
+pyxshells==2.8
