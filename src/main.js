@@ -1429,6 +1429,19 @@ function nearestRadiusIndex(radius) {
   return best;
 }
 
+function icbRadiusIndex() {
+  const explicitIndex = Number(metadata?.icb_index);
+  if (Number.isFinite(explicitIndex)) {
+    return clamp(Math.round(explicitIndex), 0, metadata.nr - 1);
+  }
+
+  const explicitRadius = Number(metadata?.r_icb ?? metadata?.icb_radius ?? metadata?.r_fluid_inner);
+  if (Number.isFinite(explicitRadius)) return nearestRadiusIndex(explicitRadius);
+
+  // Legacy Leeds/shell datasets store the ICB at radial index zero.
+  return 0;
+}
+
 function angularDistance(a, b) {
   const twoPi = 2.0 * Math.PI;
   return Math.abs(((a - b + Math.PI) % twoPi + twoPi) % twoPi - Math.PI);
@@ -3807,10 +3820,11 @@ async function rebuildICB() {
   }
 
   const field = await loadField(params.icbField);
-  const [vmin, vmax] = surfaceRange(field, 0, "icb");
+  const radialIndex = icbRadiusIndex();
+  const [vmin, vmax] = surfaceRange(field, radialIndex, "icb");
   setColourbarForSlot("icb", params.icbField, vmin, vmax);
 
-  icbMesh = makeSurfaceMesh(field, 0, params.icbOpacity, vmin, vmax, params.icbColormap);
+  icbMesh = makeSurfaceMesh(field, radialIndex, params.icbOpacity, vmin, vmax, params.icbColormap);
   icbMesh.visible = params.showICB;
   scene.add(icbMesh);
   setStatusSummary(`ICB:${params.icbField}`);

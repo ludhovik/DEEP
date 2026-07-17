@@ -1509,3 +1509,17 @@ At the dataset prompt, enter:
 ```
 
 The initial XSHELLS converter exports fields and surfaces usable by the CMB/ICB/slice/isosurface controls. It does not yet generate magnetic field-line JSON files.
+
+### Conducting inner core and different radial domains
+
+XSHELLS permits the magnetic field to extend beyond the velocity field into conducting solid layers. For example, `fieldB` may span from the centre to the CMB while `fieldU` and `fieldT` begin at the ICB.
+
+The converter therefore:
+
+- uses the magnetic radial grid as the viewer grid when `fieldB` is present;
+- preserves `Br`, `Bt`, and `Bp` throughout the conducting inner core for every radius greater than zero;
+- sets only the singular spherical-component layer at exactly `r=0` to zero;
+- embeds shell-only velocity and scalar fields as zero outside their native radial domains;
+- writes `r_icb`, `icb_radius`, `icb_index`, `radial_domains`, and `field_domains` to `metadata.json`.
+
+The viewer uses `icb_index` to draw the ICB at the fluid-shell inner boundary, rather than assuming that the first radial point is the ICB.

@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """Convert XSHELLS field files to Dynamo Three Viewer data.
 
-XSHELLS usually stores one snapshot in separate files, for example::
+XSHELLS commonly stores one snapshot in separate files::
 
-    fieldU.bench   velocity (poloidal/toroidal)
-    fieldB.bench   magnetic field (poloidal/toroidal)
-    fieldT.bench   temperature scalar
-    fieldC.bench   composition/concentration scalar
+    fieldU.<tag>   velocity (poloidal/toroidal; fluid shell)
+    fieldB.<tag>   magnetic field (poloidal/toroidal; may include solid conductors)
+    fieldT.<tag>   temperature scalar (usually fluid shell)
+    fieldC.<tag>   composition/concentration scalar (usually fluid shell)
 
-The converter accepts explicit paths, or ``--folder`` plus ``--tag`` to discover
-these conventional names.  Output follows the same metadata/binary format as
-``convert_state_to_viewer.py``.
+A conducting inner core is supported.  In that case the magnetic field can have
+a wider radial domain than velocity and scalar fields.  The converter uses the
+magnetic radial grid as the viewer grid, retains B throughout the inner core,
+and embeds shell-only quantities as zero outside their native radial domain.
+The actual ICB radius and radial index are stored in metadata.json.
 
 Requires: numpy, shtns, pyxshells
 """
@@ -20,7 +22,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
 import re
 import sys
 from pathlib import Path
@@ -36,6 +37,9 @@ except ImportError as exc:  # pragma: no cover - environment-dependent
         "  python -m pip install pyxshells\n"
         "pyxshells also requires the Python SHTns module."
     ) from exc
+
+
+RADIAL_ATOL = 1.0e-11
 
 
 def json_number(value: Any, default: float = 0.0) -> float:
@@ -57,7 +61,7 @@ def finite_range(arr: np.ndarray) -> dict[str, float]:
 
 
 def write_f32(path: Path, arr: np.ndarray) -> dict[str, float]:
-    values = np.asarray(arr, dtype=np.float64)
+    values = np.asarray(arr)
     values = np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
     values = np.ascontiguousarray(values.astype("<f4", copy=False))
     values.tofile(path)
@@ -70,8 +74,9 @@ def remove_m0_phi(arr: np.ndarray) -> np.ndarray:
 
 
 def phi_average_volume(arr: np.ndarray) -> np.ndarray:
-    mean = np.mean(np.asarray(arr, dtype=np.float64), axis=2, keepdims=True)
-    return np.broadcast_to(mean, np.asarray(arr).shape).copy()
+    values = np.asarray(arr, dtype=np.float64)
+    mean = np.mean(values, axis=2, keepdims=True)
+    return np.broadcast_to(mean, values.shape).copy()
 
 
 def gradient_scalar_3d(
@@ -88,13 +93,11 @@ def gradient_scalar_3d(
     d_dr = np.gradient(f, r, axis=0, edge_order=edge_r)
     d_dtheta = np.gradient(f, theta, axis=1, edge_order=edge_t)
 
-    # Periodic phi derivative supports either a non-cyclic grid or an endpoint-duplicated grid.
     nphi = f.shape[2]
     if nphi < 2:
         d_dphi = np.zeros_like(f)
     else:
-        period = 2.0 * np.pi
-        dphi = period / nphi
+        dphi = 2.0 * np.pi / nphi
         d_dphi = (np.roll(f, -1, axis=2) - np.roll(f, 1, axis=2)) / (2.0 * dphi)
 
     rr = r[:, None, None]
@@ -204,27 +207,132 @@ def configure_sht_grid(field: Any, nlat: int | None, nphi: int | None) -> None:
         raise ValueError("Use --nlat and --nphi together, or omit both.")
 
 
-def load_xshells_field(path: Path, reference: Any | None = None) -> Any:
+def load_xshells_field(path: Path, angular_reference: Any | None = None) -> Any:
+    # Share only the SHTns angular transform.  Do not share the radial grid:
+    # fieldB may include a conducting inner core while fieldU/T/C are shell-only.
     kwargs: dict[str, Any] = {"lazy": True}
-    if reference is not None:
-        kwargs.update({"sht": reference.sht, "grid": reference.grid})
+    if angular_reference is not None:
+        kwargs["sht"] = angular_reference.sht
     return pyxshells.load_field(str(path), **kwargs)
 
 
-def validate_field_compatibility(reference: Any, field: Any, label: str) -> None:
-    r0 = np.asarray(reference.grid.r[reference.irs : reference.ire + 1])
-    r1 = np.asarray(field.grid.r[field.irs : field.ire + 1])
-    if r0.shape != r1.shape or not np.allclose(r0, r1, rtol=0.0, atol=1.0e-12):
-        raise ValueError(f"{label} radial grid does not match the reference field.")
-    if (field.lmax, field.mmax, field.mres) != (reference.lmax, reference.mmax, reference.mres):
+def field_radii(field: Any) -> np.ndarray:
+    r = np.asarray(field.grid.r[field.irs : field.ire + 1], dtype=np.float64)
+    if r.ndim != 1 or r.size == 0:
+        raise ValueError("XSHELLS field has an empty or invalid radial grid.")
+    if np.any(np.diff(r) <= 0.0):
+        raise ValueError("XSHELLS radial coordinates must be strictly increasing.")
+    return r
+
+
+def validate_angular_compatibility(reference: Any, field: Any, label: str) -> None:
+    ref_spec = (reference.lmax, reference.mmax, reference.mres)
+    field_spec = (field.lmax, field.mmax, field.mres)
+    if field_spec != ref_spec:
         raise ValueError(
-            f"{label} spectral truncation {(field.lmax, field.mmax, field.mres)} does not match "
-            f"reference {(reference.lmax, reference.mmax, reference.mres)}."
+            f"{label} spectral truncation {field_spec} does not match reference {ref_spec}."
         )
+
+
+def choose_master_field(loaded: dict[str, Any]) -> tuple[str, Any]:
+    # A magnetic field is the natural master because XSHELLS allows it to extend
+    # into conducting solid layers beyond the velocity/scalar domain.
+    if "magnetic" in loaded:
+        return "magnetic", loaded["magnetic"]
+    key = max(
+        loaded,
+        key=lambda name: (
+            field_radii(loaded[name])[-1] - field_radii(loaded[name])[0],
+            field_radii(loaded[name]).size,
+        ),
+    )
+    return key, loaded[key]
+
+
+def radial_remap_to_master(
+    arr: np.ndarray,
+    r_src: np.ndarray,
+    r_master: np.ndarray,
+    *,
+    outside_value: float = 0.0,
+) -> np.ndarray:
+    """Map an ``(r,theta,phi)`` array to the master radial grid.
+
+    The fast path embeds an exact contiguous subset, which is the normal XSHELLS
+    conducting-inner-core layout.  A linear interpolation fallback handles
+    compatible but non-identical radial grids.
+    """
+    values = np.asarray(arr)
+    if values.shape[0] != len(r_src):
+        raise ValueError(
+            f"Radial array length {values.shape[0]} does not match source grid length {len(r_src)}."
+        )
+
+    if len(r_src) == len(r_master) and np.allclose(r_src, r_master, rtol=0.0, atol=RADIAL_ATOL):
+        return np.ascontiguousarray(values.astype(np.float32, copy=False))
+
+    out_shape = (len(r_master),) + values.shape[1:]
+    out = np.full(out_shape, outside_value, dtype=np.float32)
+
+    i0 = int(np.searchsorted(r_master, r_src[0] - RADIAL_ATOL, side="left"))
+    i1 = i0 + len(r_src)
+    if i1 <= len(r_master):
+        candidate = r_master[i0:i1]
+        if candidate.shape == r_src.shape and np.allclose(candidate, r_src, rtol=0.0, atol=RADIAL_ATOL):
+            out[i0:i1] = values.astype(np.float32, copy=False)
+            return np.ascontiguousarray(out)
+
+    inside = (r_master >= r_src[0] - RADIAL_ATOL) & (r_master <= r_src[-1] + RADIAL_ATOL)
+    targets = r_master[inside]
+    if targets.size == 0:
+        raise ValueError(
+            f"Source radial domain [{r_src[0]}, {r_src[-1]}] does not overlap master "
+            f"domain [{r_master[0]}, {r_master[-1]}]."
+        )
+
+    hi = np.searchsorted(r_src, targets, side="left")
+    hi = np.clip(hi, 0, len(r_src) - 1)
+    lo = np.maximum(hi - 1, 0)
+    exact = np.isclose(r_src[hi], targets, rtol=0.0, atol=RADIAL_ATOL)
+    lo[exact] = hi[exact]
+
+    denom = r_src[hi] - r_src[lo]
+    weight = np.zeros_like(targets)
+    moving = np.abs(denom) > RADIAL_ATOL
+    weight[moving] = (targets[moving] - r_src[lo[moving]]) / denom[moving]
+    reshape = (len(targets),) + (1,) * (values.ndim - 1)
+    w = weight.reshape(reshape)
+    interp = (1.0 - w) * values[lo] + w * values[hi]
+    out[inside] = interp.astype(np.float32, copy=False)
+    return np.ascontiguousarray(out)
+
+
+def sanitise_synthesised_field(arr: np.ndarray, r: np.ndarray, label: str) -> np.ndarray:
+    values = np.asarray(arr, dtype=np.float64)
+    bad = ~np.isfinite(values)
+    nbad = int(np.count_nonzero(bad))
+    if nbad:
+        centre_bad = bool(abs(r[0]) <= RADIAL_ATOL and np.any(bad[0]))
+        if centre_bad:
+            # Spherical components are undefined at the single coordinate r=0.
+            # Setting only that layer to zero preserves all conducting-IC data at r>0.
+            values[0] = 0.0
+            bad = ~np.isfinite(values)
+        remaining = int(np.count_nonzero(bad))
+        if remaining:
+            print(f"Warning: replacing {remaining} non-finite values in {label} with zero.")
+            values = np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
+        if centre_bad:
+            print(f"  {label}: set the singular r=0 spherical-component layer to zero.")
+    return values
 
 
 def downsample(arr: np.ndarray, dr: int, dt: int, dp: int) -> np.ndarray:
     return np.ascontiguousarray(np.asarray(arr)[::dr, ::dt, ::dp])
+
+
+def nearest_index(values: np.ndarray, target: float) -> int:
+    return int(np.argmin(np.abs(np.asarray(values, dtype=np.float64) - float(target))))
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -268,106 +376,144 @@ def main() -> None:
     for name, path in paths.items():
         print(f"  {name:12s}: {path if path is not None else '(not provided)'}")
 
-    # Load first available field as the shared radial/spectral reference.
-    reference_key = next(key for key, path in paths.items() if path is not None)
-    reference = load_xshells_field(paths[reference_key])
-    configure_sht_grid(reference, args.nlat, args.nphi)
+    load_order = [key for key in ("magnetic", "velocity", "temperature", "composition") if paths[key] is not None]
+    angular_key = load_order[0]
+    angular_reference = load_xshells_field(paths[angular_key])
+    configure_sht_grid(angular_reference, args.nlat, args.nphi)
 
-    loaded: dict[str, Any] = {reference_key: reference}
-    for key, path in paths.items():
-        if path is None or key == reference_key:
-            continue
-        field = load_xshells_field(path, reference=reference)
-        validate_field_compatibility(reference, field, key)
+    loaded: dict[str, Any] = {angular_key: angular_reference}
+    for key in load_order[1:]:
+        field = load_xshells_field(paths[key], angular_reference=angular_reference)
+        validate_angular_compatibility(angular_reference, field, key)
         loaded[key] = field
 
-    r = np.asarray(reference.grid.r[reference.irs : reference.ire + 1], dtype=np.float64)
-    theta = np.asarray(reference.theta_array(), dtype=np.float64)
-    phi = np.asarray(reference.phi_array(), dtype=np.float64)
+    theta = np.asarray(angular_reference.theta_array(), dtype=np.float64)
+    phi = np.asarray(angular_reference.phi_array(), dtype=np.float64)
     time_values = [float(getattr(field, "time", np.nan)) for field in loaded.values()]
     time = next((v for v in time_values if np.isfinite(v)), float("nan"))
 
+    radial_grids = {key: field_radii(field) for key, field in loaded.items()}
+    print("Radial domains:")
+    for key in load_order:
+        rr = radial_grids[key]
+        print(f"  {key:12s}: nr={len(rr):4d}, r=[{rr[0]:.12g}, {rr[-1]:.12g}]")
+
+    master_key, master_field = choose_master_field(loaded)
+    r_master = radial_grids[master_key]
     print(
-        f"Grid: nr={len(r)}, ntheta={len(theta)}, nphi={len(phi)}; "
-        f"lmax={reference.lmax}, mmax={reference.mmax}, mres={reference.mres}, time={time:.8e}"
+        f"Viewer master grid: {master_key}; nr={len(r_master)}, ntheta={len(theta)}, nphi={len(phi)}; "
+        f"lmax={angular_reference.lmax}, mmax={angular_reference.mmax}, "
+        f"mres={angular_reference.mres}, time={time:.8e}"
     )
 
-    fields: dict[str, np.ndarray] = {}
-    scalar_full: dict[str, np.ndarray] = {}
+    shell_key = next((key for key in ("velocity", "temperature", "composition") if key in loaded), master_key)
+    r_shell = radial_grids[shell_key]
+    r_icb = float(r_shell[0])
+    magnetic_r = radial_grids.get("magnetic")
+    has_conducting_inner_core = bool(
+        magnetic_r is not None and magnetic_r[0] < r_icb - RADIAL_ATOL and r_icb > RADIAL_ATOL
+    )
+    if has_conducting_inner_core:
+        print(
+            f"Conducting inner core detected: B extends to r={magnetic_r[0]:.12g}; "
+            f"fluid shell begins at r_icb={r_icb:.12g}."
+        )
+
+    # Native arrays retain their own radial grids until all derivatives are computed.
+    native_fields: dict[str, tuple[np.ndarray, np.ndarray, str]] = {}
+
+    def register(name: str, arr: np.ndarray, r_native: np.ndarray, source_key: str) -> None:
+        native_fields[name] = (np.asarray(arr, dtype=np.float32), r_native, source_key)
 
     velocity = loaded.get("velocity")
     if velocity is not None:
         if not isinstance(velocity, pyxshells.PolTor):
             raise TypeError("--velocity must be an XSHELLS poloidal/toroidal field.")
         print("Synthesizing velocity...")
-        u = np.asarray(velocity.spat_full(), dtype=np.float64)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            u = np.asarray(velocity.spat_full(), dtype=np.float64)
+        ru = radial_grids["velocity"]
+        u = sanitise_synthesised_field(u, ru, "velocity")
         Ur, Ut, Up = u[:, 0], u[:, 1], u[:, 2]
-        fields.update({"ur": Ur, "ut": Ut, "up": Up, "Uabs": np.sqrt(Ur**2 + Ut**2 + Up**2)})
+        register("ur", Ur, ru, "velocity")
+        register("ut", Ut, ru, "velocity")
+        register("up", Up, ru, "velocity")
+        register("Uabs", np.sqrt(Ur**2 + Ut**2 + Up**2), ru, "velocity")
         if not args.no_m0_fields:
-            fields.update({
-                "ur_phiavg": phi_average_volume(Ur),
-                "ut_phiavg": phi_average_volume(Ut),
-                "up_phiavg": phi_average_volume(Up),
-                "ur_nom0": remove_m0_phi(Ur),
-                "ut_nom0": remove_m0_phi(Ut),
-                "up_nom0": remove_m0_phi(Up),
-            })
+            register("ur_phiavg", phi_average_volume(Ur), ru, "velocity")
+            register("ut_phiavg", phi_average_volume(Ut), ru, "velocity")
+            register("up_phiavg", phi_average_volume(Up), ru, "velocity")
+            register("ur_nom0", remove_m0_phi(Ur), ru, "velocity")
+            register("ut_nom0", remove_m0_phi(Ut), ru, "velocity")
+            register("up_nom0", remove_m0_phi(Up), ru, "velocity")
 
     magnetic = loaded.get("magnetic")
     if magnetic is not None:
         if not isinstance(magnetic, pyxshells.PolTor):
             raise TypeError("--magnetic must be an XSHELLS poloidal/toroidal field.")
-        print("Synthesizing magnetic field...")
-        b = np.asarray(magnetic.spat_full(), dtype=np.float64)
+        print("Synthesizing magnetic field, including conducting solid regions...")
+        with np.errstate(divide="ignore", invalid="ignore"):
+            b = np.asarray(magnetic.spat_full(), dtype=np.float64)
+        rb = radial_grids["magnetic"]
+        b = sanitise_synthesised_field(b, rb, "magnetic field")
         Br, Bt, Bp = b[:, 0], b[:, 1], b[:, 2]
-        fields.update({"Br": Br, "Bt": Bt, "Bp": Bp, "Babs": np.sqrt(Br**2 + Bt**2 + Bp**2)})
+        register("Br", Br, rb, "magnetic")
+        register("Bt", Bt, rb, "magnetic")
+        register("Bp", Bp, rb, "magnetic")
+        register("Babs", np.sqrt(Br**2 + Bt**2 + Bp**2), rb, "magnetic")
         if not args.no_m0_fields:
-            fields.update({
-                "Br_phiavg": phi_average_volume(Br),
-                "Bt_phiavg": phi_average_volume(Bt),
-                "Bp_phiavg": phi_average_volume(Bp),
-                "Br_nom0": remove_m0_phi(Br),
-                "Bt_nom0": remove_m0_phi(Bt),
-                "Bp_nom0": remove_m0_phi(Bp),
-            })
+            register("Br_phiavg", phi_average_volume(Br), rb, "magnetic")
+            register("Bt_phiavg", phi_average_volume(Bt), rb, "magnetic")
+            register("Bp_phiavg", phi_average_volume(Bp), rb, "magnetic")
+            register("Br_nom0", remove_m0_phi(Br), rb, "magnetic")
+            register("Bt_nom0", remove_m0_phi(Bt), rb, "magnetic")
+            register("Bp_nom0", remove_m0_phi(Bp), rb, "magnetic")
+
+    scalar_native: dict[str, tuple[np.ndarray, np.ndarray, str]] = {}
 
     temperature = loaded.get("temperature")
     if temperature is not None:
         if not isinstance(temperature, pyxshells.ScalarSH):
             raise TypeError("--temperature must be an XSHELLS scalar field.")
         print("Synthesizing temperature...")
-        T = np.asarray(temperature.spat_full(), dtype=np.float64)
-        fields["T"] = T
-        scalar_full["T"] = T
+        with np.errstate(divide="ignore", invalid="ignore"):
+            T = np.asarray(temperature.spat_full(), dtype=np.float64)
+        rt = radial_grids["temperature"]
+        T = sanitise_synthesised_field(T, rt, "temperature")
+        scalar_native["T"] = (T, rt, "temperature")
+        register("T", T, rt, "temperature")
         if not args.no_m0_fields:
-            fields["T_nom0"] = remove_m0_phi(T)
-            fields["T_phiavg"] = phi_average_volume(T)
+            register("T_nom0", remove_m0_phi(T), rt, "temperature")
+            register("T_phiavg", phi_average_volume(T), rt, "temperature")
 
     composition = loaded.get("composition")
     if composition is not None:
         if not isinstance(composition, pyxshells.ScalarSH):
             raise TypeError("--composition must be an XSHELLS scalar field.")
         print("Synthesizing composition...")
-        Comp = np.asarray(composition.spat_full(), dtype=np.float64)
-        fields["Comp"] = Comp
-        scalar_full["Comp"] = Comp
+        with np.errstate(divide="ignore", invalid="ignore"):
+            Comp = np.asarray(composition.spat_full(), dtype=np.float64)
+        rc = radial_grids["composition"]
+        Comp = sanitise_synthesised_field(Comp, rc, "composition")
+        scalar_native["Comp"] = (Comp, rc, "composition")
+        register("Comp", Comp, rc, "composition")
         if not args.no_m0_fields:
-            fields["Comp_nom0"] = remove_m0_phi(Comp)
-            fields["Comp_phiavg"] = phi_average_volume(Comp)
+            register("Comp_nom0", remove_m0_phi(Comp), rc, "composition")
+            register("Comp_phiavg", phi_average_volume(Comp), rc, "composition")
 
-    gradients: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+    gradients: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, str]] = {}
     if not args.no_gradients:
-        for name, scalar in scalar_full.items():
-            print(f"Computing gradients of {name}...")
-            gr, gt, gp = gradient_scalar_3d(scalar, r, theta, phi)
-            gradients[name] = (gr, gt, gp)
-            fields[f"grad_r{name}_full"] = gr
-            fields[f"grad_theta{name}_full"] = gt
-            fields[f"grad_phi{name}_full"] = gp
+        for name, (scalar, rr, source_key) in scalar_native.items():
+            print(f"Computing gradients of {name} on its native shell grid...")
+            gr, gt, gp = gradient_scalar_3d(scalar, rr, theta, phi)
+            gradients[name] = (gr, gt, gp, rr, source_key)
+            register(f"grad_r{name}_full", gr, rr, source_key)
+            register(f"grad_theta{name}_full", gt, rr, source_key)
+            register(f"grad_phi{name}_full", gp, rr, source_key)
             if not args.no_m0_fields:
-                fields[f"grad_r{name}"] = remove_m0_phi(gr)
-                fields[f"grad_theta{name}"] = remove_m0_phi(gt)
-                fields[f"grad_phi{name}"] = remove_m0_phi(gp)
+                register(f"grad_r{name}", remove_m0_phi(gr), rr, source_key)
+                register(f"grad_theta{name}", remove_m0_phi(gt), rr, source_key)
+                register(f"grad_phi{name}", remove_m0_phi(gp), rr, source_key)
 
     prompt_missing = not args.no_parameter_prompt
     Ek = resolve_parameter(args.Ek, existing_paths, ("Ek", "E"), "Ek", "Ekman number", prompt_missing)
@@ -376,25 +522,44 @@ def main() -> None:
     RaT = resolve_parameter(args.RaT, existing_paths, ("RaT", "Ra_T", "Ra"), "RaT", "thermal Rayleigh number", prompt_missing)
     RaC = resolve_parameter(args.RaC, existing_paths, ("RaC", "Ra_C"), "RaC", "compositional Rayleigh number", prompt_missing)
 
-    # Compute N2 only when at least one scalar radial gradient and all required scaling values exist.
-    grad_rT = gradients.get("T", (None, None, None))[0]
-    grad_rComp = gradients.get("Comp", (None, None, None))[0]
+    grad_t = gradients.get("T")
+    grad_c = gradients.get("Comp")
     can_n2 = np.isfinite(Ek) and (
-        (grad_rT is not None and np.isfinite(Pr) and np.isfinite(RaT))
-        or (grad_rComp is not None and np.isfinite(Sc) and np.isfinite(RaC))
+        (grad_t is not None and np.isfinite(Pr) and np.isfinite(RaT))
+        or (grad_c is not None and np.isfinite(Sc) and np.isfinite(RaC))
     )
-    N2_full = None
+    n2_native: tuple[np.ndarray, np.ndarray] | None = None
     if can_n2:
-        N2_full = np.zeros_like(next(x for x in (grad_rT, grad_rComp) if x is not None))
-        if grad_rT is not None and np.isfinite(Pr) and np.isfinite(RaT):
-            N2_full += r[:, None, None] * Ek**2 * grad_rT * RaT / Pr
-        if grad_rComp is not None and np.isfinite(Sc) and np.isfinite(RaC):
-            N2_full += r[:, None, None] * Ek**2 * grad_rComp * RaC / Sc
-        fields["N2_full"] = N2_full
+        # Use the widest available scalar grid, remapping the other scalar gradient if needed.
+        available = [item for item in (grad_t, grad_c) if item is not None]
+        n2_ref = max(available, key=lambda item: (item[3][-1] - item[3][0], len(item[3])))
+        r_n2 = n2_ref[3]
+        shape = (len(r_n2), len(theta), len(phi))
+        N2_full = np.zeros(shape, dtype=np.float32)
+        if grad_t is not None and np.isfinite(Pr) and np.isfinite(RaT):
+            grt = radial_remap_to_master(grad_t[0], grad_t[3], r_n2)
+            N2_full += r_n2[:, None, None].astype(np.float32) * np.float32(Ek**2 * RaT / Pr) * grt
+        if grad_c is not None and np.isfinite(Sc) and np.isfinite(RaC):
+            grc = radial_remap_to_master(grad_c[0], grad_c[3], r_n2)
+            N2_full += r_n2[:, None, None].astype(np.float32) * np.float32(Ek**2 * RaC / Sc) * grc
+        register("N2_full", N2_full, r_n2, "scalar_shell")
         if not args.no_m0_fields:
-            fields["N2"] = remove_m0_phi(N2_full)
+            register("N2", remove_m0_phi(N2_full), r_n2, "scalar_shell")
+        n2_native = (N2_full, r_n2)
     else:
         print("N2 not generated: provide scalar field(s) and finite Ek/Ra/Pr or Ek/RaC/Sc values.")
+
+    print(f"Mapping all fields to the {master_key} radial grid...")
+    fields: dict[str, np.ndarray] = {}
+    field_domains: dict[str, dict[str, Any]] = {}
+    for name, (arr, rr, source_key) in native_fields.items():
+        fields[name] = radial_remap_to_master(arr, rr, r_master, outside_value=0.0)
+        field_domains[name] = {
+            "source": source_key,
+            "r_min": json_number(rr[0]),
+            "r_max": json_number(rr[-1]),
+            "outside_native_domain": "zero",
+        }
 
     dr = max(1, int(args.downsample_r))
     dt = max(1, int(args.downsample_theta))
@@ -402,7 +567,8 @@ def main() -> None:
     if (dr, dt, dp) != (1, 1, 1):
         print(f"Downsampling r/theta/phi by {dr}/{dt}/{dp}")
         fields = {name: downsample(arr, dr, dt, dp) for name, arr in fields.items()}
-    r_out, theta_out, phi_out = r[::dr], theta[::dt], phi[::dp]
+    r_out, theta_out, phi_out = r_master[::dr], theta[::dt], phi[::dp]
+    icb_index = nearest_index(r_out, r_icb)
 
     outdir = Path(args.out)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -431,15 +597,24 @@ def main() -> None:
         json.dump(coordinates, stream, allow_nan=False)
 
     profiles: dict[str, Any] = {"r": [json_number(x) for x in r_out]}
-    if N2_full is not None:
-        n2_profile = np.mean(N2_full, axis=(1, 2))[::dr]
+    if n2_native is not None:
+        n2_on_master = radial_remap_to_master(n2_native[0], n2_native[1], r_master)
+        n2_profile = np.mean(n2_on_master, axis=(1, 2))[::dr]
         profiles["N2"] = [json_number(x) for x in n2_profile]
     with open(outdir / "profiles.json", "w", encoding="utf-8") as stream:
         json.dump(profiles, stream, allow_nan=False)
 
     has_magnetic = magnetic is not None and "Babs" in fields and ranges["Babs"]["absmax"] > 0.0
     source_map = {key: str(path) if path is not None else None for key, path in paths.items()}
-    title = f"XSHELLS, t={time:.3e}, lmax={reference.lmax}, mmax={reference.mmax}"
+    radial_domains = {
+        key: {
+            "nr": int(len(rr)),
+            "r_min": json_number(rr[0]),
+            "r_max": json_number(rr[-1]),
+        }
+        for key, rr in radial_grids.items()
+    }
+    title = f"XSHELLS, t={time:.3e}, lmax={angular_reference.lmax}, mmax={angular_reference.mmax}"
     metadata = {
         "description": "Converted physical-space quantities from XSHELLS field files using pyxshells.",
         "source_format": "xshells",
@@ -453,9 +628,9 @@ def main() -> None:
             "RaC": json_number(RaC),
         },
         "spectral": {
-            "lmax": int(reference.lmax),
-            "mmax": int(reference.mmax),
-            "mres": int(reference.mres),
+            "lmax": int(angular_reference.lmax),
+            "mmax": int(angular_reference.mmax),
+            "mres": int(angular_reference.mres),
             "nlat": int(len(theta)),
             "nphi": int(len(phi)),
             "library": "pyxshells/SHTns",
@@ -463,6 +638,7 @@ def main() -> None:
         "magnetic": {
             "has_magnetic_field": bool(has_magnetic),
             "classification": "magnetic" if has_magnetic else "non_magnetic",
+            "has_conducting_inner_core": has_conducting_inner_core,
         },
         "title": title,
         "nr": int(len(r_out)),
@@ -470,7 +646,15 @@ def main() -> None:
         "nphi": int(len(phi_out)),
         "r_inner": json_number(r_out[0]),
         "r_outer": json_number(r_out[-1]),
-        "has_inner_core": bool(float(r_out[0]) > 0.0),
+        "r_icb": json_number(r_icb),
+        "icb_radius": json_number(r_icb),
+        "icb_index": int(icb_index),
+        "r_fluid_inner": json_number(r_icb),
+        "has_inner_core": bool(r_icb > r_out[0] + RADIAL_ATOL),
+        "has_conducting_inner_core": has_conducting_inner_core,
+        "master_radial_field": master_key,
+        "radial_domains": radial_domains,
+        "field_domains": field_domains,
         "layout": "r_theta_phi",
         "endianness": "little",
         "theta_min": json_number(theta_out[0]),
@@ -489,6 +673,7 @@ def main() -> None:
 
     print("Done.")
     print(f"Viewer data written to: {outdir.resolve()}")
+    print(f"ICB: r={r_icb:.12g}, output radial index={icb_index}")
     print(f"Fields: {', '.join(field_files)}")
 
 
