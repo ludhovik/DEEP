@@ -11,10 +11,11 @@ const statusEl = document.getElementById("status");
 const exportMessageEl = document.getElementById("export-message");
 const axesOverlayEl = document.getElementById("axes-overlay");
 
-const displaySlots = ["cmb", "icb", "equator", "equator2", "meridian", "meridian2", "fieldlines"];
+const displaySlots = ["cmb", "icb", "radial", "equator", "equator2", "meridian", "meridian2", "fieldlines"];
 const displayNames = {
   cmb: "CMB",
   icb: "ICB",
+  radial: "Radial sphere",
   equator: "Equator 1",
   equator2: "Equator 2",
   meridian: "Meridian 1",
@@ -123,6 +124,7 @@ scene.add(axes);
 const params = {
   cmbField: "Br",
   icbField: "Br",
+  radialField: "Br",
   equatorField: "C",
   equator2Field: "C",
   meridianField: "C",
@@ -144,6 +146,8 @@ const params = {
 
   showCMB: true,
   showICB: true,
+  showRadialSurface: false,
+  radialSurfaceRadiusRo: 0.70,
   showEquator: true,
   showEquator2: false,
   showMeridian: false,
@@ -174,6 +178,7 @@ const params = {
 
   cmbOpacity: 0.82,
   icbOpacity: 0.72,
+  radialOpacity: 0.90,
   equatorOpacity: 1.0,
   equator2Opacity: 1.0,
   meridianOpacity: 1.0,
@@ -185,6 +190,9 @@ const params = {
   icbScale: "symmetric",
   icbMin: -1.0,
   icbMax: 1.0,
+  radialScale: "symmetric",
+  radialMin: -1.0,
+  radialMax: 1.0,
   equatorScale: "symmetric",
   equatorMin: -1.0,
   equatorMax: 1.0,
@@ -200,6 +208,7 @@ const params = {
 
   cmbColormap: "blue-white-red",
   icbColormap: "blue-white-red",
+  radialColormap: "blue-white-red",
   equatorColormap: "blue-white-red",
   equator2Colormap: "blue-white-red",
   meridianColormap: "blue-white-red",
@@ -284,6 +293,7 @@ let coords = { r: null, theta: null, phi: null };
 
 let cmbMesh = null;
 let icbMesh = null;
+let radialSurfaceMesh = null;
 let equatorMesh = null;
 let equator2Mesh = null;
 let meridianMesh = null;
@@ -786,6 +796,8 @@ function makeEarthSurfaceMesh(radius, opacity, texture, longitudeDeg, clipOption
   }
 
   for (let it = 0; it < nTheta; it++) {
+    const theta0 = Math.PI * it / nTheta;
+    const theta1 = Math.PI * (it + 1) / nTheta;
     for (let ip = 0; ip < nPhi; ip++) {
       const thetaMid = 0.5 * (theta0 + theta1);
       const phiMid = 2.0 * Math.PI * (ip + 0.5) / nPhi;
@@ -1360,6 +1372,7 @@ function getPreloadFieldRequests(meta) {
 
   if (params.showCMB) addCmb(params.cmbField);
   if (params.showICB) addVolume(params.icbField);
+  if (params.showRadialSurface) addVolume(params.radialField);
   if (params.showEquator) addVolume(params.equatorField);
   if (params.showEquator2) addVolume(params.equator2Field);
   if (params.showMeridian) addVolume(params.meridianField);
@@ -1488,7 +1501,7 @@ async function loadFrameByIndex(index, options = {}) {
     }
 
     // Keep the current selected fields when available; otherwise fall back safely.
-    for (const key of ["cmbField", "icbField", "equatorField", "equator2Field", "meridianField", "meridian2Field"]) {
+    for (const key of ["cmbField", "icbField", "radialField", "equatorField", "equator2Field", "meridianField", "meridian2Field"]) {
       if (!validFieldForState(key, params[key])) {
         applyDefaultFields();
         break;
@@ -1876,6 +1889,58 @@ function phiAtIndex(ip) {
   return (2.0 * Math.PI * ip) / metadata.nphi;
 }
 
+
+function radialSurfaceSampling() {
+  const nr = Math.max(1, Number(metadata.nr) || 1);
+  const rOuter = Number(metadata.r_outer);
+  const requestedRatio = clamp(Number(params.radialSurfaceRadiusRo), 0.0, 1.0);
+  const requestedRadius = requestedRatio * (Number.isFinite(rOuter) ? rOuter : radiusAtIndex(nr - 1));
+
+  const radii = Array.from({ length: nr }, (_, ir) => Number(radiusAtIndex(ir)));
+  const finiteRadii = radii.filter(Number.isFinite);
+  if (finiteRadii.length === 0) {
+    return { i0: 0, i1: 0, weight: 0.0, requestedRadius, radius: requestedRadius, clamped: false };
+  }
+
+  const rMin = Math.min(...finiteRadii);
+  const rMax = Math.max(...finiteRadii);
+  const radius = clamp(requestedRadius, rMin, rMax);
+  const clampedRadius = Math.abs(radius - requestedRadius) > 1.0e-12 * Math.max(1.0, Math.abs(rMax));
+
+  if (nr === 1) {
+    return { i0: 0, i1: 0, weight: 0.0, requestedRadius, radius: radii[0], clamped: clampedRadius };
+  }
+
+  for (let ir = 0; ir < nr - 1; ir++) {
+    const ra = radii[ir];
+    const rb = radii[ir + 1];
+    if (!Number.isFinite(ra) || !Number.isFinite(rb)) continue;
+    if ((radius >= Math.min(ra, rb) && radius <= Math.max(ra, rb))) {
+      const denominator = rb - ra;
+      const weight = Math.abs(denominator) > 1.0e-30 ? clamp((radius - ra) / denominator, 0.0, 1.0) : 0.0;
+      return { i0: ir, i1: ir + 1, weight, requestedRadius, radius, clamped: clampedRadius };
+    }
+  }
+
+  let nearest = 0;
+  let nearestDistance = Infinity;
+  for (let ir = 0; ir < nr; ir++) {
+    const distance = Math.abs(radii[ir] - radius);
+    if (distance < nearestDistance) {
+      nearest = ir;
+      nearestDistance = distance;
+    }
+  }
+  return { i0: nearest, i1: nearest, weight: 0.0, requestedRadius, radius: radii[nearest], clamped: clampedRadius };
+}
+
+function radialSurfaceValue(field, sampling, it, ip) {
+  const value0 = field[idx(sampling.i0, it, ip)];
+  if (sampling.i1 === sampling.i0 || sampling.weight <= 0.0) return value0;
+  const value1 = field[idx(sampling.i1, it, ip)];
+  return value0 + sampling.weight * (value1 - value0);
+}
+
 function nearestThetaIndex(theta) {
   let best = 0;
   let bestDist = Infinity;
@@ -2193,6 +2258,27 @@ function surfaceRange(field, radiusIndex, slot) {
     }
   });
   return applyScale(slot, raw[0], raw[1]);
+}
+
+
+function radialSurfaceRange(field, sampling, slot = "radial") {
+  let vmin = Infinity;
+  let vmax = -Infinity;
+  for (let it = 0; it < metadata.ntheta; it++) {
+    for (let ip = 0; ip < metadata.nphi; ip++) {
+      const value = radialSurfaceValue(field, sampling, it, ip);
+      if (!Number.isFinite(value)) continue;
+      if (value < vmin) vmin = value;
+      if (value > vmax) vmax = value;
+    }
+  }
+  if (!Number.isFinite(vmin) || !Number.isFinite(vmax)) return applyScale(slot, -1.0, 1.0);
+  if (vmin === vmax) {
+    const pad = Math.max(Math.abs(vmin) * 0.01, 1.0e-12);
+    vmin -= pad;
+    vmax += pad;
+  }
+  return applyScale(slot, vmin, vmax);
 }
 
 function cmbDisplayRange(fieldObject, radiusIndex, slot) {
@@ -3798,6 +3884,68 @@ function makeSurfaceMesh(field, radiusIndex, opacity, vmin, vmax, colormap) {
   return mesh;
 }
 
+
+function makeRadialSurfaceMesh(field, sampling, opacity, vmin, vmax, colormap) {
+  const nt = metadata.ntheta;
+  const np = metadata.nphi;
+  const radius = sampling.radius;
+  const positions = [];
+  const colors = [];
+  const indices = [];
+
+  for (let it = 0; it < nt; it++) {
+    const theta = thetaAtIndex(it);
+    for (let ip = 0; ip < np; ip++) {
+      const phi = phiAtIndex(ip);
+      positions.push(
+        radius * Math.sin(theta) * Math.cos(phi),
+        radius * Math.sin(theta) * Math.sin(phi),
+        radius * Math.cos(theta)
+      );
+      const color = colourMap(radialSurfaceValue(field, sampling, it, ip), vmin, vmax, colormap);
+      colors.push(color.r, color.g, color.b);
+    }
+  }
+
+  for (let it = 0; it < nt - 1; it++) {
+    for (let ip = 0; ip < np; ip++) {
+      const ip1 = (ip + 1) % np;
+      const a = it * np + ip;
+      const b = it * np + ip1;
+      const c = (it + 1) * np + ip;
+      const d = (it + 1) * np + ip1;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  const colorAttribute = new THREE.Float32BufferAttribute(colors, 3);
+  colorAttribute.setUsage(THREE.DynamicDrawUsage);
+  geometry.setAttribute("color", colorAttribute);
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+
+  const material = new THREE.MeshPhongMaterial({
+    vertexColors: true,
+    side: THREE.DoubleSide,
+    shininess: 8,
+  });
+  applyOpacityAndDepth(material, opacity);
+
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.name = "radial-spherical-surface";
+  mesh.userData.viewerTopology = {
+    kind: "radial-surface",
+    i0: sampling.i0,
+    i1: sampling.i1,
+    weight: sampling.weight,
+    radius: sampling.radius,
+    vertexCount: nt * np,
+  };
+  return mesh;
+}
+
 function makeCmbSurfaceMesh(fieldObject, radiusIndex, opacity, vmin, vmax, colormap, clipOptions = null) {
   const nt = metadata.ntheta;
   const np = metadata.nphi;
@@ -4275,6 +4423,23 @@ function updateSurfaceMeshColours(mesh, field, radiusIndex, vmin, vmax, colormap
   }, vmin, vmax, colormap);
 }
 
+
+function updateRadialSurfaceMeshColours(mesh, field, sampling, vmin, vmax, colormap) {
+  const topology = mesh?.userData?.viewerTopology;
+  if (!topology || topology.kind !== "radial-surface") return false;
+  const sameSampling = topology.i0 === sampling.i0
+    && topology.i1 === sampling.i1
+    && Math.abs(Number(topology.weight) - Number(sampling.weight)) < 1.0e-12
+    && Math.abs(Number(topology.radius) - Number(sampling.radius)) < 1.0e-12;
+  if (!sameSampling) return false;
+  const np = metadata.nphi;
+  return updateMeshColourBuffer(mesh, (i) => {
+    const it = Math.floor(i / np);
+    const ip = i % np;
+    return radialSurfaceValue(field, sampling, it, ip);
+  }, vmin, vmax, colormap);
+}
+
 function updateCmbMeshColours(mesh, fieldObject, radiusIndex, vmin, vmax, colormap) {
   const topology = mesh?.userData?.viewerTopology;
   if (!topology || topology.kind !== "cmb" || topology.radiusIndex !== radiusIndex) return false;
@@ -4355,7 +4520,7 @@ function setStatusSummary(lastFieldName = null) {
   const sim = metadata.magnetic?.classification ? `${metadata.magnetic.classification} | ` : "";
   const shownMap = {shell: "shell/internal", exterior: "exterior potential/poloidal", both: "both"};
   const lineMode = metadata.field_lines?.mode ? `B lines=${metadata.field_lines.mode}, shown=${shownMap[params.fieldLineDisplay] || params.fieldLineDisplay} | ` : "";
-  const fieldText = `CMB=${params.cmbField}, ICB=${params.icbField}, Eq1=${params.equatorField}, Eq2=${params.equator2Field}, Mer1=${params.meridianField}, Mer2=${params.meridian2Field}`;
+  const fieldText = `CMB=${params.cmbField}, ICB=${params.icbField}, R=${params.radialField}@${Number(params.radialSurfaceRadiusRo).toFixed(3)}ro, Eq1=${params.equatorField}, Eq2=${params.equator2Field}, Mer1=${params.meridianField}, Mer2=${params.meridian2Field}`;
   const changed = lastFieldName ? ` | updated=${lastFieldName}` : "";
   setStatus(`${dataset}${title}${sim}${lineMode}${fieldText}${changed} | grid ${metadata.nr} x ${metadata.ntheta} x ${metadata.nphi}`);
 }
@@ -4402,6 +4567,50 @@ async function rebuildICB(options = {}) {
     scene.add(icbMesh);
   }
   setStatusSummary(`ICB:${params.icbField}`);
+}
+
+
+async function rebuildRadialSurface(options = {}) {
+  const reuseGeometry = Boolean(options.reuseGeometry);
+  const field = await loadField(params.radialField);
+  const sampling = radialSurfaceSampling();
+  const [vmin, vmax] = radialSurfaceRange(field, sampling, "radial");
+  setColourbarForSlot("radial", params.radialField, vmin, vmax);
+
+  if (
+    reuseGeometry
+    && radialSurfaceMesh
+    && updateRadialSurfaceMeshColours(
+      radialSurfaceMesh,
+      field,
+      sampling,
+      vmin,
+      vmax,
+      params.radialColormap
+    )
+  ) {
+    radialSurfaceMesh.visible = params.showRadialSurface;
+    applyOpacityAndDepth(radialSurfaceMesh.material, params.radialOpacity);
+  } else {
+    disposeObject(radialSurfaceMesh);
+    radialSurfaceMesh = makeRadialSurfaceMesh(
+      field,
+      sampling,
+      params.radialOpacity,
+      vmin,
+      vmax,
+      params.radialColormap
+    );
+    radialSurfaceMesh.visible = params.showRadialSurface;
+    scene.add(radialSurfaceMesh);
+  }
+
+  const rOuter = Math.max(Math.abs(Number(metadata.r_outer)) || 1.0, 1.0e-30);
+  const actualRatio = sampling.radius / rOuter;
+  const clampText = sampling.clamped ? " (clamped to data domain)" : "";
+  setStatusSummary(
+    `Radial sphere:${params.radialField}, r/ro=${actualRatio.toFixed(4)}${clampText}`
+  );
 }
 
 async function rebuildEquator(options = {}) {
@@ -4522,6 +4731,7 @@ async function rebuildAllMeshes(options = {}) {
 
   if (!visibleOnly || params.showCMB) await rebuildCMB({ reuseGeometry });
   if ((!visibleOnly || params.showICB) && metadata.has_inner_core) await rebuildICB({ reuseGeometry });
+  if (!visibleOnly || params.showRadialSurface) await rebuildRadialSurface({ reuseGeometry });
   if (!visibleOnly || params.showEquator) await rebuildEquator({ reuseGeometry });
   if (!visibleOnly || params.showEquator2) await rebuildEquator2({ reuseGeometry });
   if (!visibleOnly || params.showMeridian) await rebuildMeridian({ reuseGeometry });
@@ -4535,6 +4745,7 @@ async function rebuildAllMeshes(options = {}) {
 function updateVisibility() {
   if (cmbMesh) cmbMesh.visible = params.showCMB;
   if (icbMesh) icbMesh.visible = params.showICB;
+  if (radialSurfaceMesh) radialSurfaceMesh.visible = params.showRadialSurface;
   if (equatorMesh) equatorMesh.visible = params.showEquator;
   if (equator2Mesh) equator2Mesh.visible = params.showEquator2;
   if (meridianMesh) meridianMesh.visible = params.showMeridian;
@@ -4549,6 +4760,7 @@ function updateVisibility() {
 
   if (colourbars.cmb?.row) colourbars.cmb.row.style.display = params.showCMB && cmbMesh ? "block" : "none";
   if (colourbars.icb?.row) colourbars.icb.row.style.display = params.showICB && icbMesh ? "block" : "none";
+  if (colourbars.radial?.row) colourbars.radial.row.style.display = params.showRadialSurface && radialSurfaceMesh ? "block" : "none";
   if (colourbars.equator?.row) colourbars.equator.row.style.display = params.showEquator && equatorMesh ? "block" : "none";
   if (colourbars.equator2?.row) colourbars.equator2.row.style.display = params.showEquator2 && equator2Mesh ? "block" : "none";
   if (colourbars.meridian?.row) colourbars.meridian.row.style.display = params.showMeridian && meridianMesh ? "block" : "none";
@@ -4575,6 +4787,7 @@ function updateVisibility() {
 function updateOpacities() {
   if (cmbMesh) applyOpacityAndDepth(cmbMesh.material, params.cmbOpacity);
   if (icbMesh) applyOpacityAndDepth(icbMesh.material, params.icbOpacity);
+  if (radialSurfaceMesh) applyOpacityAndDepth(radialSurfaceMesh.material, params.radialOpacity);
   if (equatorMesh) applyOpacityAndDepth(equatorMesh.material, params.equatorOpacity);
   if (equator2Mesh) applyOpacityAndDepth(equator2Mesh.material, params.equator2Opacity);
   if (meridianMesh) applyOpacityAndDepth(meridianMesh.material, params.meridianOpacity);
@@ -4806,6 +5019,7 @@ function applyDefaultFields() {
 
   params.cmbField = chooseField(["Br", "Br_CMB_lmax10", "C", "Comp", "ur", "Uabs"], getCmbFieldNames());
   params.icbField = chooseField(["Br", "C", "Comp", "ur", "Uabs"], fields);
+  params.radialField = chooseField(["Br", "C", "Comp", "ur", "Uabs"], fields);
   params.equatorField = chooseField(["C", "Comp", "Br", "Uabs"], fields);
   params.equator2Field = chooseField(["C", "Comp", "Br", "Uabs"], fields);
   params.meridianField = chooseField(["C", "Comp", "Br", "Uabs"], fields);
@@ -4862,7 +5076,7 @@ function decodeViewState(code) {
 }
 
 function validFieldForState(key, value) {
-  if (!["cmbField", "icbField", "equatorField", "equator2Field", "meridianField", "meridian2Field"].includes(key)) return true;
+  if (!["cmbField", "icbField", "radialField", "equatorField", "equator2Field", "meridianField", "meridian2Field"].includes(key)) return true;
   if (key === "cmbField") return getCmbFieldNames().includes(value);
   return getVolumeFieldNames().includes(value);
 }
@@ -5048,6 +5262,8 @@ function buildGui() {
 
   const cmbFolder = addDisplayControls(gui, "cmb", "CMB surface", "cmbField", "showCMB", "cmbOpacity", rebuildCMB, cmbFields);
   const icbFolder = addDisplayControls(gui, "icb", "ICB surface", "icbField", "showICB", "icbOpacity", rebuildICB, volumeFields);
+  const radialFolder = addDisplayControls(gui, "radial", "Radial spherical surface", "radialField", "showRadialSurface", "radialOpacity", rebuildRadialSurface, volumeFields);
+  radialFolder.add(params, "radialSurfaceRadiusRo", 0.0, 1.0, 0.001).name("Radius r / r_o").onFinishChange(() => rebuildRadialSurface({ reuseGeometry: false }));
   const eqFolder = addDisplayControls(gui, "equator", "Equatorial slice 1", "equatorField", "showEquator", "equatorOpacity", rebuildEquator, volumeFields);
   const eq2Folder = addDisplayControls(gui, "equator2", "Equatorial slice 2", "equator2Field", "showEquator2", "equator2Opacity", rebuildEquator2, volumeFields);
   eq2Folder.add(params, "equator2Z", -0.95, 0.95, 0.01).name("z / r_o").onChange(rebuildEquator2);
@@ -5162,6 +5378,7 @@ function buildGui() {
     sequenceFolder,
     cmbFolder,
     icbFolder,
+    radialFolder,
     eqFolder,
     eq2Folder,
     merFolder,

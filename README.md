@@ -1713,3 +1713,18 @@ Frame stepping wraps cyclically at the first and last snapshots. If sequence
 playback is already running, the timer is paused for the manual step and then
 resumed without creating a competing frame-load request.
 
+### Radial spherical surface
+
+The `Radial spherical surface` panel displays any volume field on a sphere at a
+user-selected normalized radius `r / r_o` between 0 and 1. Values are linearly
+interpolated between adjacent radial grid levels. If the requested radius lies
+outside the radial domain stored by the dataset, the viewer uses the closest
+available radius. The surface has independent visibility, field, colour scale,
+colour map, manual limits, and opacity controls, and is supported during
+sequence playback and image/video export.
+
+### Earth surface latitude-cell fix
+
+The Earth surface clipping mesh now defines the lower and upper colatitudes for
+each latitude cell before evaluating its midpoint. This fixes the runtime error
+`theta0 is not defined` when enabling the Earth texture.
