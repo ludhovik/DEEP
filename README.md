@@ -1557,3 +1557,159 @@ Relevant options:
 For a conducting inner core, the volume magnetic field is retained below the ICB. The `shell` field-line mode is deliberately restricted to the fluid shell, while the exterior mode reconstructs a current-free field from `Br` at the CMB.
 
 `Cps` is no longer requested or written by either converter. The viewer also removes that legacy key when opening older metadata files.
+
+## Optimised sequence playback and PNG movie frames
+
+The viewer sequence path is optimised for repeated snapshots on the same numerical grid.
+
+### Interactive playback
+
+During playback the viewer now:
+
+- keeps the CMB, ICB, equatorial-slice and meridional-slice geometry on the GPU;
+- updates the existing dynamic colour buffers instead of disposing and recreating meshes;
+- loads only fields belonging to currently visible displays;
+- leaves hidden slices unloaded until they are enabled;
+- defers isosurface reconstruction and magnetic field-line loading by default;
+- restores and updates deferred isosurfaces and field lines when playback is paused;
+- advances to the next frame only after the current frame finishes loading, avoiding an interval backlog;
+- avoids reconstructing the Earth surface and slice-gap fillers on every snapshot.
+
+The **Sequence playback** panel contains:
+
+- `Defer isosurfaces`;
+- `Defer field lines`.
+
+Both are enabled by default. Disable either option only when that object must be regenerated for every interactive frame.
+
+Persistent geometry is used when consecutive snapshots have the same `nr`, `ntheta`, and `nphi`. If a sequence changes grid dimensions, the viewer safely rebuilds its geometry.
+
+### Offline PNG snapshot sequence
+
+Open:
+
+```text
+Export -> PNG snapshot sequence
+```
+
+Set:
+
+- first and last sequence-frame indices;
+- frame step;
+- output width;
+- whether isosurfaces and magnetic field lines should be refreshed for every exported frame.
+
+Then select `Render PNG sequence`.
+
+On browsers supporting the File System Access API, choose an output directory. The viewer writes:
+
+```text
+frame_00000.png
+frame_00001.png
+frame_00002.png
+...
+```
+
+On browsers without directory writing, including Firefox, the viewer packages the PNGs into one uncompressed ZIP download. PNG data are already compressed, so ZIP deflation would provide little additional reduction. The fallback keeps the generated PNGs in browser memory until the ZIP is complete; use a moderate frame range or PNG width for very long sequences.
+
+Use `Cancel PNG render` to stop after the current frame.
+
+Create an MP4 with FFmpeg:
+
+```bash
+ffmpeg -framerate 24 -i 'frame_%05d.png' \
+  -c:v libx264 -preset slow -crf 18 -pix_fmt yuv420p movie.mp4
+```
+
+For a PNG ZIP, extract it before running FFmpeg.
+
+
+### Sequence heavy-object behaviour
+
+During playback, `Defer isosurfaces` and `Defer field lines` are independent:
+
+- enabled: the object is hidden during playback and refreshed after pause;
+- disabled: the object is rebuilt and displayed for every snapshot.
+
+
+### Video export with sequence playback
+
+Enable `Export > Activate playback` before `Record video` to advance the loaded
+snapshot sequence while the camera rotation is recorded. The snapshot rate is
+controlled by `Sequence playback > FPS`. Playback that was started by the video
+export is stopped automatically when recording finishes; playback that was
+already running before recording is left running.
+
+### Personalized video motion
+
+The two original camera paths remain available:
+
+- `360° in phi`
+- `360° phi + 180° theta`
+
+A third mode, `Personalized motion`, starts from the current camera viewpoint and
+accepts semicolon-separated relative rotations:
+
+```text
+-180p,45t;180p
+```
+
+Here `p` means azimuth/phi and `t` means polar angle/theta. Signed values control
+the direction. Use `,` for motions happening at the same time within one stage,
+and `;` for the next stage. Video time is divided between stages in proportion to
+their largest absolute angular amplitude. Examples:
+
+```text
+90p
+-180p
+45t
+-180p,45t;180p
+90p,-30t;90p
+```
+
+### Preloading during sequence and video playback
+
+Playback now automatically prepares the next number of snapshots specified by
+`Sequence playback > Preload frames`.
+
+The preload includes:
+
+- binary arrays for currently visible scalar fields;
+- isosurface mesh geometry when `Defer isosurfaces` is disabled;
+- magnetic field-line JSON and GPU line geometry when `Defer field lines` is disabled.
+
+The same preload runs before a video recording that has `Activate playback`
+enabled. Heavy-object caches are bounded by `Preload frames`; old inactive
+entries are disposed as new snapshots enter the rolling cache.
+
+### Freeze-free video sequence synchronization
+
+When `Export > Activate playback` is enabled, video export no longer runs the
+normal real-time sequence timer. The video timeline drives the snapshot index.
+Before recording, all unique snapshots required by the selected video duration
+and sequence FPS are preloaded, including isosurfaces and field-line geometry
+when their defer options are disabled.
+
+During any remaining snapshot swap, `MediaRecorder` is paused. Recording resumes
+only after the new fields and heavy objects have reached the canvas, and the
+loading interval is removed from the camera-motion timeline. This prevents the
+recorded movie from containing repeated frozen frames followed by camera jumps.
+
+### Keyboard shortcuts
+
+Keyboard shortcuts are active when focus is not inside a GUI input, selector,
+button, or editable text field:
+
+```text
++ / Numpad +    next sequence frame
+- / Numpad -    previous sequence frame
+Left / Right    rotate phi by -5° / +5°
+Up / Down       rotate theta by -5° / +5°
+i               zoom in by 10%
+o               zoom out by 10%
+```
+
+Frame stepping wraps cyclically at the first and last snapshots. If sequence
+playback is already running, the timer is paused for the manual step and then
+resumed without creating a competing frame-load request.
+
