@@ -38,6 +38,22 @@ except ImportError as exc:  # pragma: no cover - environment-dependent
         "pyxshells also requires the Python SHTns module."
     ) from exc
 
+try:
+    # When run as ``python tools/convert_xshells_to_viewer.py`` the tools
+    # directory is on sys.path. These routines only depend on NumPy arrays and
+    # are shared so both converters produce identical field-line JSON.
+    from convert_state_to_viewer import (
+        choose_regular_seed_grid,
+        compute_external_field_lines_from_cmb,
+        compute_shell_field_lines_from_cmb,
+    )
+except ImportError:  # pragma: no cover - package-style invocation
+    from tools.convert_state_to_viewer import (
+        choose_regular_seed_grid,
+        compute_external_field_lines_from_cmb,
+        compute_shell_field_lines_from_cmb,
+    )
+
 
 RADIAL_ATOL = 1.0e-11
 
@@ -335,6 +351,83 @@ def nearest_index(values: np.ndarray, target: float) -> int:
     return int(np.argmin(np.abs(np.asarray(values, dtype=np.float64) - float(target))))
 
 
+
+def analyse_cmb_br_coefficients(sht: Any, Br_cmb: np.ndarray) -> np.ndarray:
+    """Analyse physical CMB radial field into the field's native SHTns basis."""
+    if not hasattr(sht, "analys"):
+        raise RuntimeError("The pyxshells SHTns object does not expose analys().")
+    coeff = np.asarray(sht.analys(np.asarray(Br_cmb, dtype=np.float64)), dtype=np.complex128)
+    ell = np.asarray(sht.l, dtype=np.int64)
+    if coeff.shape[0] != ell.shape[0]:
+        raise ValueError(
+            f"SHT analysis returned {coeff.shape[0]} coefficients but sht.l has {ell.shape[0]}."
+        )
+    # A magnetic monopole is non-physical and can be introduced by round-off.
+    coeff = coeff.copy()
+    coeff[ell == 0] = 0.0
+    return coeff
+
+
+def synthesize_cmb_br_ltrunc_xshells(
+    sht: Any,
+    Br_cmb: np.ndarray,
+    l_trunc: int,
+) -> np.ndarray:
+    """Return CMB Br synthesized after retaining only degrees l <= l_trunc."""
+    l_trunc = int(l_trunc)
+    if l_trunc < 0:
+        raise ValueError("--cmb-br-ltrunc must be >= 0")
+    coeff = analyse_cmb_br_coefficients(sht, Br_cmb)
+    ell = np.asarray(sht.l, dtype=np.int64)
+    coeff[ell > l_trunc] = 0.0
+    return np.ascontiguousarray(np.asarray(sht.synth(coeff), dtype=np.float64))
+
+
+def external_potential_field_from_cmb_br(
+    sht: Any,
+    Br_cmb: np.ndarray,
+    r_cmb: float,
+    r_ext: np.ndarray,
+    *,
+    btheta_sign: float = 1.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Reconstruct the current-free exterior field from physical CMB Br.
+
+    If Q_lm are the radial-field coefficients at the CMB, then outside the
+    sphere Q_lm(r) = Q_lm(r_cmb) (r_cmb/r)^(l+2). In the SHTns vector basis the
+    corresponding potential-field spheroidal coefficient has magnitude
+    |S_lm| = |Q_lm|/(l+1); the sign switch is retained to accommodate the same
+    convention selection used by the Leeds converter.
+    """
+    r_cmb = float(r_cmb)
+    rr = np.asarray(r_ext, dtype=np.float64)
+    if r_cmb <= 0.0 or np.any(rr < r_cmb - RADIAL_ATOL):
+        raise ValueError("Exterior radial grid must start at or outside a positive CMB radius.")
+
+    q_cmb = analyse_cmb_br_coefficients(sht, Br_cmb)
+    ell = np.asarray(sht.l, dtype=np.float64)
+    denom = ell + 1.0
+
+    # Infer the exact physical SHT grid from the supplied CMB field.
+    ntheta, nphi = np.asarray(Br_cmb).shape
+    Br_ext = np.empty((len(rr), ntheta, nphi), dtype=np.float64)
+    Bt_ext = np.empty_like(Br_ext)
+    Bp_ext = np.empty_like(Br_ext)
+    zero = np.zeros_like(q_cmb)
+
+    for k, radius in enumerate(rr):
+        factor = (r_cmb / float(radius)) ** (ell + 2.0)
+        Qlm = q_cmb * factor
+        Slm = float(btheta_sign) * Qlm / denom
+        Slm[ell == 0.0] = 0.0
+        br, bt, bp = sht.synth(Qlm, Slm, zero)
+        Br_ext[k] = np.asarray(br, dtype=np.float64)
+        Bt_ext[k] = np.asarray(bt, dtype=np.float64)
+        Bp_ext[k] = np.asarray(bp, dtype=np.float64)
+
+    return Br_ext, Bt_ext, Bp_ext
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Convert XSHELLS field files using pyxshells to viewer data.")
     source = p.add_argument_group("XSHELLS input")
@@ -364,11 +457,72 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--Sc", "--PrC", "--Pr_C", dest="Sc", type=float)
     p.add_argument("--RaT", "--Ra", "--Ra_T", dest="RaT", type=float)
     p.add_argument("--RaC", "--Ra_C", dest="RaC", type=float)
+
+    p.add_argument(
+        "--cmb-br-ltrunc",
+        type=int,
+        default=None,
+        help=(
+            "Export an additional CMB-only Br_CMB_lmax<L> field obtained by "
+            "analysing XSHELLS Br at the CMB and retaining l <= L."
+        ),
+    )
+    p.add_argument("--skip-field-lines", action="store_true", help="Do not compute magnetic field lines.")
+    p.add_argument(
+        "--field-line-mode",
+        choices=["shell", "exterior", "both"],
+        default="shell",
+        help=(
+            "'shell' traces the actual B field in the fluid shell; 'exterior' traces "
+            "the potential field outside the CMB reconstructed from CMB Br; 'both' writes both."
+        ),
+    )
+    p.add_argument(
+        "--external-rmax",
+        type=float,
+        default=None,
+        help="Maximum radius for exterior potential-field tracing; default 2.5*r_cmb.",
+    )
+    p.add_argument(
+        "--external-nr",
+        type=int,
+        default=96,
+        help="Number of radial points in the exterior potential-field grid.",
+    )
+    p.add_argument(
+        "--external-closed-only",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Keep only exterior lines that return to the CMB; use --no-external-closed-only for open/truncated traces.",
+    )
+    p.add_argument(
+        "--external-btheta-sign",
+        choices=["auto", "plus", "minus"],
+        default="auto",
+        help="Exterior SHTns Btheta convention; auto tests both signs and keeps the better CMB-to-CMB result.",
+    )
+    p.add_argument("--line-seeds", type=int, default=None, help="Approximate total regular CMB seed count; overrides the two seed dimensions.")
+    p.add_argument("--line-seed-theta", type=int, default=9, help="Number of CMB seed colatitudes.")
+    p.add_argument("--line-seed-phi", type=int, default=18, help="Number of CMB seed longitudes.")
+    p.add_argument("--line-max-steps", type=int, default=1000, help="Maximum RK4 steps per field-line branch.")
+    p.add_argument(
+        "--line-step-size",
+        type=float,
+        default=None,
+        help="RK4 step length; defaults to half the median shell or exterior radial spacing.",
+    )
     return p
 
 
 def main() -> None:
     args = build_arg_parser().parse_args()
+    if args.line_seeds is not None:
+        args.line_seed_theta, args.line_seed_phi = choose_regular_seed_grid(args.line_seeds)
+        print(
+            f"Regular field-line seed grid requested: ~{args.line_seeds} seeds -> "
+            f"{args.line_seed_theta} x {args.line_seed_phi} = "
+            f"{args.line_seed_theta * args.line_seed_phi}"
+        )
     paths = resolve_inputs(args)
     existing_paths = [str(p) for p in paths.values() if p is not None]
 
@@ -418,6 +572,11 @@ def main() -> None:
             f"Conducting inner core detected: B extends to r={magnetic_r[0]:.12g}; "
             f"fluid shell begins at r_icb={r_icb:.12g}."
         )
+
+    # The fluid field defines the ICB and CMB. For the current conducting-inner-core
+    # use case the magnetic outer radius is the same CMB, but using r_shell[-1]
+    # keeps the distinction explicit.
+    r_cmb = float(r_shell[-1])
 
     # Native arrays retain their own radial grids until all derivatives are computed.
     native_fields: dict[str, tuple[np.ndarray, np.ndarray, str]] = {}
@@ -574,7 +733,18 @@ def main() -> None:
     outdir.mkdir(parents=True, exist_ok=True)
     for old in outdir.glob("*_volume.f32"):
         old.unlink()
-    for old_name in ("metadata.json", "coordinates.json", "profiles.json"):
+    for old in outdir.glob("*_cmb.f32"):
+        old.unlink()
+    for old_name in (
+        "metadata.json",
+        "coordinates.json",
+        "profiles.json",
+        "B_lines.json",
+        "B_lines_shell.json",
+        "B_lines_exterior.json",
+        "B_lines_exterior_poloidal.json",
+        "B_lines_from_cmb.json",
+    ):
         old = outdir / old_name
         if old.exists():
             old.unlink()
@@ -587,6 +757,58 @@ def main() -> None:
         ranges[name] = write_f32(outdir / filename, arr)
         field_files[name] = filename
         print(f"  {name:20s} {arr.shape} -> {filename}")
+
+    has_magnetic = magnetic is not None and "Babs" in fields and ranges["Babs"]["absmax"] > 0.0
+    surface_fields: dict[str, dict[str, Any]] = {}
+
+    magnetic_cmb_index = None
+    Br_cmb_native = None
+    if has_magnetic:
+        rb = radial_grids["magnetic"]
+        magnetic_cmb_index = nearest_index(rb, r_cmb)
+        if abs(float(rb[magnetic_cmb_index]) - r_cmb) > max(RADIAL_ATOL, 1.0e-8 * max(abs(r_cmb), 1.0)):
+            raise ValueError(
+                f"Magnetic grid has no radial point at the fluid CMB r={r_cmb}; "
+                f"nearest is r={rb[magnetic_cmb_index]}."
+            )
+        Br_cmb_native = np.asarray(Br[magnetic_cmb_index], dtype=np.float64)
+
+    if args.cmb_br_ltrunc is not None:
+        if not has_magnetic or Br_cmb_native is None:
+            print("Skipping --cmb-br-ltrunc because no magnetic field was loaded.")
+        else:
+            requested_lcut = int(args.cmb_br_ltrunc)
+            if requested_lcut < 0:
+                raise ValueError("--cmb-br-ltrunc must be >= 0")
+            effective_lcut = min(requested_lcut, int(magnetic.lmax))
+            if effective_lcut != requested_lcut:
+                print(
+                    f"Requested --cmb-br-ltrunc {requested_lcut} exceeds XSHELLS lmax "
+                    f"{magnetic.lmax}; using {effective_lcut}."
+                )
+            print(f"Synthesizing XSHELLS CMB Br truncated to l <= {effective_lcut}...")
+            Br_lcut = synthesize_cmb_br_ltrunc_xshells(
+                magnetic.sht, Br_cmb_native, effective_lcut
+            )
+            Br_lcut = np.ascontiguousarray(Br_lcut[::dt, ::dp])
+            if Br_lcut.shape != (len(theta_out), len(phi_out)):
+                raise ValueError(
+                    f"Truncated CMB Br shape {Br_lcut.shape} does not match viewer grid "
+                    f"{(len(theta_out), len(phi_out))}."
+                )
+            field_name = f"Br_CMB_lmax{requested_lcut}"
+            filename = f"{field_name}_cmb.f32"
+            ranges[field_name] = write_f32(outdir / filename, Br_lcut)
+            surface_fields[field_name] = {
+                "file": filename,
+                "surface": "cmb",
+                "layout": "theta_phi",
+                "l_trunc": requested_lcut,
+                "effective_l_trunc": effective_lcut,
+                "source": "XSHELLS Br at the fluid CMB",
+                "description": f"B_r at the CMB retained through spherical-harmonic degree {effective_lcut}",
+            }
+            print(f"  {field_name:20s} {Br_lcut.shape} -> {filename}")
 
     coordinates = {
         "r": [json_number(x) for x in r_out],
@@ -604,7 +826,149 @@ def main() -> None:
     with open(outdir / "profiles.json", "w", encoding="utf-8") as stream:
         json.dump(profiles, stream, allow_nan=False)
 
-    has_magnetic = magnetic is not None and "Babs" in fields and ranges["Babs"]["absmax"] > 0.0
+    field_lines_meta: dict[str, Any] = {}
+    if not args.skip_field_lines and has_magnetic and Br_cmb_native is not None:
+        field_lines_meta = {
+            "mode": args.field_line_mode,
+            "description": (
+                "shell = actual XSHELLS B traced inside the fluid shell; "
+                "exterior = current-free field outside the CMB reconstructed from XSHELLS CMB Br"
+            ),
+            "counts": {},
+        }
+        combined_lines: list[dict[str, Any]] = []
+        shell_count = 0
+        exterior_count = 0
+
+        rb = radial_grids["magnetic"]
+        ib0 = nearest_index(rb, r_icb)
+        ib1 = nearest_index(rb, r_cmb)
+        if ib1 < ib0:
+            ib0, ib1 = ib1, ib0
+        r_b_shell = np.asarray(rb[ib0 : ib1 + 1], dtype=np.float64)
+        Br_b_shell = np.asarray(Br[ib0 : ib1 + 1], dtype=np.float64)
+        Bt_b_shell = np.asarray(Bt[ib0 : ib1 + 1], dtype=np.float64)
+        Bp_b_shell = np.asarray(Bp[ib0 : ib1 + 1], dtype=np.float64)
+
+        if args.field_line_mode in ("shell", "both"):
+            print("Computing XSHELLS magnetic field lines in the fluid shell...")
+            shell_dr = np.abs(np.diff(r_b_shell))
+            shell_dr = shell_dr[np.isfinite(shell_dr) & (shell_dr > 0.0)]
+            if shell_dr.size == 0:
+                raise ValueError("Could not determine radial spacing for shell field-line tracing.")
+            shell_step = (
+                float(args.line_step_size)
+                if args.line_step_size is not None
+                else 0.5 * float(np.median(shell_dr))
+            )
+            shell_lines = compute_shell_field_lines_from_cmb(
+                Br_b_shell,
+                Bt_b_shell,
+                Bp_b_shell,
+                r_b_shell,
+                theta,
+                phi,
+                ntheta_seed=args.line_seed_theta,
+                nphi_seed=args.line_seed_phi,
+                max_steps=args.line_max_steps,
+                step_size=shell_step,
+                seed_offset=1.5 * shell_step,
+            )
+            shell_count = len(shell_lines)
+            combined_lines.extend(shell_lines)
+            with open(outdir / "B_lines_shell.json", "w", encoding="utf-8") as stream:
+                json.dump(shell_lines, stream, allow_nan=False)
+            field_lines_meta["shell"] = "B_lines_shell.json"
+            field_lines_meta["B_lines_shell"] = "B_lines_shell.json"
+            field_lines_meta["counts"]["shell"] = shell_count
+            print(f"  wrote {shell_count} shell field-line segments to B_lines_shell.json")
+
+        if args.field_line_mode in ("exterior", "both"):
+            print("Computing XSHELLS exterior potential field lines from CMB Br...")
+            external_rmax = (
+                float(args.external_rmax)
+                if args.external_rmax is not None
+                else 2.5 * float(r_cmb)
+            )
+            if external_rmax <= r_cmb:
+                raise ValueError("--external-rmax must be greater than the CMB radius.")
+            external_nr = max(8, int(args.external_nr))
+            r_ext = np.linspace(r_cmb, external_rmax, external_nr, dtype=np.float64)
+            exterior_step = (
+                float(args.line_step_size)
+                if args.line_step_size is not None
+                else 0.5 * float(np.mean(np.abs(np.diff(r_ext))))
+            )
+            exterior_seed_offset = 0.75 * exterior_step
+            sign_choices = {
+                "plus": [1.0],
+                "minus": [-1.0],
+                "auto": [1.0, -1.0],
+            }[args.external_btheta_sign]
+            best_choice = None
+
+            for sign in sign_choices:
+                Br_ext, Bt_ext, Bp_ext = external_potential_field_from_cmb_br(
+                    magnetic.sht,
+                    Br_cmb_native,
+                    r_cmb,
+                    r_ext,
+                    btheta_sign=sign,
+                )
+                trial_lines = compute_external_field_lines_from_cmb(
+                    Br_ext,
+                    Bt_ext,
+                    Bp_ext,
+                    r_ext,
+                    theta,
+                    phi,
+                    ntheta_seed=args.line_seed_theta,
+                    nphi_seed=args.line_seed_phi,
+                    max_steps=args.line_max_steps,
+                    step_size=exterior_step,
+                    seed_offset=exterior_seed_offset,
+                    closed_only=args.external_closed_only,
+                )
+                statuses = getattr(compute_external_field_lines_from_cmb, "last_status_counts", {})
+                returned = int(statuses.get("returned_cmb", 0))
+                score = (len(trial_lines), returned)
+                print(
+                    f"  exterior Btheta sign {sign:+.0f}: kept {len(trial_lines)} lines; "
+                    f"statuses={statuses}"
+                )
+                if best_choice is None or score > best_choice[0]:
+                    best_choice = (score, sign, trial_lines, statuses)
+
+            assert best_choice is not None
+            _, selected_sign, exterior_lines, exterior_statuses = best_choice
+            exterior_count = len(exterior_lines)
+            combined_lines.extend(exterior_lines)
+            with open(outdir / "B_lines_exterior_poloidal.json", "w", encoding="utf-8") as stream:
+                json.dump(exterior_lines, stream, allow_nan=False)
+            field_lines_meta["exterior"] = "B_lines_exterior_poloidal.json"
+            field_lines_meta["exterior_poloidal"] = "B_lines_exterior_poloidal.json"
+            field_lines_meta["B_lines_exterior_poloidal"] = "B_lines_exterior_poloidal.json"
+            field_lines_meta["B_lines_exterior"] = "B_lines_exterior_poloidal.json"
+            field_lines_meta["counts"]["exterior"] = exterior_count
+            field_lines_meta["exterior_btheta_sign"] = float(selected_sign)
+            field_lines_meta["exterior_status_counts"] = exterior_statuses
+            field_lines_meta["exterior_closed_only"] = bool(args.external_closed_only)
+            print(
+                f"  wrote {exterior_count} exterior field-line traces using Btheta sign "
+                f"{selected_sign:+.0f}"
+            )
+
+        with open(outdir / "B_lines.json", "w", encoding="utf-8") as stream:
+            json.dump(combined_lines, stream, allow_nan=False)
+        field_lines_meta["B_lines"] = "B_lines.json"
+        field_lines_meta["count"] = len(combined_lines)
+        print(
+            f"  wrote {len(combined_lines)} total magnetic field lines "
+            f"(shell={shell_count}, exterior={exterior_count})"
+        )
+    elif not args.skip_field_lines and not has_magnetic:
+        print("Skipping field lines because no magnetic field was loaded.")
+
     source_map = {key: str(path) if path is not None else None for key, path in paths.items()}
     radial_domains = {
         key: {
@@ -662,11 +1026,11 @@ def main() -> None:
         "phi_min": json_number(phi_out[0]),
         "phi_max": json_number(phi_out[-1]),
         "fields": field_files,
-        "surface_fields": {},
+        "surface_fields": surface_fields,
         "ranges": ranges,
         "coordinates": "coordinates.json",
         "profiles": "profiles.json",
-        "field_lines": {},
+        "field_lines": field_lines_meta,
     }
     with open(outdir / "metadata.json", "w", encoding="utf-8") as stream:
         json.dump(metadata, stream, indent=2, allow_nan=False)

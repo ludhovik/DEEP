@@ -1131,8 +1131,24 @@ function pauseSequence() {
   params.sequencePlaying = false;
 }
 
+function stripLegacyCpsMetadata(meta) {
+  if (!meta || typeof meta !== "object") return meta;
+  if (meta.parameters && typeof meta.parameters === "object") {
+    delete meta.parameters.Cps;
+    delete meta.parameters.cps;
+  }
+  if (typeof meta.title === "string") {
+    meta.title = meta.title
+      .replace(/(?:^|,\s*)Cps\s*=\s*[^,|]+(?:,\s*)?/gi, (match) => match.startsWith(",") ? ", " : "")
+      .replace(/^,\s*|,\s*$/g, "")
+      .replace(/,\s*,/g, ", ");
+  }
+  return meta;
+}
+
 async function loadMetadataForBase(basePath) {
-  return await fetchJsonStrict(dataUrlForBase(basePath, "metadata.json"), "metadata.json");
+  const meta = await fetchJsonStrict(dataUrlForBase(basePath, "metadata.json"), "metadata.json");
+  return stripLegacyCpsMetadata(meta);
 }
 
 async function loadMetadata() {

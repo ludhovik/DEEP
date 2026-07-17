@@ -93,11 +93,6 @@ PARAMETER_SPECS = {
         "aliases": ("RaC", "Ra_C"),
         "arg": "RaC",
     },
-    "Cps": {
-        "label": "Cps",
-        "aliases": ("Cps",),
-        "arg": "Cps",
-    },
 }
 
 
@@ -1311,11 +1306,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--Sc", "--PrC", "--Pr_C", dest="Sc", type=float, default=None, help="Compositional Prandtl/Schmidt number metadata/N2 override.")
     p.add_argument("--RaT", "--Ra", "--Ra_T", dest="RaT", type=float, default=None, help="Thermal Rayleigh number metadata/N2 override.")
     p.add_argument("--RaC", "--Ra_C", dest="RaC", type=float, default=None, help="Compositional Rayleigh number metadata/N2 override.")
-    p.add_argument("--Cps", dest="Cps", type=float, default=None, help="Cps metadata override.")
     p.add_argument(
         "--no-parameter-prompt",
         action="store_true",
-        help="Do not prompt for missing Ek/Pr/Sc/RaT/RaC/Cps; keep missing values as NaN.",
+        help="Do not prompt for missing Ek/Pr/Sc/RaT/RaC; keep missing values as NaN.",
     )
 
     p.add_argument("--alpha-map", type=int, default=-1, help="alpha_map argument passed to PolTor_to_spat.")
@@ -1599,12 +1593,11 @@ def main() -> None:
     Sc = params_resolved["Sc"]
     RaT = params_resolved["RaT"]
     RaC = params_resolved["RaC"]
-    Cps = params_resolved["Cps"]
 
     print(
         "Parameters: "
         f"Ek={E:.6g}, Pr={Pr:.6g}, Sc={Sc:.6g}, "
-        f"RaT={RaT:.6g}, RaC={RaC:.6g}, Cps={Cps:.6g}"
+        f"RaT={RaT:.6g}, RaC={RaC:.6g}"
     )
 
     print("Loading spectral state...")
@@ -2032,7 +2025,6 @@ def main() -> None:
         f"E={format_param(E, '.1e')}, "
         f"RaT={format_param(RaT, '.1e')}, "
         f"RaC={format_param(RaC, '.1e')}, "
-        f"Cps={format_param(Cps, '.0f')}, "
         f"Pr={format_param(Pr, '.2f')}, "
         f"Sc={format_param(Sc, '.2f')}, "
         f"t={format_param(time, '.2e')}"
@@ -2049,7 +2041,6 @@ def main() -> None:
             "Sc": json_number(Sc),
             "RaT": json_number(RaT),
             "RaC": json_number(RaC),
-            "Cps": json_number(Cps),
         },
         "spectral": spectral_meta,
         "magnetic": {

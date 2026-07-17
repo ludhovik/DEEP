@@ -415,7 +415,7 @@ because field-line generation can be expensive.
 The converter uses these parameters in `metadata.json` and in the computation of `N2`:
 
 ```text
-Ek, Pr, Sc, RaT, RaC, Cps
+Ek, Pr, Sc, RaT, RaC
 ```
 
 It first tries to read them from the path. The following aliases are accepted:
@@ -426,7 +426,6 @@ Pr:   Pr, PrT, Pr_T
 Sc:   Sc, PrC, Pr_C
 RaT:  RaT, Ra_T, Ra
 RaC:  RaC, Ra_C
-Cps:  Cps
 ```
 
 For example, this path is now parsed correctly:
@@ -1523,3 +1522,38 @@ The converter therefore:
 - writes `r_icb`, `icb_radius`, `icb_index`, `radial_domains`, and `field_domains` to `metadata.json`.
 
 The viewer uses `icb_index` to draw the ICB at the fluid-shell inner boundary, rather than assuming that the first radial point is the ICB.
+
+
+### XSHELLS CMB truncation and magnetic field lines
+
+The XSHELLS converter supports the same magnetic visualization outputs as the Leeds converter. It analyses the physical XSHELLS radial field at the fluid CMB using the field's own SHTns transform.
+
+```bash
+python tools/convert_xshells_to_viewer.py \
+  --folder /path/to/run \
+  --out public/data_xshells \
+  --cmb-br-ltrunc 13 \
+  --field-line-mode both \
+  --line-seeds 360
+```
+
+Relevant options:
+
+```text
+--cmb-br-ltrunc L
+--skip-field-lines
+--field-line-mode shell|exterior|both
+--external-rmax R
+--external-nr N
+--external-closed-only / --no-external-closed-only
+--external-btheta-sign auto|plus|minus
+--line-seeds N
+--line-seed-theta N
+--line-seed-phi N
+--line-max-steps N
+--line-step-size DS
+```
+
+For a conducting inner core, the volume magnetic field is retained below the ICB. The `shell` field-line mode is deliberately restricted to the fluid shell, while the exterior mode reconstructs a current-free field from `Br` at the CMB.
+
+`Cps` is no longer requested or written by either converter. The viewer also removes that legacy key when opening older metadata files.
