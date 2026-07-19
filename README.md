@@ -1,319 +1,355 @@
 # Dynamo Three.js Viewer
 
-Local browser viewer for Leeds spherical-dynamo state files.
+Local Three.js/Vite viewer for spherical-dynamo output from:
+
+- the Leeds Spherical Dynamo code;
+- XSHELLS through `pyxshells`.
 
 The package contains:
 
-- a **Python converter**: `tools/convert_state_to_viewer.py`
-- a **local Three.js/Vite viewer**: `src/main.js`
-- output data read by the browser from: `public/data/`
+- `tools/convert_state_to_viewer.py` — Leeds state-file converter;
+- `tools/convert_xshells_to_viewer.py` — XSHELLS field converter;
+- `src/main.js` — browser viewer;
+- `public/data/` — default browser-readable dataset folder;
+- sample data that can be used to test the viewer immediately.
 
-The viewer can display:
-
-- CMB and ICB surfaces
-- equatorial and meridional slices
-- magnetic field lines
-- Earth surface texture
-- velocity and scalar isosurfaces
-- sequence playback for several converted state files
-- exported PNG/PDF/video views
-- saved/reloaded view-state codes
+The viewer supports CMB and ICB surfaces, arbitrary-radius spherical surfaces,
+equatorial and meridional slices, isosurfaces, magnetic field lines, Earth
+texture or Earth-surface magnetic field, two simultaneous datasets, sequence
+playback, PNG/PDF/video export, and saved view-state codes.
 
 ---
 
-## 1. Folder layout
+## Contents
 
-After unzipping, the project should look like:
-
-```text
-dynamo-three-viewer/
-  index.html
-  package.json
-  README.md
-  modules.py
-  public/
-    assets/
-      earth_blue_marble.jpg
-    data/
-      metadata.json
-      coordinates.json
-      *_volume.f32
-      sequence.json
-      frames/
-  src/
-    main.js
-  tools/
-    convert_state_to_viewer.py
-```
-
-The browser reads data from:
-
-```text
-public/data/
-```
-
-Do **not** put data directly in `src/`.
-
-### Multiple datasets in `public/`
-
-You can keep several converted datasets under `public/` and switch between them inside the viewer.
-
-Example layout:
-
-```text
-public/
-  data/
-    metadata.json
-  data_run2/
-    metadata.json
-  datasets/
-    run_A/
-      metadata.json
-    run_B/
-      sequence.json
-      frames/
-        state03100/
-```
-
-The viewer path is the public URL path, not the filesystem path. For example:
-
-```text
-public/data/             -> /data
-public/data_run2/        -> /data_run2
-public/datasets/run_A/   -> /datasets/run_A
-```
-
-In the viewer use:
-
-```text
-Dataset
-  Public folder
-  Load dataset
-```
-
-Enter, for example:
-
-```text
-/data_run2
-```
-
-or:
-
-```text
-/datasets/run_A
-```
-
-then click:
-
-```text
-Load dataset
-```
-
-The browser cannot automatically list folders in `public/`, so the folder is entered manually.
+1. [System requirements and version checks](#1-system-requirements-and-version-checks)
+2. [Install NVM, Node.js and npm](#2-install-nvm-nodejs-and-npm)
+3. [Download and unpack the viewer](#3-download-and-unpack-the-viewer)
+4. [Install the viewer and verify the build](#4-install-the-viewer-and-verify-the-build)
+5. [Start the viewer](#5-start-the-viewer)
+6. [Prepare the Python converter environment](#6-prepare-the-python-converter-environment)
+7. [Leeds converter examples](#7-leeds-converter-examples)
+8. [XSHELLS converter examples](#8-xshells-converter-examples)
+9. [Keyboard shortcuts](#9-keyboard-shortcuts)
+10. [Load datasets in the viewer](#10-load-datasets-in-the-viewer)
+11. [Main viewer displays](#11-main-viewer-displays)
+12. [Sequence playback and preloading](#12-sequence-playback-and-preloading)
+13. [Export PNG, PDF and video](#13-export-png-pdf-and-video)
+14. [Converted fields and custom fields](#14-converted-fields-and-custom-fields)
+15. [Magnetic field continuation to Earth](#15-magnetic-field-continuation-to-earth)
+16. [Detailed Leeds converter reference](#16-detailed-leeds-converter-reference)
+17. [Detailed XSHELLS converter reference](#17-detailed-xshells-converter-reference)
+18. [Performance and memory](#18-performance-and-memory)
+19. [Troubleshooting](#19-troubleshooting)
+20. [Project layout and development commands](#20-project-layout-and-development-commands)
 
 ---
 
+# 1. System requirements and version checks
+
+Use a Linux, macOS, or WSL terminal. The commands below are written for Bash.
+
+On Debian, Ubuntu, or WSL, install the basic command-line tools if needed:
+
+```bash
+sudo apt update
+sudo apt install -y curl unzip python3 python3-venv python3-pip
+```
+
+On an HPC system without `sudo`, use the available Python module, Conda
+environment, or local software stack instead.
+
+The project currently uses Vite 8.0.16. Its Node.js requirement is:
+
+```text
+Node.js 20.19 or newer within Node 20,
+or Node.js 22.12 or newer.
+```
+
+Using the current Node.js LTS release through NVM is recommended.
+
+The Python converters require:
+
+```text
+Python 3.10 or newer
+```
+
+because they use Python 3.10 type syntax.
+
+Check what is already installed:
+
+```bash
+python3 --version
+node --version
+npm --version
+nvm --version
+```
+
+A suitable result looks similar to:
+
+```text
+Python 3.10+
+Node v22.12+ or a newer LTS release
+npm supplied with that Node release
+```
+
+Run explicit compatibility checks:
+
+```bash
+python3 -c 'import sys; print(sys.version); assert sys.version_info >= (3, 10)'
+node -e 'console.log(process.version); const [M,m]=process.versions.node.split(".").map(Number); if (!((M===20 && m>=19) || (M===22 && m>=12) || M>22)) process.exit(1)'
+```
+
+If `node`, `npm`, or `nvm` is missing, install NVM as described next.
 
 ---
 
-## Multi-dataset startup
+# 2. Install NVM, Node.js and npm
 
-The viewer no longer requires one fixed dataset at:
+NVM manages Node.js versions without requiring administrator access. The
+following command installs NVM 0.40.6 from the official `nvm-sh/nvm`
+repository:
 
-```text
-public/data/
+```bash
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.6/install.sh | bash
 ```
 
-You can keep several converted datasets under `public/`, for example:
+Reload the shell configuration:
 
-```text
-public/data_run1/
-public/data_run2/
-public/datasets/run_A/
-public/datasets/run_B/
+```bash
+source ~/.bashrc
 ```
 
-When the viewer starts, it asks which dataset folder to load.
+For Zsh use:
 
-Enter the browser/public path, not the filesystem path:
-
-```text
-/data_run1
-/data_run2
-/datasets/run_A
-/datasets/run_B
+```bash
+source ~/.zshrc
 ```
 
-For example, if the files are here:
+If `nvm` is still not found, load it directly:
 
-```text
-public/datasets/run_A/metadata.json
+```bash
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 ```
 
-enter:
+Check NVM:
 
-```text
-/datasets/run_A
+```bash
+nvm --version
 ```
 
-For a sequence dataset, the folder should contain:
+Install and activate the current Node.js LTS release:
 
-```text
-public/datasets/run_A/sequence.json
-public/datasets/run_A/frames/state03100/metadata.json
+```bash
+nvm install --lts
+nvm use --lts
+nvm alias default 'lts/*'
 ```
 
-and you should enter:
+Check the installed tools:
 
-```text
-/datasets/run_A
+```bash
+node --version
+npm --version
+which node
+which npm
 ```
 
-The viewer remembers the last dataset folder in browser storage.
-
-You can also open a dataset directly using a URL query parameter:
+Both `which` commands should normally point inside:
 
 ```text
-http://127.0.0.1:5173/?dataset=/datasets/run_A
+~/.nvm/
 ```
 
+## WSL note
 
+Run these commands inside WSL, not in Windows PowerShell, when the project is
+used from a WSL filesystem. Keep the project under the Linux home directory for
+better npm performance, for example:
+
+```text
+~/dynamo-three-viewer/
+```
+
+rather than under:
+
+```text
+/mnt/c/...
+```
 
 ---
 
-## Loading two datasets at the same time
+# 3. Download and unpack the viewer
 
-The viewer can load one **primary dataset** and one **secondary dataset**.
+Download the latest viewer ZIP from the ChatGPT conversation or the location
+where it was shared.
 
-The primary dataset controls the geometry:
+Assuming it was downloaded into `~/Downloads`:
 
-```text
-r, theta, phi, nr, ntheta, nphi
+```bash
+cd ~/Downloads
+ls dynamo-three-viewer-*.zip
 ```
 
-The secondary dataset is added only if its grid matches the primary dataset:
+Unpack it into the home directory:
 
-```text
-same nr
-same ntheta
-same nphi
+```bash
+unzip dynamo-three-viewer-*.zip -d ~/
 ```
 
-This avoids silently plotting one dataset on the wrong spherical grid.
+Then enter the project folder:
 
-Example folder layout:
-
-```text
-public/datasets/run_A/
-  metadata.json
-  coordinates.json
-  *_volume.f32
-
-public/datasets/run_B/
-  metadata.json
-  coordinates.json
-  *_volume.f32
+```bash
+cd ~/dynamo-three-viewer
 ```
 
-In the viewer:
+If several matching ZIP files exist, specify the exact filename instead of the
+wildcard:
 
-```text
-Dataset
-  Primary public folder      /datasets/run_A
-  Load primary dataset
-
-  Secondary public folder    /datasets/run_B
-  Secondary label            D2
-  Load secondary dataset
+```bash
+unzip dynamo-three-viewer-readme-installation-guide.zip -d ~/
+cd ~/dynamo-three-viewer
 ```
 
-After loading the secondary dataset, its fields appear in all field selectors with the label prefix:
+Check that the expected files are present:
 
-```text
-D2:C
-D2:Comp
-D2:N2
-D2:N2_full
-D2:grad_rC_full
-D2:Br
+```bash
+ls
+ls tools
+ls src
+ls public/data
 ```
 
-So, for example, you can show:
+You should see at least:
 
 ```text
-CMB surface       Br
-Equatorial slice  D2:N2_full
-Meridional slice  C
-Isosurface        D2:Comp
+README.md
+index.html
+package.json
+package-lock.json
+src/main.js
+tools/convert_state_to_viewer.py
+tools/convert_xshells_to_viewer.py
 ```
 
-If the secondary dataset is a sequence folder, the viewer uses the first frame of that sequence as the secondary static dataset:
+---
 
-```text
-public/datasets/run_B/sequence.json
-public/datasets/run_B/frames/state03100/metadata.json
+# 4. Install the viewer and verify the build
+
+Activate the Node version first if this is a new terminal:
+
+```bash
+nvm use --lts
 ```
 
-The secondary dataset is not animated by the primary sequence controls. It is loaded as a static comparison field source.
+Install the exact JavaScript dependency versions recorded in
+`package-lock.json`:
 
-
-
-### 8-quarter surface selection
-
-For the CMB surface and the Earth surface, you can now use a quarter-based visibility mode tied to the two meridional slices.
-
-In the **Meridional slice 1** panel:
-
-```text
-Clip CMB with meridians
-CMB clip mode = Selected 8 quarters
-8-quarter selection
-  North Q1 ... North Q4
-  South Q1 ... South Q4
+```bash
+npm ci --no-audit --no-fund
 ```
 
-If **both meridional slices** are shown, their two planes define the 4 longitudinal sectors. If only one meridional slice is shown, the viewer uses that meridional plane plus an automatically generated perpendicular meridional plane to define the 4 sectors. The equator then splits each sector into north and south, giving 8 selectable regions in total.
-
-The same selection is applied to both:
-
-- the CMB surface
-- the Earth surface layer
-
-So you can show any combination of the 8 regions instead of only front/rear clipping.
-
-`Q1..Q4` are ordered by the 4 azimuthal sectors created by the two meridional planes as you go around the sphere in longitude.
-
-
-## 2. Install and start the viewer
-
-From the project folder:
+Use `npm install` instead only when intentionally updating dependencies:
 
 ```bash
 npm install --no-audit --no-fund
+```
+
+Check the JavaScript syntax and production build:
+
+```bash
+node --check src/main.js
+npm run build
+```
+
+A successful build creates:
+
+```text
+dist/
+```
+
+---
+
+# 5. Start the viewer
+
+Start the Vite development server:
+
+```bash
 npm run dev
 ```
 
-Open the URL printed by Vite, usually:
+Open the address printed by Vite, normally:
 
 ```text
 http://127.0.0.1:5173
 ```
 
-If the browser seems to keep old JavaScript, hard-refresh:
+The ZIP contains a small sample dataset under:
+
+```text
+public/data/
+```
+
+Enter this dataset path when prompted:
+
+```text
+/data
+```
+
+If the browser keeps an older JavaScript version after replacing the viewer,
+perform a hard refresh:
 
 ```text
 Ctrl + F5
 ```
 
-or clear the browser cache.
+## Running the viewer on a remote machine
+
+Vite binds to `127.0.0.1`. Forward the port over SSH:
+
+```bash
+ssh -L 5173:127.0.0.1:5173 username@remote-machine
+```
+
+Then run `npm run dev` on the remote machine and open locally:
+
+```text
+http://127.0.0.1:5173
+```
 
 ---
 
-## 3. Python requirements
+# 6. Prepare the Python converter environment
 
-The converter uses your Leeds post-processing `modules.py`.
+Create a Python virtual environment in the project folder:
 
-At minimum, `modules.py` must provide functions such as:
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python --version
+```
+
+Every new terminal should reactivate it with:
+
+```bash
+cd ~/dynamo-three-viewer
+source .venv/bin/activate
+```
+
+## 6.1 Leeds converter requirements
+
+Install NumPy:
+
+```bash
+python -m pip install numpy
+```
+
+The Leeds converter also requires your own Leeds post-processing `modules.py`.
+That file is **not bundled** with this viewer.
+
+It must provide functions including:
 
 ```python
 load_state
@@ -323,289 +359,159 @@ SH_to_spat_nom0
 gradient_spat
 ```
 
-The converter command should point to the directory containing `modules.py`:
+Copy `modules.py` into a known directory, for example:
 
-```bash
---modules-dir "modules.py"
+```text
+~/leeds-postprocessing/modules.py
 ```
 
-or, if `modules.py` is in another folder:
+Check that it imports:
 
 ```bash
---modules-dir "/path/to/folder/containing/modules_py/"
+PYTHONPATH="$HOME/leeds-postprocessing:$PYTHONPATH" \
+python -c 'import modules; print(modules.__file__)'
 ```
 
-In the current project layout, if `modules.py` is in the project root, this is fine:
+Pass its **containing directory** to the converter:
 
 ```bash
---modules-dir "modules.py"
+--modules-dir "$HOME/leeds-postprocessing"
 ```
+
+Do not use:
+
+```text
+--modules-dir /path/to/modules.py
+```
+
+because `--modules-dir` expects a directory.
+
+If `modules.py` is copied into the project root, use:
+
+```bash
+--modules-dir .
+```
+
+Your `modules.py` may itself require additional packages such as SciPy or
+NetCDF. Install those dependencies in the same Python environment.
+
+## 6.2 XSHELLS converter requirements
+
+Install the pinned XSHELLS Python requirements:
+
+```bash
+python -m pip install -r requirements-xshells.txt
+```
+
+The XSHELLS path requires:
+
+```text
+numpy
+pyxshells 2.8
+shtns
+```
+
+Check the imports:
+
+```bash
+python -c 'import numpy, pyxshells, shtns; print("NumPy/pyxshells/SHTns OK")'
+```
+
+SHTns may need to be installed separately according to the Python/HPC
+environment in use.
 
 ---
 
-## 4. Converter basics
+# 7. Leeds converter examples
 
-The converter writes browser-readable files to:
-
-```bash
---out public/data
-```
-
-To create a second dataset, choose another folder under `public/`:
-
-```bash
---out public/data_run2
-```
-
-or:
-
-```bash
---out public/datasets/run_A
-```
-
-Then select the matching viewer path:
+The converter is:
 
 ```text
-/data_run2
-/datasets/run_A
+tools/convert_state_to_viewer.py
 ```
 
-Typical useful options:
+All browser-readable outputs must be written under `public/`.
+
+The default output folder is:
 
 ```text
---spectral-lmax 128     angular spectral cutoff before physical-space synthesis; default is 128
---spectral-lmax 0       disable angular spectral truncation and use the full state-file lmax
---cmb-br-ltrunc 13      synthesize low-degree CMB Br, e.g. l <= 13
---skip-field-lines      skip magnetic field-line generation
---field-line-mode both  generate shell and exterior magnetic field lines
---external-rmax 40      maximum radius for exterior magnetic lines
---line-seeds 360        approximate total number of regular CMB line seeds
---downsample-r 2        optional radial downsampling
+public/data/
 ```
 
-For angular reduction, prefer:
-
-```bash
---spectral-lmax 128
-```
-
-over:
-
-```bash
---downsample-theta 2 --downsample-phi 2
-```
-
-because `--spectral-lmax` removes high-degree spherical-harmonic content before the physical `theta/phi` grid is generated. The `--downsample-theta` and `--downsample-phi` options are still available, but they are a rough post-transform subsampling method.
-
-For large sequences, it is often better to start with:
-
-```bash
---skip-field-lines
-```
-
-because field-line generation can be expensive.
-
----
-
-
----
-
-## Parameter extraction and prompts
-
-The converter uses these parameters in `metadata.json` and in the computation of `N2`:
+The corresponding viewer URL path is:
 
 ```text
-Ek, Pr, Sc, RaT, RaC
+/data
 ```
 
-It first tries to read them from the path. The following aliases are accepted:
-
-```text
-Ek:   Ek, E
-Pr:   Pr, PrT, Pr_T
-Sc:   Sc, PrC, Pr_C
-RaT:  RaT, Ra_T, Ra
-RaC:  RaC, Ra_C
-```
-
-For example, this path is now parsed correctly:
-
-```text
-Pm=0/Pr_T=1/Pr_C=10/q=0.0/E=1e-5/Ra_T=90/Ra_C=30000/
-```
-
-which gives:
-
-```text
-Ek  = 1e-5
-Pr  = 1
-Sc  = 10
-RaT = 90
-RaC = 30000
-```
-
-If one of the parameters is missing, the converter asks for it interactively:
-
-```text
-Enter Ek (Ekman number; aliases: Ek/E); blank = NaN:
-```
-
-Press Enter to keep a missing value as `NaN`.
-
-You can also give the values explicitly on the command line:
-
-```bash
-python tools/convert_state_to_viewer.py \
-  --file "/path/to/state_last.cdf.dat" \
-  --modules-dir "modules.py" \
-  --out public/data_SN_fig2 \
-  --Ek 1e-5 \
-  --Pr 1 \
-  --Sc 10 \
-  --RaT 90 \
-  --RaC 30000
-```
-
-Aliases also work:
-
-```bash
---E 1e-5 --Pr_T 1 --Pr_C 10 --Ra_T 90 --Ra_C 30000
-```
-
-For non-interactive scripts, disable prompts with:
-
-```bash
---no-parameter-prompt
-```
-
-For sequence conversion, the converter resolves missing parameters once from the first selected frame and forwards the resolved values to each frame, so it does not ask repeatedly for every state.
-
-
-## 5. Convert one given statefile
-
-Use `--state` or the alias `--file`.
-
-Example with no field lines:
+## 7.1 Convert one state file without field lines
 
 ```bash
 python tools/convert_state_to_viewer.py \
   --file "/path/to/STATEFILES/state03125.cdf.dat" \
-  --modules-dir "modules.py" \
+  --modules-dir "$HOME/leeds-postprocessing" \
   --out public/data \
   --spectral-lmax 128 \
   --cmb-br-ltrunc 13 \
+  --earth-br-ltrunc 13 \
   --skip-field-lines
 ```
 
-Example with magnetic field lines:
-
-```bash
-python tools/convert_state_to_viewer.py \
-  --file "/path/to/STATEFILES/state03125.cdf.dat" \
-  --modules-dir "modules.py" \
-  --out public/data \
-  --spectral-lmax 128 \
-  --cmb-br-ltrunc 13 \
-  --field-line-mode both \
-  --external-rmax 40 \
-  --line-seeds 360
-```
-
-Equivalent command using `--state`:
+`--state` and `--file` are aliases, so this is equivalent:
 
 ```bash
 python tools/convert_state_to_viewer.py \
   --state "/path/to/STATEFILES/state03125.cdf.dat" \
-  --modules-dir "modules.py" \
+  --modules-dir "$HOME/leeds-postprocessing" \
   --out public/data \
   --spectral-lmax 128 \
   --cmb-br-ltrunc 13 \
   --skip-field-lines
 ```
 
-Output:
-
-```text
-public/data/metadata.json
-public/data/coordinates.json
-public/data/*_volume.f32
-public/data/Br_CMB_lmax13_cmb.f32
-```
-
----
-
-## 6. Convert the last statefile in a folder
-
-Use `--folder`. The converter will find the latest `state*.cdf.dat` in that folder.
-
-Example with no field lines:
+## 7.2 Convert one state file with magnetic field lines
 
 ```bash
 python tools/convert_state_to_viewer.py \
-  --folder "/path/to/STATEFILES/" \
-  --modules-dir "modules.py" \
+  --file "/path/to/STATEFILES/state03125.cdf.dat" \
+  --modules-dir "$HOME/leeds-postprocessing" \
   --out public/data \
   --spectral-lmax 128 \
   --cmb-br-ltrunc 13 \
-  --skip-field-lines
-```
-
-Example with field lines:
-
-```bash
-python tools/convert_state_to_viewer.py \
-  --folder "/path/to/STATEFILES/" \
-  --modules-dir "modules.py" \
-  --out public/data \
-  --spectral-lmax 128 \
-  --cmb-br-ltrunc 13 \
+  --earth-br-ltrunc 13 \
   --field-line-mode both \
   --external-rmax 40 \
   --line-seeds 360
 ```
 
-Example for the FLAYER case:
+## 7.3 Convert the latest state in a folder
 
 ```bash
 python tools/convert_state_to_viewer.py \
-  --folder "/uolstore/Research/b/b0251/Data/FLAYER/DYN_C_VBC=1_CompBC=4_CBC=4_Ek=2e-5_Pm=5_Pr=1_Sc=10_Ra=120e6_RaC=1e9_rs=0.83_q=-100/STATEFILES/" \
-  --modules-dir "modules.py" \
+  --folder "/path/to/STATEFILES" \
+  --modules-dir "$HOME/leeds-postprocessing" \
   --out public/data \
   --spectral-lmax 128 \
   --cmb-br-ltrunc 13 \
   --skip-field-lines
 ```
 
----
-
-## 7. Convert a sequence of statefiles
-
-Use:
+The converter selects the largest state number matching:
 
 ```text
---sequence-first FIRST
---sequence-last LAST
---sequence-step STEP
+state*.cdf.dat
 ```
 
-The converter selects files by state number:
-
-```text
-state03100.cdf.dat
-state03105.cdf.dat
-state03110.cdf.dat
-...
-```
-
-Example sequence without field lines:
+## 7.4 Convert a numbered sequence
 
 ```bash
 python tools/convert_state_to_viewer.py \
-  --folder "/path/to/STATEFILES/" \
-  --modules-dir "modules.py" \
+  --folder "/path/to/STATEFILES" \
+  --modules-dir "$HOME/leeds-postprocessing" \
   --out public/data \
   --spectral-lmax 128 \
   --cmb-br-ltrunc 13 \
+  --earth-br-ltrunc 13 \
   --sequence-first 3100 \
   --sequence-last 3125 \
   --sequence-step 5 \
@@ -613,12 +519,31 @@ python tools/convert_state_to_viewer.py \
   --skip-field-lines
 ```
 
-Example sequence with field lines:
+This selects:
+
+```text
+state03100.cdf.dat
+state03105.cdf.dat
+state03110.cdf.dat
+...
+state03125.cdf.dat
+```
+
+and writes:
+
+```text
+public/data/sequence.json
+public/data/frames/state03100/
+public/data/frames/state03105/
+...
+```
+
+## 7.5 Sequence with field lines
 
 ```bash
 python tools/convert_state_to_viewer.py \
-  --folder "/path/to/STATEFILES/" \
-  --modules-dir "modules.py" \
+  --folder "/path/to/STATEFILES" \
+  --modules-dir "$HOME/leeds-postprocessing" \
   --out public/data \
   --spectral-lmax 128 \
   --cmb-br-ltrunc 13 \
@@ -631,41 +556,464 @@ python tools/convert_state_to_viewer.py \
   --sequence-clear
 ```
 
-Example FLAYER sequence without field lines:
+Field-line generation is expensive. Start with `--skip-field-lines` for large
+sequences unless field lines are needed in every frame.
+
+## 7.6 FLAYER example
 
 ```bash
 python tools/convert_state_to_viewer.py \
-  --folder "/uolstore/Research/b/b0251/Data/FLAYER/DYN_C_VBC=1_CompBC=4_CBC=4_Ek=2e-5_Pm=5_Pr=1_Sc=10_Ra=120e6_RaC=1e9_rs=0.83_q=-100/STATEFILES/" \
-  --modules-dir "modules.py" \
+  --folder "/uolstore/Research/b/b0251/Data/FLAYER/DYN_C_VBC=1_CompBC=4_CBC=4_Ek=2e-5_Pm=5_Pr=1_Sc=10_Ra=120e6_RaC=1e9_rs=0.83_q=-100/STATEFILES" \
+  --modules-dir "$HOME/leeds-postprocessing" \
   --out public/data \
   --spectral-lmax 128 \
   --cmb-br-ltrunc 13 \
-  --sequence-first 3100 \
-  --sequence-last 3125 \
-  --sequence-step 5 \
-  --sequence-clear \
   --skip-field-lines
 ```
 
-This writes:
+## 7.7 Explicit physical parameters
 
-```text
-public/data/sequence.json
-public/data/frames/state03100/
-public/data/frames/state03105/
-public/data/frames/state03110/
-...
+The converter attempts to read parameters from the input path. They can also be
+set explicitly:
+
+```bash
+python tools/convert_state_to_viewer.py \
+  --file "/path/to/state_last.cdf.dat" \
+  --modules-dir "$HOME/leeds-postprocessing" \
+  --out public/data_SN_fig2 \
+  --Ek 1e-5 \
+  --Pr 1 \
+  --Sc 10 \
+  --RaT 90 \
+  --RaC 30000 \
+  --skip-field-lines
 ```
 
-The converter also copies the first frame to:
+Accepted aliases are:
 
 ```text
-public/data/
+Ek:   --Ek, --E
+Pr:   --Pr, --PrT, --Pr_T
+Sc:   --Sc, --PrC, --Pr_C
+RaT:  --RaT, --Ra, --Ra_T
+RaC:  --RaC, --Ra_C
 ```
 
-so the viewer can open normally.
+Disable interactive parameter prompts in batch jobs with:
 
-Expected sequence structure:
+```bash
+--no-parameter-prompt
+```
+
+---
+
+# 8. XSHELLS converter examples
+
+The converter is:
+
+```text
+tools/convert_xshells_to_viewer.py
+```
+
+XSHELLS commonly stores a snapshot as:
+
+```text
+fieldU.<tag>   velocity
+fieldB.<tag>   magnetic field
+fieldT.<tag>   temperature
+fieldC.<tag>   composition
+```
+
+Any subset can be converted.
+
+## 8.1 Discover fields from a folder and tag
+
+```bash
+python tools/convert_xshells_to_viewer.py \
+  --folder "/path/to/xshells/run" \
+  --tag bench \
+  --out public/data_xshells \
+  --Ek 1e-5 \
+  --Pr 1 \
+  --Sc 10 \
+  --RaT 90 \
+  --RaC 30000 \
+  --cmb-br-ltrunc 13 \
+  --earth-br-ltrunc 13 \
+  --skip-field-lines
+```
+
+Without `--tag`, the converter selects the newest matching files in the folder.
+
+## 8.2 Explicit XSHELLS field paths
+
+```bash
+python tools/convert_xshells_to_viewer.py \
+  --velocity "/path/to/fieldU.snapshot" \
+  --magnetic "/path/to/fieldB.snapshot" \
+  --temperature "/path/to/fieldT.snapshot" \
+  --composition "/path/to/fieldC.snapshot" \
+  --out public/data_xshells \
+  --cmb-br-ltrunc 13 \
+  --earth-br-ltrunc 13
+```
+
+For a non-magnetic run, omit `--magnetic`.
+
+## 8.3 XSHELLS field lines
+
+```bash
+python tools/convert_xshells_to_viewer.py \
+  --folder "/path/to/xshells/run" \
+  --tag bench \
+  --out public/data_xshells \
+  --cmb-br-ltrunc 13 \
+  --field-line-mode both \
+  --external-rmax 40 \
+  --line-seeds 360
+```
+
+## 8.4 Control the SHTns output grid
+
+Both options must be supplied together:
+
+```bash
+--nlat 256 --nphi 512
+```
+
+Optional output downsampling is separate:
+
+```bash
+--downsample-r 2 \
+--downsample-theta 2 \
+--downsample-phi 2
+```
+
+## 8.5 Load the XSHELLS dataset
+
+Start the viewer and enter:
+
+```text
+/data_xshells
+```
+
+The current XSHELLS converter processes one snapshot per command. To compare or
+retain several snapshots, write each one to a different folder under `public/`.
+
+---
+
+# 9. Keyboard shortcuts
+
+Keyboard shortcuts are active when focus is not inside a GUI input, selector,
+button, or editable text field.
+
+```text
++ / Numpad +    next sequence frame
+- / Numpad -    previous sequence frame
+
+Left arrow      phi -5 degrees
+Right arrow     phi +5 degrees
+Up arrow        theta -5 degrees
+Down arrow      theta +5 degrees
+
+i               zoom in by 10%
+o               zoom out by 10%
+```
+
+Sequence stepping wraps cyclically:
+
+```text
+last frame +  -> first frame
+first frame - -> last frame
+```
+
+If normal sequence playback is already running, the timer is paused for the
+manual step and then resumed without creating competing frame-load requests.
+
+Shortcuts are ignored during video recording and offline PNG-sequence export.
+
+---
+
+# 10. Load datasets in the viewer
+
+Browser paths are relative to `public/`.
+
+```text
+public/data/             -> /data
+public/data_run2/        -> /data_run2
+public/datasets/run_A/   -> /datasets/run_A
+public/data_xshells/     -> /data_xshells
+```
+
+Use:
+
+```text
+Dataset
+  Primary public folder
+  Load primary dataset
+```
+
+Enter a browser path such as:
+
+```text
+/data_run2
+```
+
+Do not enter the operating-system path such as:
+
+```text
+/home/user/dynamo-three-viewer/public/data_run2
+```
+
+The viewer remembers the most recent primary folder in browser storage.
+
+A dataset can also be selected through the URL:
+
+```text
+http://127.0.0.1:5173/?dataset=/datasets/run_A
+```
+
+## 10.1 Load two datasets simultaneously
+
+The viewer supports one primary and one secondary dataset.
+
+The primary dataset controls the spherical grid. The secondary dataset is
+accepted only when these dimensions match:
+
+```text
+nr
+ntheta
+nphi
+```
+
+Use:
+
+```text
+Dataset
+  Secondary public folder
+  Secondary label
+  Load secondary dataset
+```
+
+Secondary fields receive a prefix, for example:
+
+```text
+D2:Br
+D2:Comp
+D2:N2_full
+```
+
+A secondary sequence is loaded as a static comparison using its first frame. It
+is not animated by the primary sequence controls.
+
+---
+
+# 11. Main viewer displays
+
+The main `Controls` panel and its folders start collapsed. The separate
+`Point of view` panel is fixed at the bottom-left and also starts collapsed.
+
+Trackball controls allow free mouse rotation. When enabled, the orientation axes
+are shown in the top-right corner.
+
+## 11.1 CMB and ICB surfaces
+
+Each surface has independent field, scale, colour-map, manual range and opacity
+controls.
+
+The CMB can use either:
+
+- the outer radial layer of a volume field;
+- a field registered under `surface_fields` with `"surface": "cmb"`.
+
+The ICB radius is obtained from `metadata.json`, including XSHELLS conducting
+inner-core datasets where the magnetic grid extends below the fluid shell.
+
+## 11.2 Equatorial and meridional slices
+
+Two equatorial and two meridional slices are available. Each has independent
+field, scaling, colour map and opacity controls.
+
+The two meridional planes also control optional clipping of CMB, Earth and
+isosurface displays.
+
+## 11.3 Radial spherical surface
+
+The `Radial spherical surface` panel displays any volume field on a sphere at a
+selected normalized radius:
+
+```text
+0 <= r / r_o <= 1
+```
+
+Values are linearly interpolated between adjacent radial grid levels. If the
+requested radius is outside a field's stored radial domain, the closest
+available radius is used.
+
+Controls include:
+
+```text
+Show
+Field
+Radius r / r_o
+Scale
+Colour map
+Manual min/max
+Opacity
+```
+
+The surface supports primary or secondary fields, sequence playback, view-state
+saving, and PNG/PDF/video export.
+
+## 11.4 Earth surface: image or magnetic field
+
+Open:
+
+```text
+Earth surface
+```
+
+Select one of:
+
+```text
+Display = Earth image
+Display = Magnetic Br
+```
+
+### Earth image
+
+The Earth texture is optional and is **not bundled** with this package. Add a
+2:1 equirectangular image at exactly:
+
+```text
+public/assets/earth_blue_marble.jpg
+```
+
+For example:
+
+```bash
+mkdir -p public/assets
+cp /path/to/earth_blue_marble.jpg public/assets/earth_blue_marble.jpg
+```
+
+Image controls include longitude, radius/core and opacity.
+
+The Earth panel also contains the slice-gap filler controls:
+
+```text
+Slice gap filler
+Filler opacity
+```
+
+These fill visual gaps created where slice planes intersect clipped spherical
+surfaces.
+
+### Earth magnetic field
+
+Both converters generate an Earth-surface radial magnetic field by default when
+magnetic data are available:
+
+```text
+Br_Earth_lmax13_earth.f32
+```
+
+Magnetic controls include:
+
+```text
+Magnetic field
+Scale
+Colour map
+Manual min/max
+Opacity
+```
+
+The magnetic sphere radius is read from field metadata and is independent of
+the image-radius control.
+
+## 11.5 Eight-quarter surface selection
+
+The CMB and Earth surfaces can be divided into eight selectable regions by two
+meridional planes and the equator:
+
+```text
+North Q1 ... North Q4
+South Q1 ... South Q4
+```
+
+If only one meridional slice is active, the viewer adds a perpendicular plane
+to define four longitudinal sectors. The equator divides them into north and
+south.
+
+## 11.6 Isosurfaces
+
+The `Isosurfaces` folder provides:
+
+```text
+Show
+Field
+Resolution
+Clip with meridians
+Clip offset M1/M2
+Positive and negative values/colours
+Opacity
+```
+
+The field selector includes all registered volume fields. The extraction is
+performed on the spherical numerical grid and remains confined to its radial
+domain.
+
+Start with:
+
+```text
+Resolution = 24 or 32
+```
+
+and increase only when necessary.
+
+## 11.7 Magnetic field lines
+
+Field-line controls include:
+
+```text
+Show
+Line type = shell / exterior / both
+Line stride
+Colour by = strength / polarity
+Value transform
+Range
+Thickness
+Opacity
+```
+
+Converter options include:
+
+```text
+--skip-field-lines
+--field-line-mode shell|exterior|both
+--external-rmax R
+--external-nr N
+--external-closed-only / --no-external-closed-only
+--external-btheta-sign auto|plus|minus
+--line-seeds N
+--line-seed-theta N
+--line-seed-phi N
+--line-max-steps N
+--line-step-size DS
+```
+
+An exact seed grid can be requested with:
+
+```bash
+--line-seed-theta 10 --line-seed-phi 36
+```
+
+which gives 360 seeds.
+
+---
+
+# 12. Sequence playback and preloading
+
+A Leeds sequence has the structure:
 
 ```text
 public/data/
@@ -681,7 +1029,7 @@ public/data/
       *_volume.f32
 ```
 
-The `sequence.json` should contain paths like:
+Paths inside `sequence.json` must be relative to the dataset root:
 
 ```json
 {
@@ -690,32 +1038,9 @@ The `sequence.json` should contain paths like:
 }
 ```
 
-Do **not** use paths like:
+Do not include `public/data/` in those internal paths.
 
-```text
-public/data/frames/state03100
-/data/public/frames/state03100
-```
-
-inside `sequence.json`.
-
----
-
-## 8. Sequence playback in the viewer
-
-After converting a sequence, start the viewer:
-
-```bash
-npm run dev
-```
-
-Open:
-
-```text
-http://127.0.0.1:5173
-```
-
-Use the GUI folder:
+## 12.1 Playback controls
 
 ```text
 Sequence playback
@@ -724,6 +1049,8 @@ Sequence playback
   FPS
   Preload frames
   Cache limit MB
+  Defer isosurfaces
+  Defer field lines
   Preload current view
   Clear cache
   Play
@@ -733,154 +1060,155 @@ Sequence playback
 Recommended workflow:
 
 ```text
-1. Choose the fields and slices you want to animate.
-2. Set Preload frames = 6 or 10.
-3. Set Cache limit MB = 1500 or 3000.
+1. Select the visible fields and objects.
+2. Set Preload frames to 6-10.
+3. Set Cache limit MB to 1500-3000 if memory permits.
 4. Click Preload current view.
 5. Click Play.
 ```
 
-The viewer preloads only the fields used by the current view, not every field in every frame.
+The viewer loads only arrays used by visible objects.
 
-This avoids loading unnecessary arrays and keeps memory usage reasonable.
+Persistent GPU geometry is retained for CMB, ICB, radial surface, equatorial
+slices and meridional slices when successive frames have the same grid.
+Only their colour buffers are updated.
+
+## 12.2 Heavy-object preloading
+
+When defer is disabled, preloading also includes:
+
+- complete isosurface geometry;
+- field-line JSON and GPU line geometry.
+
+The two controls are independent:
+
+```text
+Defer isosurfaces = on
+  Hide isosurfaces during playback and refresh on pause.
+
+Defer isosurfaces = off
+  Preload and display frame-specific isosurfaces.
+
+Defer field lines = on
+  Hide lines during playback and refresh on pause.
+
+Defer field lines = off
+  Preload and display frame-specific line geometry.
+```
+
+Heavy caches are bounded by the number of preload frames. Old inactive entries
+are disposed as new frames enter the rolling cache.
 
 ---
 
-## 9. Magnetic field lines
+# 13. Export PNG, PDF and video
 
-Field-line generation is optional.
-
-Skip field lines:
-
-```bash
---skip-field-lines
-```
-
-Generate shell and exterior lines:
-
-```bash
---field-line-mode both \
---external-rmax 40 \
---line-seeds 360
-```
-
-Use exact seed-grid dimensions:
-
-```bash
---line-seed-theta 10 \
---line-seed-phi 36
-```
-
-This gives exactly:
+The `Export` folder includes:
 
 ```text
-10 × 36 = 360 seeds
+Save PNG + colourbars
+Save PDF + colourbars
+Record video
+PNG snapshot sequence
 ```
 
-Use approximate total regular seeds:
+Visible colourbars are included in PNG/PDF output.
 
-```bash
---line-seeds 360
-```
+## 13.1 Video rotation modes
 
-The converter chooses an approximately regular theta/phi grid.
-
-In the viewer, field-line controls include:
+Available modes are:
 
 ```text
-Magnetic field lines
-  Show
-  Line type
-  Line stride
-  Colour by = Strength / Polarity
-  Value scale = Linear / log10(|B|)
-  Range = minmax / manual
-  Thickness
-  Opacity
+360 degrees in phi
+360 degrees phi + 180 degrees theta
+Personalized motion
 ```
 
-For large sequences, generate field lines only if really needed, because they can slow conversion and playback.
+The motion starts from the current camera viewpoint.
+
+### Personalized syntax
+
+```text
+p = relative phi/azimuth rotation in degrees
+t = relative theta/polar rotation in degrees
+, = motions performed simultaneously
+; = next motion stage
+```
+
+Examples:
+
+```text
+90p
+-180p
+45t
+-180p,45t;180p
+90p,-30t;90p
+```
+
+For:
+
+```text
+180p,45t;180p
+```
+
+stage 1 performs 180 degrees in phi and 45 degrees in theta simultaneously;
+stage 2 then performs another 180 degrees in phi.
+
+Video time is divided between semicolon-separated stages in proportion to the
+largest absolute angular motion in each stage.
+
+## 13.2 Video with sequence playback
+
+Enable:
+
+```text
+Export > Activate playback
+```
+
+before recording.
+
+The video timeline controls the sequence frame rather than using the normal
+real-time playback timer. Required frames are preloaded before recording,
+including isosurfaces and field-line geometry when their defer controls are off.
+
+If a remaining frame swap is necessary, the recorder is paused until the new
+field reaches the canvas, preventing loading intervals from being encoded as
+frozen video frames.
+
+## 13.3 Offline PNG sequence
+
+Open:
+
+```text
+Export > PNG snapshot sequence
+```
+
+Set first frame, last frame, step, output width and whether heavy objects should
+be refreshed.
+
+On Chromium browsers with the File System Access API, select an output folder.
+Other browsers package the PNG files in a ZIP.
+
+Output names are:
+
+```text
+frame_00000.png
+frame_00001.png
+...
+```
+
+Create an MP4 with FFmpeg:
+
+```bash
+ffmpeg -framerate 24 -i 'frame_%05d.png' \
+  -c:v libx264 -preset slow -crf 18 -pix_fmt yuv420p movie.mp4
+```
 
 ---
 
-## 10. Angular spectral truncation
+# 14. Converted fields and custom fields
 
-The converter supports angular spectral truncation before the physical-space transform:
-
-```bash
---spectral-lmax 128
-```
-
-This is now the default.
-
-If the original state has, for example:
-
-```text
-lmax = 191
-mmax = 191
-```
-
-then the converter remaps the LSD coefficients onto a smaller `(l,m)` basis:
-
-```text
-lmax = 128
-mmax = 128
-```
-
-before calling:
-
-```python
-PolTor_to_spat
-SH_to_spat
-SH_to_spat_nom0
-```
-
-This is preferable to downsampling in `theta` or `phi` because it removes unresolved high-degree content before synthesis rather than aliasing it onto a coarser grid.
-
-Disable spectral truncation with:
-
-```bash
---spectral-lmax 0
-```
-
-Use a different cutoff with:
-
-```bash
---spectral-lmax 96
---spectral-lmax 160
-```
-
-The effective cutoff is written to `metadata.json` under:
-
-```json
-"spectral": {
-  "enabled": true,
-  "requested_lmax": 128,
-  "lmax_original": 191,
-  "mmax_original": 191,
-  "lmax_effective": 128,
-  "mmax_effective": 128
-}
-```
-
-Radial downsampling is still separate:
-
-```bash
---downsample-r 2
-```
-
-For most cases, leave angular post-downsampling off:
-
-```bash
---downsample-theta 1
---downsample-phi 1
-```
-
-## 11. Converted fields
-
-The converter writes the available fields into `metadata.json`.
-
-Typical volume fields include:
+## 14.1 Typical Leeds volume fields
 
 ```text
 ur, ut, up, Uabs
@@ -896,529 +1224,21 @@ ur_phiavg, ut_phiavg, up_phiavg
 Br_phiavg, Bt_phiavg, Bp_phiavg
 ```
 
-Notes:
+Definitions:
 
-- `N2` is computed in 3-D and exported with the azimuthal `m=0` component removed.
-- `N2_full` is the same quantity but with the azimuthal `m=0` component retained.
-- scalar gradients named `grad_*` are exported with their azimuthal `m=0` component removed.
-- scalar gradients named `grad_*_full` retain the azimuthal `m=0` component.
-- `*_phiavg` fields are azimuthal averages broadcast back to 3-D so they can be shown with the same slice/surface tools.
-- phi averages ignore non-finite or extreme outlier values.
+- `N2` has its azimuthal `m=0` component removed;
+- `N2_full` retains `m=0`;
+- `grad_*` fields have `m=0` removed;
+- `grad_*_full` fields retain `m=0`;
+- `*_phiavg` fields are azimuthal averages broadcast back to 3-D.
 
----
-
-## 12. Isosurfaces
-
-The viewer has an `Isosurfaces` folder.
-
-Controls:
+The implemented buoyancy-frequency scaling is:
 
 ```text
-Isosurfaces
-  Show
-  Field
-  Resolution
-  Clip with meridians
-  Clip offset M1
-  Clip offset M2
-  Show positive
-  Positive value
-  Positive color
-  Show negative
-  Negative value
-  Negative color
-  Opacity
+N^2 = r Ek^2 [RaT/Pr dT/dr + RaC/Sc dComp/dr]
 ```
 
-The `Field` selector uses all available volume fields.
-
-`Clip with meridians` uses the active meridional-slice clipping geometry, so you can open the isosurface on the front side and see inside the shell more clearly. It follows the current meridian positions and the current CMB clip mode / side settings.
-
-`Clip offset M1` and `Clip offset M2` shift the isosurface clipping plane(s) perpendicular to meridional slice 1 and slice 2. The offsets are in the viewer's normalized length units (outer-core radius scale). Use positive or negative values to move the clipping plane sideways while keeping it parallel to the meridional plane. When only one meridional slice is active, the corresponding offset is used. When both meridional slices are active with `Between meridional planes (behind)`, both offsets are used.
-
-Examples:
-
-```text
-ur
-ut
-up
-Br
-Bt
-Bp
-helicity
-N2
-C
-Comp
-```
-
-The isosurface is extracted directly on the spherical dynamo grid, so it is confined to the fluid shell.
-
-For performance, start with:
-
-```text
-Resolution = 24 or 32
-```
-
-then increase if needed.
-
----
-
-## 13. Earth surface texture
-
-The Earth surface uses a local texture:
-
-```text
-public/assets/earth_blue_marble.jpg
-```
-
-Put your texture there:
-
-```bash
-mkdir -p public/assets
-cp /path/to/earth_blue_marble.jpg public/assets/earth_blue_marble.jpg
-```
-
-Recommended format:
-
-```text
-2:1 equirectangular / latitude-longitude projection
-```
-
-Then start or restart:
-
-```bash
-npm run dev
-```
-
-In the viewer:
-
-```text
-Earth surface
-  Show
-  Texture longitude
-  Radius / core
-  Opacity
-  Slice gap filler
-  Filler opacity
-```
-
----
-
-## 14. View-state code
-
-The viewer can save and reload a complete visual setup.
-
-GUI folder:
-
-```text
-View state
-  Copy code
-  Show code
-  Load code
-  Save code to file
-```
-
-The saved code includes:
-
-```text
-selected fields
-colormaps
-scale ranges
-opacity values
-camera position
-lighting
-slices
-Earth surface settings
-field-line settings
-isosurface settings
-sequence playback settings
-```
-
-This is useful for reproducing the same view on another converted state or sequence.
-
----
-
-## 15. Export PNG/PDF/video
-
-The viewer has export controls:
-
-```text
-Export
-  Save PNG + colourbars
-  Save PDF + colourbars
-  Record video
-```
-
-Video controls include:
-
-```text
-Video width px
-Video duration s
-Video FPS
-Rotation mode
-```
-
-Available rotation modes:
-
-```text
-360° in phi
-360° phi + 180° theta
-```
-
----
-
-## 16. Troubleshooting
-
-### Dataset selector cannot load a folder
-
-Use the public URL path, not the filesystem path.
-
-Correct examples:
-
-```text
-/data
-/data_run2
-/datasets/run_A
-```
-
-Incorrect examples:
-
-```text
-public/data_run2
-/mnt/c/Users/.../public/data_run2
-C:\Users\...\public\data_run2
-```
-
-For a dataset at:
-
-```text
-public/data_run2/metadata.json
-```
-
-enter this in the viewer:
-
-```text
-/data_run2
-```
-
-For a sequence dataset, check:
-
-```bash
-ls public/data_run2/sequence.json
-ls public/data_run2/frames/state03100/metadata.json
-```
-
-### Error: `Unexpected token '<', "<!doctype "... is not valid JSON`
-
-The viewer tried to read a JSON file, but Vite returned `index.html`.
-
-Usually one of these files is missing or the path is wrong:
-
-```text
-public/data/metadata.json
-public/data/sequence.json
-public/data/frames/state03100/metadata.json
-```
-
-Check:
-
-```bash
-ls public/data/
-ls public/data/sequence.json
-ls public/data/frames/
-ls public/data/frames/state03100/metadata.json
-```
-
-For a sequence, the correct structure is:
-
-```text
-public/data/sequence.json
-public/data/frames/state03100/metadata.json
-```
-
-not:
-
-```text
-public/data/public/frames/
-```
-
-### Sequence exists but the viewer does not start
-
-If `public/data/metadata.json` is missing but `sequence.json` exists, the viewer should start from the first frame. If it does not, copy the first frame to the root as a workaround:
-
-```bash
-cp -a public/data/frames/state03100/* public/data/
-```
-
-### Sequence playback is laggy
-
-Use the preload controls:
-
-```text
-Sequence playback
-  Preload frames = 6 or 10
-  Cache limit MB = 1500 or 3000
-  Preload current view
-```
-
-Also reduce what is visible:
-
-```text
-hide field lines
-hide isosurfaces
-use fewer slices
-reduce isosurface resolution
-```
-
-### Converter says `NameError: shutil is not defined`
-
-Use the latest converter. The sequence mode requires:
-
-```python
-import shutil
-```
-
-near the top of `tools/convert_state_to_viewer.py`.
-
-### Phi-averaged fields show huge values such as `1e28`
-
-Use the latest converter. Phi averages now ignore non-finite and extreme outlier values.
-
-Reconvert the data after updating the converter.
-
-### Earth texture does not show
-
-Check that the file exists:
-
-```bash
-ls public/assets/earth_blue_marble.jpg
-```
-
-The viewer expects exactly:
-
-```text
-public/assets/earth_blue_marble.jpg
-```
-
-### Browser still shows an old bug
-
-Hard-refresh:
-
-```text
-Ctrl + F5
-```
-
-or stop and restart Vite:
-
-```bash
-npm run dev
-```
-
----
-
-## 17. Useful complete commands
-
-### One statefile, no field lines
-
-```bash
-python tools/convert_state_to_viewer.py \
-  --file "/path/to/state03125.cdf.dat" \
-  --modules-dir "modules.py" \
-  --out public/data \
-  --spectral-lmax 128 \
-  --cmb-br-ltrunc 13 \
-  --skip-field-lines
-```
-
-### Last state in folder, no field lines
-
-```bash
-python tools/convert_state_to_viewer.py \
-  --folder "/path/to/STATEFILES/" \
-  --modules-dir "modules.py" \
-  --out public/data \
-  --spectral-lmax 128 \
-  --cmb-br-ltrunc 13 \
-  --skip-field-lines
-```
-
-### Sequence, no field lines
-
-```bash
-python tools/convert_state_to_viewer.py \
-  --folder "/path/to/STATEFILES/" \
-  --modules-dir "modules.py" \
-  --out public/data \
-  --spectral-lmax 128 \
-  --cmb-br-ltrunc 13 \
-  --sequence-first 3100 \
-  --sequence-last 3125 \
-  --sequence-step 5 \
-  --sequence-clear \
-  --skip-field-lines
-```
-
-### Sequence, with field lines
-
-```bash
-python tools/convert_state_to_viewer.py \
-  --folder "/path/to/STATEFILES/" \
-  --modules-dir "modules.py" \
-  --out public/data \
-  --spectral-lmax 128 \
-  --cmb-br-ltrunc 13 \
-  --field-line-mode both \
-  --external-rmax 40 \
-  --line-seeds 360 \
-  --sequence-first 3100 \
-  --sequence-last 3125 \
-  --sequence-step 5 \
-  --sequence-clear
-```
-
----
-
-## 18. Notes on performance
-
-Large 3-D fields are loaded as `Float32Array` objects in the browser.
-
-Memory estimate per field:
-
-```text
-nr × ntheta × nphi × 4 bytes
-```
-
-For example, if:
-
-```text
-nr = 180
-ntheta = 384
-nphi = 384
-```
-
-one field is approximately:
-
-```text
-180 × 384 × 384 × 4 ≈ 106 MB
-```
-
-Therefore, do not preload every field for every frame. The viewer preloads only the currently visible fields, and the cache limit prevents unlimited memory growth.
-
-For smoother playback:
-
-```text
-use --skip-field-lines for sequences
-preload only 6 to 10 frames
-set cache limit to 1500--3000 MB
-hide expensive isosurfaces unless needed
-reduce isosurface resolution
-downsample if necessary
-```
-
-Optional downsampling example:
-
-```bash
-python tools/convert_state_to_viewer.py \
-  --folder "/path/to/STATEFILES/" \
-  --modules-dir "modules.py" \
-  --out public/data \
-  --spectral-lmax 128 \
-  --cmb-br-ltrunc 13 \
-  --sequence-first 3100 \
-  --sequence-last 3125 \
-  --sequence-step 5 \
-  --sequence-clear \
-  --skip-field-lines \
-  --downsample-r 2 \
-  --downsample-theta 2 \
-  --downsample-phi 2
-```
-
-### Mouse rotation and corner axes
-
-The viewer now uses **TrackballControls** instead of OrbitControls, which allows freer mouse rotation in all directions and avoids the blocked feeling near the poles.
-
-When `Axes` is enabled in the GUI, the orientation axes are displayed in a small **top-right corner** overlay instead of in the middle of the model.
-
-
-### GUI layout
-
-The main `Controls` panel now opens collapsed, and its folders also start collapsed by default.
-
-The `Point of view` controls are separated into their own GUI panel fixed at the bottom-left of the window. This panel also starts collapsed, so it is available without covering the main model view.
-
-
-
-### GUI layout fix
-
-The main GUI now uses a safe folder-collapse list and no longer references a missing `viewStateFolder` variable. This fixes the runtime `buildGui()` failure that could prevent datasets from loading.
-
-
----
-
-## Convert XSHELLS fields with `pyxshells`
-
-A separate converter is provided:
-
-```text
-tools/convert_xshells_to_viewer.py
-```
-
-XSHELLS stores a snapshot as separate field files, commonly:
-
-```text
-fieldU.<tag>   velocity
-fieldB.<tag>   magnetic field
-fieldT.<tag>   temperature
-fieldC.<tag>   composition/concentration
-```
-
-Install the Python dependencies in the environment used for conversion:
-
-```bash
-python -m pip install numpy pyxshells
-```
-
-`pyxshells` uses the Python SHTns module, so SHTns must also be installed and importable:
-
-```bash
-python -c "import pyxshells, shtns; print('pyxshells/SHTns OK')"
-```
-
-### Automatic discovery from a folder and tag
-
-For files such as `fieldU.bench`, `fieldB.bench`, `fieldT.bench`, and `fieldC.bench`:
-
-```bash
-python tools/convert_xshells_to_viewer.py \
-  --folder "/path/to/xshells/run" \
-  --tag bench \
-  --out public/data_xshells \
-  --Ek 1e-5 \
-  --Pr 1 \
-  --Sc 10 \
-  --RaT 90 \
-  --RaC 30000
-```
-
-Without `--tag`, the converter selects the newest matching `fieldU.*`, `fieldB.*`, `fieldT.*`, and `fieldC.*` files in the folder.
-
-### Explicit field paths
-
-```bash
-python tools/convert_xshells_to_viewer.py \
-  --velocity "/path/to/fieldU.snapshot" \
-  --magnetic "/path/to/fieldB.snapshot" \
-  --temperature "/path/to/fieldT.snapshot" \
-  --composition "/path/to/fieldC.snapshot" \
-  --out public/data_xshells
-```
-
-Any subset can be converted. For example, a non-magnetic thermal run can use only `--velocity` and `--temperature`.
-
-### Output fields
-
-Depending on the supplied files, the converter writes:
+## 14.2 Typical XSHELLS fields
 
 ```text
 ur, ut, up, Uabs
@@ -1429,358 +1249,593 @@ T, Comp
 Axisymmetric and non-axisymmetric variants include:
 
 ```text
-ur_phiavg, ut_phiavg, up_phiavg
-Br_phiavg, Bt_phiavg, Bp_phiavg
-T_phiavg, Comp_phiavg
-
-ur_nom0, ut_nom0, up_nom0
-Br_nom0, Bt_nom0, Bp_nom0
-T_nom0, Comp_nom0
+*_phiavg
+*_nom0
 ```
 
-Scalar gradients are exported as both full and m=0-removed fields:
+Scalar gradients are exported as full and `m=0`-removed variants.
+
+## 14.3 Add a custom 3-D field
+
+The viewer does not discover an `.f32` file by filename alone. Register it in
+`metadata.json`:
+
+```json
+{
+  "fields": {
+    "x": "x.f32"
+  }
+}
+```
+
+The file must contain little-endian 32-bit floats with shape:
 
 ```text
-grad_rT_full, grad_thetaT_full, grad_phiT_full
-grad_rComp_full, grad_thetaComp_full, grad_phiComp_full
-
-grad_rT, grad_thetaT, grad_phiT
-grad_rComp, grad_thetaComp, grad_phiComp
+(nr, ntheta, nphi)
 ```
 
-When the required parameters are available, it also writes:
+flattened in C order, with `iphi` varying fastest:
+
+```python
+import numpy as np
+
+x = np.asarray(x, dtype="<f4")
+assert x.shape == (nr, ntheta, nphi)
+x.tofile("public/data/x.f32")
+```
+
+The expected byte count is:
 
 ```text
-N2_full   full N² including m=0
-N2        N² with m=0 removed
+nr * ntheta * nphi * 4
 ```
 
-The implemented scaling is consistent with the Leeds converter:
+For a sequence, add the field and metadata entry to every frame.
+
+## 14.4 Add a CMB-only field
+
+A CMB field has shape:
 
 ```text
-N² = r Ek² [ RaT/Pr dT/dr + RaC/Sc dComp/dr ]
+(ntheta, nphi)
 ```
 
-### Control the SHTns physical grid
+Register it as:
 
-By default, `pyxshells`/SHTns chooses its physical grid. To specify it explicitly:
-
-```bash
---nlat 256 --nphi 512
+```json
+{
+  "surface_fields": {
+    "x_CMB": {
+      "surface": "cmb",
+      "file": "x_CMB.f32"
+    }
+  }
+}
 ```
 
-Both options must be supplied together. Viewer output can then be reduced further with:
+## 14.5 Add an Earth-only field
 
-```bash
---downsample-r 2 --downsample-theta 2 --downsample-phi 2
+Register a two-dimensional Earth surface field with:
+
+```json
+{
+  "surface_fields": {
+    "x_Earth": {
+      "surface": "earth",
+      "file": "x_Earth.f32",
+      "radius_scale": 1.8307471264
+    }
+  }
+}
 ```
 
-### Parameters and prompts
+---
 
-The converter accepts the same aliases used by the Leeds converter:
+# 15. Magnetic field continuation to Earth
+
+Both converters generate a low-degree Earth-surface radial magnetic field by
+default when magnetic data are present.
+
+Write the CMB radial field as:
 
 ```text
---Ek or --E
---Pr, --PrT or --Pr_T
---Sc, --PrC or --Pr_C
---RaT, --Ra or --Ra_T
---RaC or --Ra_C
+Br(r_o, theta, phi) = sum_lm b_lm(r_o) Y_lm(theta, phi)
 ```
 
-It first checks command-line values, then tries to parse values from the input paths. Missing values are requested interactively unless:
-
-```bash
---no-parameter-prompt
-```
-
-### Load in the viewer
-
-Start the viewer normally:
-
-```bash
-npm run dev
-```
-
-At the dataset prompt, enter:
+In a current-free insulating mantle, each radial-field harmonic continues as:
 
 ```text
-/data_xshells
+b_lm(r) = b_lm(r_o) (r_o / r)^(l + 2)
 ```
 
-The initial XSHELLS converter exports fields and surfaces usable by the CMB/ICB/slice/isosurface controls. It does not yet generate magnetic field-line JSON files.
-
-### Conducting inner core and different radial domains
-
-XSHELLS permits the magnetic field to extend beyond the velocity field into conducting solid layers. For example, `fieldB` may span from the centre to the CMB while `fieldU` and `fieldT` begin at the ICB.
-
-The converter therefore:
-
-- uses the magnetic radial grid as the viewer grid when `fieldB` is present;
-- preserves `Br`, `Bt`, and `Bp` throughout the conducting inner core for every radius greater than zero;
-- sets only the singular spherical-component layer at exactly `r=0` to zero;
-- embeds shell-only velocity and scalar fields as zero outside their native radial domains;
-- writes `r_icb`, `icb_radius`, `icb_index`, `radial_domains`, and `field_domains` to `metadata.json`.
-
-The viewer uses `icb_index` to draw the ICB at the fluid-shell inner boundary, rather than assuming that the first radial point is the ICB.
-
-
-### XSHELLS CMB truncation and magnetic field lines
-
-The XSHELLS converter supports the same magnetic visualization outputs as the Leeds converter. It analyses the physical XSHELLS radial field at the fluid CMB using the field's own SHTns transform.
-
-```bash
-python tools/convert_xshells_to_viewer.py \
-  --folder /path/to/run \
-  --out public/data_xshells \
-  --cmb-br-ltrunc 13 \
-  --field-line-mode both \
-  --line-seeds 360
-```
-
-Relevant options:
+The default Earth radius is:
 
 ```text
---cmb-br-ltrunc L
---skip-field-lines
---field-line-mode shell|exterior|both
---external-rmax R
---external-nr N
---external-closed-only / --no-external-closed-only
---external-btheta-sign auto|plus|minus
---line-seeds N
---line-seed-theta N
---line-seed-phi N
---line-max-steps N
---line-step-size DS
-```
-
-For a conducting inner core, the volume magnetic field is retained below the ICB. The `shell` field-line mode is deliberately restricted to the fluid shell, while the exterior mode reconstructs a current-free field from `Br` at the CMB.
-
-`Cps` is no longer requested or written by either converter. The viewer also removes that legacy key when opening older metadata files.
-
-## Optimised sequence playback and PNG movie frames
-
-The viewer sequence path is optimised for repeated snapshots on the same numerical grid.
-
-### Interactive playback
-
-During playback the viewer now:
-
-- keeps the CMB, ICB, equatorial-slice and meridional-slice geometry on the GPU;
-- updates the existing dynamic colour buffers instead of disposing and recreating meshes;
-- loads only fields belonging to currently visible displays;
-- leaves hidden slices unloaded until they are enabled;
-- defers isosurface reconstruction and magnetic field-line loading by default;
-- restores and updates deferred isosurfaces and field lines when playback is paused;
-- advances to the next frame only after the current frame finishes loading, avoiding an interval backlog;
-- avoids reconstructing the Earth surface and slice-gap fillers on every snapshot.
-
-The **Sequence playback** panel contains:
-
-- `Defer isosurfaces`;
-- `Defer field lines`.
-
-Both are enabled by default. Disable either option only when that object must be regenerated for every interactive frame.
-
-Persistent geometry is used when consecutive snapshots have the same `nr`, `ntheta`, and `nphi`. If a sequence changes grid dimensions, the viewer safely rebuilds its geometry.
-
-### Offline PNG snapshot sequence
-
-Open:
-
-```text
-Export -> PNG snapshot sequence
-```
-
-Set:
-
-- first and last sequence-frame indices;
-- frame step;
-- output width;
-- whether isosurfaces and magnetic field lines should be refreshed for every exported frame.
-
-Then select `Render PNG sequence`.
-
-On browsers supporting the File System Access API, choose an output directory. The viewer writes:
-
-```text
-frame_00000.png
-frame_00001.png
-frame_00002.png
-...
-```
-
-On browsers without directory writing, including Firefox, the viewer packages the PNGs into one uncompressed ZIP download. PNG data are already compressed, so ZIP deflation would provide little additional reduction. The fallback keeps the generated PNGs in browser memory until the ZIP is complete; use a moderate frame range or PNG width for very long sequences.
-
-Use `Cancel PNG render` to stop after the current frame.
-
-Create an MP4 with FFmpeg:
-
-```bash
-ffmpeg -framerate 24 -i 'frame_%05d.png' \
-  -c:v libx264 -preset slow -crf 18 -pix_fmt yuv420p movie.mp4
-```
-
-For a PNG ZIP, extract it before running FFmpeg.
-
-
-### Sequence heavy-object behaviour
-
-During playback, `Defer isosurfaces` and `Defer field lines` are independent:
-
-- enabled: the object is hidden during playback and refreshed after pause;
-- disabled: the object is rebuilt and displayed for every snapshot.
-
-
-### Video export with sequence playback
-
-Enable `Export > Activate playback` before `Record video` to advance the loaded
-snapshot sequence while the camera rotation is recorded. The snapshot rate is
-controlled by `Sequence playback > FPS`. Playback that was started by the video
-export is stopped automatically when recording finishes; playback that was
-already running before recording is left running.
-
-### Personalized video motion
-
-The two original camera paths remain available:
-
-- `360° in phi`
-- `360° phi + 180° theta`
-
-A third mode, `Personalized motion`, starts from the current camera viewpoint and
-accepts semicolon-separated relative rotations:
-
-```text
--180p,45t;180p
-```
-
-Here `p` means azimuth/phi and `t` means polar angle/theta. Signed values control
-the direction. Use `,` for motions happening at the same time within one stage,
-and `;` for the next stage. Video time is divided between stages in proportion to
-their largest absolute angular amplitude. Examples:
-
-```text
-90p
--180p
-45t
--180p,45t;180p
-90p,-30t;90p
-```
-
-### Preloading during sequence and video playback
-
-Playback now automatically prepares the next number of snapshots specified by
-`Sequence playback > Preload frames`.
-
-The preload includes:
-
-- binary arrays for currently visible scalar fields;
-- isosurface mesh geometry when `Defer isosurfaces` is disabled;
-- magnetic field-line JSON and GPU line geometry when `Defer field lines` is disabled.
-
-The same preload runs before a video recording that has `Activate playback`
-enabled. Heavy-object caches are bounded by `Preload frames`; old inactive
-entries are disposed as new snapshots enter the rolling cache.
-
-### Freeze-free video sequence synchronization
-
-When `Export > Activate playback` is enabled, video export no longer runs the
-normal real-time sequence timer. The video timeline drives the snapshot index.
-Before recording, all unique snapshots required by the selected video duration
-and sequence FPS are preloaded, including isosurfaces and field-line geometry
-when their defer options are disabled.
-
-During any remaining snapshot swap, `MediaRecorder` is paused. Recording resumes
-only after the new fields and heavy objects have reached the canvas, and the
-loading interval is removed from the camera-motion timeline. This prevents the
-recorded movie from containing repeated frozen frames followed by camera jumps.
-
-### Keyboard shortcuts
-
-Keyboard shortcuts are active when focus is not inside a GUI input, selector,
-button, or editable text field:
-
-```text
-+ / Numpad +    next sequence frame
-- / Numpad -    previous sequence frame
-Left / Right    rotate phi by -5° / +5°
-Up / Down       rotate theta by -5° / +5°
-i               zoom in by 10%
-o               zoom out by 10%
-```
-
-Frame stepping wraps cyclically at the first and last snapshots. If sequence
-playback is already running, the timer is paused for the manual step and then
-resumed without creating a competing frame-load request.
-
-### Radial spherical surface
-
-The `Radial spherical surface` panel displays any volume field on a sphere at a
-user-selected normalized radius `r / r_o` between 0 and 1. Values are linearly
-interpolated between adjacent radial grid levels. If the requested radius lies
-outside the radial domain stored by the dataset, the viewer uses the closest
-available radius. The surface has independent visibility, field, colour scale,
-colour map, manual limits, and opacity controls, and is supported during
-sequence playback and image/video export.
-
-### Earth surface latitude-cell fix
-
-The Earth surface clipping mesh now defines the lower and upper colatitudes for
-each latitude cell before evaluating its midpoint. This fixes the runtime error
-`theta0 is not defined` when enabling the Earth texture.
-
-### Earth-surface radial magnetic field
-
-Both converters now export an Earth-surface radial magnetic field by default
-when a magnetic field is available. The default truncation and radius are:
-
-```text
-lmax = 13
 r_E / r_CMB = 6371 / 3480 = 1.830747126...
 ```
 
-For a current-free mantle, each spherical-harmonic component of the radial
-field is continued from the CMB according to
+and only degrees:
 
 ```text
-Br_lm(r_E) = Br_lm(r_CMB) * (r_CMB / r_E)^(l + 2)
+1 <= l <= 13
 ```
 
-Only degrees `1 <= l <= 13` are retained. The output is:
+are retained. Therefore:
+
+```text
+Br(r_E, theta, phi)
+  = sum_(l=1)^13 sum_m
+    b_lm(r_CMB)
+    (r_CMB/r_E)^(l+2)
+    Y_lm(theta, phi)
+```
+
+The dipole decays as `r^-3`, the quadrupole as `r^-4`, and so on.
+
+Default output:
 
 ```text
 Br_Earth_lmax13_earth.f32
 ```
 
-and `metadata.json` registers it under `surface_fields` with
-`"surface": "earth"`, the radius ratio, effective truncation, and radial-decay
-law.
+Metadata records:
 
-The defaults can be changed with:
+- Earth radius scale;
+- effective truncation;
+- radial decay law;
+- `surface = earth`.
+
+Options available in both converters:
 
 ```bash
 --earth-br-ltrunc 13
 --earth-radius-scale 1.8307471264
-```
-
-or disabled with:
-
-```bash
 --no-earth-br
 ```
 
-In the viewer, open `Earth surface` and select:
+The low-degree CMB map is controlled independently with:
 
-```text
-Display = Earth image
+```bash
+--cmb-br-ltrunc 13
 ```
 
-or:
+---
 
-```text
-Display = Magnetic Br
+# 16. Detailed Leeds converter reference
+
+## 16.1 Angular spectral truncation
+
+The default is:
+
+```bash
+--spectral-lmax 128
 ```
 
-The magnetic mode provides a field selector, scale, colour map, manual range,
-and opacity controls. Its radius is taken from the field metadata rather than
-the texture-radius control.
+This truncates the spherical-harmonic coefficients before physical-space
+synthesis. It is preferable to post-transform theta/phi subsampling because it
+removes unresolved high-degree content before generating the grid.
+
+Disable spectral truncation with:
+
+```bash
+--spectral-lmax 0
+```
+
+Alternative cutoffs include:
+
+```bash
+--spectral-lmax 96
+--spectral-lmax 160
+```
+
+The effective values are written under the `spectral` key in `metadata.json`.
+
+Radial and angular post-downsampling remain available:
+
+```bash
+--downsample-r 2
+--downsample-theta 2
+--downsample-phi 2
+```
+
+Normally leave theta and phi downsampling at 1 when using spectral truncation.
+
+## 16.2 Parameter extraction
+
+The converter reads these values from the path when possible:
+
+```text
+Ek, Pr, Sc, RaT, RaC
+```
+
+Accepted path aliases are:
+
+```text
+Ek/E
+Pr/PrT/Pr_T
+Sc/PrC/Pr_C
+RaT/Ra_T/Ra
+RaC/Ra_C
+```
+
+For example:
+
+```text
+Pm=0/Pr_T=1/Pr_C=10/q=0.0/E=1e-5/Ra_T=90/Ra_C=30000/
+```
+
+is interpreted as:
+
+```text
+Ek  = 1e-5
+Pr  = 1
+Sc  = 10
+RaT = 90
+RaC = 30000
+```
+
+When converting a sequence, missing parameters are resolved once from the first
+selected frame and forwarded to subsequent frame conversions.
+
+## 16.3 Sequence output structure
+
+The converter copies the first sequence frame into the dataset root so the
+viewer can start even before playback is activated.
+
+Expected output:
+
+```text
+public/data/
+  metadata.json
+  coordinates.json
+  sequence.json
+  frames/
+    state03100/
+    state03105/
+```
+
+## 16.4 Field-line modes
+
+```text
+shell     field lines inside the fluid shell
+exterior  potential/poloidal lines reconstructed from CMB Br
+both      both sets
+```
+
+Useful controls:
+
+```bash
+--external-rmax 40
+--line-seeds 360
+--line-max-steps 1000
+--line-step-size 0.01
+```
+
+---
+
+# 17. Detailed XSHELLS converter reference
+
+## 17.1 Conducting inner core and radial domains
+
+XSHELLS may store the magnetic field over a larger radial domain than velocity
+or scalar fields. For example, `fieldB` may extend from the centre to the CMB
+while `fieldU` and `fieldT` begin at the ICB.
+
+When magnetic data are present, the converter:
+
+- uses the magnetic radial grid as the viewer master grid;
+- retains `Br`, `Bt` and `Bp` throughout the conducting inner core for `r > 0`;
+- sets the singular spherical-component layer at exactly `r = 0` to zero;
+- embeds shell-only velocity and scalar fields as zero outside their native
+  radial domains;
+- writes `r_icb`, `icb_radius`, `icb_index`, `radial_domains` and
+  `field_domains` to `metadata.json`.
+
+The viewer uses `icb_index`, not radial index zero, to locate the ICB.
+
+## 17.2 Scalar gradients and N2
+
+By default, full and `m=0`-removed gradient fields are generated.
+
+Disable gradients with:
+
+```bash
+--no-gradients
+```
+
+Disable `m=0`-removed and phi-average variants with:
+
+```bash
+--no-m0-fields
+```
+
+When the required parameters are available, the converter generates `N2` and
+`N2_full` using the same scaling as the Leeds converter.
+
+## 17.3 Magnetic outputs
+
+The XSHELLS converter analyses the physical CMB radial field using the native
+SHTns transform. It can produce:
+
+```text
+Br_CMB_lmax13_cmb.f32
+Br_Earth_lmax13_earth.f32
+B_lines_shell.json
+B_lines_exterior_poloidal.json
+B_lines.json
+```
+
+For a conducting inner core, shell lines are deliberately restricted to the
+fluid shell. Exterior lines are reconstructed from CMB `Br` as a current-free
+field.
+
+`Cps` is not requested or written by either converter. The viewer removes that
+legacy key when opening older metadata files.
+
+---
+
+# 18. Performance and memory
+
+A 3-D field is stored as a browser `Float32Array`.
+
+Memory per field is approximately:
+
+```text
+nr * ntheta * nphi * 4 bytes
+```
+
+For:
+
+```text
+nr = 180
+ntheta = 384
+nphi = 384
+```
+
+one field is approximately:
+
+```text
+106 MB
+```
+
+Recommendations:
+
+```text
+Use --skip-field-lines for large sequences.
+Preload 6-10 frames initially.
+Use a cache limit of 1500-3000 MB only if system memory permits.
+Keep isosurfaces deferred during interactive playback unless required.
+Start isosurface resolution at 24-32.
+Use --spectral-lmax before angular post-downsampling.
+Reduce radial resolution when necessary.
+```
+
+For video with non-deferred isosurfaces or lines, all unique frames required by
+the movie may temporarily occupy GPU memory. Reduce sequence FPS, video
+duration, preload count or isosurface resolution if memory becomes limiting.
+
+---
+
+# 19. Troubleshooting
+
+## 19.1 `nvm: command not found`
+
+Reload the shell:
+
+```bash
+source ~/.bashrc
+```
+
+or load NVM explicitly:
+
+```bash
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+```
+
+## 19.2 Vite reports an unsupported Node version
+
+```bash
+nvm install --lts
+nvm use --lts
+node --version
+npm ci --no-audit --no-fund
+```
+
+## 19.3 `npm run dev` says `vite: Permission denied`
+
+Remove and reinstall dependencies on the current machine:
+
+```bash
+rm -rf node_modules
+npm ci --no-audit --no-fund
+```
+
+Do not copy `node_modules` between machines or operating systems.
+
+## 19.4 Converter cannot import `modules`
+
+Check the containing directory:
+
+```bash
+ls /path/to/leeds-postprocessing/modules.py
+```
+
+Then use:
+
+```bash
+--modules-dir /path/to/leeds-postprocessing
+```
+
+Test it directly:
+
+```bash
+PYTHONPATH="/path/to/leeds-postprocessing:$PYTHONPATH" \
+python -c 'import modules; print(modules.__file__)'
+```
+
+## 19.5 Dataset selector cannot load a folder
+
+Use the browser path relative to `public/`:
+
+```text
+/data
+/data_run2
+/datasets/run_A
+```
+
+Do not use:
+
+```text
+public/data
+/home/user/.../public/data
+C:\Users\...\public\data
+```
+
+## 19.6 `Unexpected token '<'` while reading JSON
+
+Vite returned `index.html` because the requested JSON path does not exist.
+Check:
+
+```bash
+ls public/data/metadata.json
+ls public/data/sequence.json
+ls public/data/frames/state03100/metadata.json
+```
+
+## 19.7 Sequence playback is laggy
+
+Use:
+
+```text
+Preload frames = 6-10
+Cache limit MB = 1500-3000
+Preload current view
+```
+
+Also consider:
+
+```text
+Defer isosurfaces = on
+Defer field lines = on
+hide unused slices
+reduce isosurface resolution
+```
+
+When defer is off, ensure enough frames are preloaded so the heavy geometry is
+ready before playback reaches it.
+
+## 19.8 Video freezes when fields change
+
+Use the current viewer version. Playback-enabled video export uses a dedicated
+frame-synchronised driver and pauses recording during any remaining frame swap.
+
+Preload the required frames and reduce heavy geometry if the browser still
+cannot maintain the requested rate.
+
+## 19.9 Earth texture cannot be loaded
+
+The image is optional and not included. Add:
+
+```text
+public/assets/earth_blue_marble.jpg
+```
+
+or select:
+
+```text
+Earth surface > Display = Magnetic Br
+```
+
+## 19.10 Browser still shows an old error
+
+Hard-refresh:
+
+```text
+Ctrl + F5
+```
+
+or restart Vite:
+
+```bash
+npm run dev
+```
+
+## 19.11 Phi averages contain extreme values
+
+Reconvert using the current converter. Non-finite and extreme outliers are
+excluded from phi-average calculations.
+
+## 19.12 Sequence root metadata is missing
+
+The current sequence converter copies the first frame to the dataset root. For
+an older sequence, copy it manually:
+
+```bash
+cp -a public/data/frames/state03100/* public/data/
+```
+
+---
+
+# 20. Project layout and development commands
+
+Typical project layout:
+
+```text
+dynamo-three-viewer/
+  index.html
+  package.json
+  package-lock.json
+  README.md
+  requirements-xshells.txt
+  public/
+    assets/
+      README_EARTH_TEXTURE.txt
+      earth_blue_marble.jpg       optional, user-supplied
+    data/
+      metadata.json
+      coordinates.json
+      *_volume.f32
+      *_cmb.f32
+      *_earth.f32
+      sequence.json
+      frames/
+  src/
+    main.js
+    style.css
+  tools/
+    convert_state_to_viewer.py
+    convert_xshells_to_viewer.py
+    make_demo_data.py
+```
+
+`modules.py` is external Leeds post-processing code and is not part of this
+layout unless you copy it into the project yourself.
+
+Useful commands:
+
+```bash
+npm run dev       # development server
+npm run build     # production build
+npm run preview   # preview production build
+npm run make-data # regenerate demonstration data
+node --check src/main.js
+```
+
+The browser can only fetch files served under `public/`. Do not place converted
+data under `src/`.
+
+## View-state code
+
+The `View state` folder can:
+
+```text
+Copy code
+Show code
+Load code
+Save code to file
+```
+
+A view state includes selected fields, colour maps, ranges, opacity, camera,
+lighting, surfaces, slices, field lines, isosurfaces, Earth settings and
+sequence settings. It is useful for reproducing a figure across datasets.
