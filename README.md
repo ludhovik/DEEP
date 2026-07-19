@@ -1728,3 +1728,59 @@ sequence playback and image/video export.
 The Earth surface clipping mesh now defines the lower and upper colatitudes for
 each latitude cell before evaluating its midpoint. This fixes the runtime error
 `theta0 is not defined` when enabling the Earth texture.
+
+### Earth-surface radial magnetic field
+
+Both converters now export an Earth-surface radial magnetic field by default
+when a magnetic field is available. The default truncation and radius are:
+
+```text
+lmax = 13
+r_E / r_CMB = 6371 / 3480 = 1.830747126...
+```
+
+For a current-free mantle, each spherical-harmonic component of the radial
+field is continued from the CMB according to
+
+```text
+Br_lm(r_E) = Br_lm(r_CMB) * (r_CMB / r_E)^(l + 2)
+```
+
+Only degrees `1 <= l <= 13` are retained. The output is:
+
+```text
+Br_Earth_lmax13_earth.f32
+```
+
+and `metadata.json` registers it under `surface_fields` with
+`"surface": "earth"`, the radius ratio, effective truncation, and radial-decay
+law.
+
+The defaults can be changed with:
+
+```bash
+--earth-br-ltrunc 13
+--earth-radius-scale 1.8307471264
+```
+
+or disabled with:
+
+```bash
+--no-earth-br
+```
+
+In the viewer, open `Earth surface` and select:
+
+```text
+Display = Earth image
+```
+
+or:
+
+```text
+Display = Magnetic Br
+```
+
+The magnetic mode provides a field selector, scale, colour map, manual range,
+and opacity controls. Its radius is taken from the field metadata rather than
+the texture-radius control.

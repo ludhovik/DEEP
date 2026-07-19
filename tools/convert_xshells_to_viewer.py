@@ -56,6 +56,10 @@ except ImportError:  # pragma: no cover - package-style invocation
 
 
 RADIAL_ATOL = 1.0e-11
+EARTH_RADIUS_KM = 6371.0
+CMB_RADIUS_KM = 3480.0
+DEFAULT_EARTH_RADIUS_SCALE = EARTH_RADIUS_KM / CMB_RADIUS_KM
+DEFAULT_EARTH_BR_LMAX = 13
 
 
 def json_number(value: Any, default: float = 0.0) -> float:
@@ -383,6 +387,35 @@ def synthesize_cmb_br_ltrunc_xshells(
     return np.ascontiguousarray(np.asarray(sht.synth(coeff), dtype=np.float64))
 
 
+def synthesize_earth_br_ltrunc_xshells(
+    sht: Any,
+    Br_cmb: np.ndarray,
+    l_trunc: int,
+    r_cmb: float,
+    r_earth: float,
+) -> np.ndarray:
+    """Continue l-truncated CMB B_r to the Earth's surface.
+
+    For each degree l in a current-free exterior,
+
+        B_r^{l,m}(r_earth) = B_r^{l,m}(r_cmb)
+                             * (r_cmb/r_earth)^(l+2).
+    """
+    l_trunc = int(l_trunc)
+    if l_trunc < 0:
+        raise ValueError("--earth-br-ltrunc must be >= 0")
+    r_cmb = float(r_cmb)
+    r_earth = float(r_earth)
+    if r_cmb <= 0.0 or r_earth < r_cmb:
+        raise ValueError("Earth-surface radius must be at or outside the CMB.")
+
+    coeff = analyse_cmb_br_coefficients(sht, Br_cmb)
+    ell = np.asarray(sht.l, dtype=np.int64)
+    coeff[ell > l_trunc] = 0.0
+    coeff *= (r_cmb / r_earth) ** (ell.astype(np.float64) + 2.0)
+    return np.ascontiguousarray(np.asarray(sht.synth(coeff), dtype=np.float64))
+
+
 def external_potential_field_from_cmb_br(
     sht: Any,
     Br_cmb: np.ndarray,
@@ -466,6 +499,26 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "Export an additional CMB-only Br_CMB_lmax<L> field obtained by "
             "analysing XSHELLS Br at the CMB and retaining l <= L."
         ),
+    )
+    p.add_argument(
+        "--earth-br-ltrunc",
+        type=int,
+        default=DEFAULT_EARTH_BR_LMAX,
+        help="Export potential-field B_r at the Earth surface, retaining l <= L. Default: 13.",
+    )
+    p.add_argument(
+        "--earth-radius-scale",
+        type=float,
+        default=DEFAULT_EARTH_RADIUS_SCALE,
+        help=(
+            "Earth-surface radius divided by the fluid CMB radius. "
+            f"Default: 6371/3480 = {DEFAULT_EARTH_RADIUS_SCALE:.8f}."
+        ),
+    )
+    p.add_argument(
+        "--no-earth-br",
+        action="store_true",
+        help="Do not export the l-truncated Earth-surface radial magnetic field.",
     )
     p.add_argument("--skip-field-lines", action="store_true", help="Do not compute magnetic field lines.")
     p.add_argument(
@@ -735,6 +788,8 @@ def main() -> None:
         old.unlink()
     for old in outdir.glob("*_cmb.f32"):
         old.unlink()
+    for old in outdir.glob("*_earth.f32"):
+        old.unlink()
     for old_name in (
         "metadata.json",
         "coordinates.json",
@@ -809,6 +864,51 @@ def main() -> None:
                 "description": f"B_r at the CMB retained through spherical-harmonic degree {effective_lcut}",
             }
             print(f"  {field_name:20s} {Br_lcut.shape} -> {filename}")
+
+    if not args.no_earth_br:
+        if not has_magnetic or Br_cmb_native is None:
+            print("Skipping Earth-surface Br because no magnetic field was loaded.")
+        else:
+            requested_lcut = int(args.earth_br_ltrunc)
+            if requested_lcut < 0:
+                raise ValueError("--earth-br-ltrunc must be >= 0")
+            radius_scale = float(args.earth_radius_scale)
+            if not math.isfinite(radius_scale) or radius_scale < 1.0:
+                raise ValueError("--earth-radius-scale must be finite and >= 1.")
+            effective_lcut = min(requested_lcut, int(magnetic.lmax))
+            r_earth = float(r_cmb) * radius_scale
+            print(
+                f"Synthesizing XSHELLS Earth-surface Br with l <= {effective_lcut} "
+                f"at r/r_cmb={radius_scale:.8g}..."
+            )
+            Br_earth = synthesize_earth_br_ltrunc_xshells(
+                magnetic.sht, Br_cmb_native, effective_lcut, r_cmb, r_earth
+            )
+            Br_earth = np.ascontiguousarray(Br_earth[::dt, ::dp])
+            if Br_earth.shape != (len(theta_out), len(phi_out)):
+                raise ValueError(
+                    f"Earth-surface Br shape {Br_earth.shape} does not match viewer grid "
+                    f"{(len(theta_out), len(phi_out))}."
+                )
+            field_name = f"Br_Earth_lmax{requested_lcut}"
+            filename = f"{field_name}_earth.f32"
+            ranges[field_name] = write_f32(outdir / filename, Br_earth)
+            surface_fields[field_name] = {
+                "file": filename,
+                "surface": "earth",
+                "layout": "theta_phi",
+                "l_trunc": requested_lcut,
+                "effective_l_trunc": effective_lcut,
+                "radius_scale": radius_scale,
+                "radius": r_earth,
+                "source": "XSHELLS Br at the fluid CMB continued as an external potential field",
+                "radial_decay": "(r_cmb/r)^(l+2)",
+                "description": (
+                    f"Potential-field B_r at the Earth surface from CMB degrees "
+                    f"1 <= l <= {effective_lcut}"
+                ),
+            }
+            print(f"  {field_name:20s} {Br_earth.shape} -> {filename}")
 
     coordinates = {
         "r": [json_number(x) for x in r_out],

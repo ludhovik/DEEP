@@ -11,11 +11,12 @@ const statusEl = document.getElementById("status");
 const exportMessageEl = document.getElementById("export-message");
 const axesOverlayEl = document.getElementById("axes-overlay");
 
-const displaySlots = ["cmb", "icb", "radial", "equator", "equator2", "meridian", "meridian2", "fieldlines"];
+const displaySlots = ["cmb", "icb", "radial", "earth", "equator", "equator2", "meridian", "meridian2", "fieldlines"];
 const displayNames = {
   cmb: "CMB",
   icb: "ICB",
   radial: "Radial sphere",
+  earth: "Earth surface",
   equator: "Equator 1",
   equator2: "Equator 2",
   meridian: "Meridian 1",
@@ -193,6 +194,9 @@ const params = {
   radialScale: "symmetric",
   radialMin: -1.0,
   radialMax: 1.0,
+  earthScale: "symmetric",
+  earthMin: -1.0,
+  earthMax: 1.0,
   equatorScale: "symmetric",
   equatorMin: -1.0,
   equatorMax: 1.0,
@@ -209,6 +213,7 @@ const params = {
   cmbColormap: "blue-white-red",
   icbColormap: "blue-white-red",
   radialColormap: "blue-white-red",
+  earthColormap: "blue-white-red",
   equatorColormap: "blue-white-red",
   equator2Colormap: "blue-white-red",
   meridianColormap: "blue-white-red",
@@ -225,6 +230,8 @@ const params = {
   lineOpacity: 0.95,
 
   showEarthSurface: false,
+  earthDisplayMode: "texture",
+  earthField: "Br_Earth_lmax13",
   earthLongitudeDeg: 0.0,
   earthRadiusScale: 1.83,
   earthOpacity: 0.95,
@@ -835,32 +842,196 @@ function makeEarthSurfaceMesh(radius, opacity, texture, longitudeDeg, clipOption
   return mesh;
 }
 
-async function updateEarthSurface() {
+function makeEarthFieldSurfaceMesh(fieldObject, radius, opacity, vmin, vmax, colormap, clipOptions = null) {
+  const nt = metadata.ntheta;
+  const np = metadata.nphi;
+  const positions = [];
+  const colors = [];
+  const indices = [];
+
+  for (let it = 0; it < nt; it++) {
+    const theta = thetaAtIndex(it);
+    for (let ip = 0; ip < np; ip++) {
+      const phi = phiAtIndex(ip);
+      positions.push(
+        radius * Math.sin(theta) * Math.cos(phi),
+        radius * Math.sin(theta) * Math.sin(phi),
+        radius * Math.cos(theta)
+      );
+      const value = fieldObject.data[it * np + ip];
+      const color = colourMap(value, vmin, vmax, colormap);
+      colors.push(color.r, color.g, color.b);
+    }
+  }
+
+  for (let it = 0; it < nt - 1; it++) {
+    for (let ip = 0; ip < np; ip++) {
+      const ip1 = (ip + 1) % np;
+      const thetaMid = 0.5 * (thetaAtIndex(it) + thetaAtIndex(it + 1));
+      const phiMid = phiAtIndex(ip);
+      if (!shouldKeepSurfaceCellForClip(thetaMid, phiMid, clipOptions)) continue;
+      const a = it * np + ip;
+      const b = it * np + ip1;
+      const c = (it + 1) * np + ip;
+      const d = (it + 1) * np + ip1;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  const colorAttribute = new THREE.Float32BufferAttribute(colors, 3);
+  colorAttribute.setUsage(THREE.DynamicDrawUsage);
+  geometry.setAttribute("color", colorAttribute);
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+
+  const material = new THREE.MeshPhongMaterial({
+    vertexColors: true,
+    side: THREE.DoubleSide,
+    shininess: 8,
+  });
+  applyOpacityAndDepth(material, opacity);
+
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.name = "earth-magnetic-surface";
+  mesh.userData.viewerTopology = {
+    kind: "earth-field",
+    radius,
+    vertexCount: nt * np,
+  };
+  return mesh;
+}
+
+function updateEarthFieldMeshColours(mesh, fieldObject, radius, vmin, vmax, colormap) {
+  const topology = mesh?.userData?.viewerTopology;
+  if (!topology || topology.kind !== "earth-field") return false;
+  if (Math.abs(Number(topology.radius) - Number(radius)) > 1.0e-12) return false;
+  const np = metadata.nphi;
+  return updateMeshColourBuffer(
+    mesh,
+    (i) => fieldObject.data[Math.floor(i / np) * np + (i % np)],
+    vmin,
+    vmax,
+    colormap
+  );
+}
+
+function earthSurfaceFieldRange(fieldObject) {
+  let vmin = Infinity;
+  let vmax = -Infinity;
+  for (const value of fieldObject.data) {
+    if (!Number.isFinite(value)) continue;
+    if (value < vmin) vmin = value;
+    if (value > vmax) vmax = value;
+  }
+  if (!Number.isFinite(vmin) || !Number.isFinite(vmax)) return applyScale("earth", -1.0, 1.0);
+  if (vmin === vmax) {
+    const pad = Math.max(Math.abs(vmin) * 0.01, 1.0e-12);
+    vmin -= pad;
+    vmax += pad;
+  }
+  return applyScale("earth", vmin, vmax);
+}
+
+async function updateEarthSurface(options = {}) {
+  const reuseGeometry = Boolean(options.reuseGeometry);
+  const attribution = document.getElementById("earth-attribution");
+
   if (!params.showEarthSurface) {
     if (earthMesh) earthMesh.visible = false;
-    const a = document.getElementById("earth-attribution");
-    if (a) a.style.display = "none";
+    if (attribution) attribution.style.display = "none";
+    hideColourbarForSlot("earth");
     await rebuildGapFillers();
     return;
   }
+
   try {
-    const texture = await ensureEarthTexture();
-    const radius = Number(metadata?.radii?.outer || metadata?.r_outer || 1.0) * Number(params.earthRadiusScale);
     const clipOptions = getActiveCmbClipOptions();
-    if (earthMesh) {
-      scene.remove(earthMesh);
-      disposeObject(earthMesh);
-      earthMesh = null;
+
+    if (params.earthDisplayMode === "magnetic") {
+      const earthFields = getEarthFieldNames();
+      if (!earthFields.includes(params.earthField)) {
+        if (earthFields.length === 0) {
+          throw new Error("No Earth-surface magnetic field is listed in metadata.surface_fields.");
+        }
+        params.earthField = earthFields[0];
+      }
+
+      const fieldObject = await loadEarthDisplayField(params.earthField);
+      const radiusScale = Number(fieldObject.info.radius_scale || params.earthRadiusScale || 1.83);
+      const metadataRadius = Number(fieldObject.info.radius);
+      const radius = Number.isFinite(metadataRadius) && metadataRadius > 0
+        ? metadataRadius
+        : Number(metadata?.radii?.outer || metadata?.r_outer || 1.0) * radiusScale;
+      const [vmin, vmax] = earthSurfaceFieldRange(fieldObject);
+      setColourbarForSlot("earth", params.earthField, vmin, vmax);
+
+      if (
+        reuseGeometry
+        && earthMesh
+        && updateEarthFieldMeshColours(
+          earthMesh,
+          fieldObject,
+          radius,
+          vmin,
+          vmax,
+          params.earthColormap
+        )
+      ) {
+        earthMesh.visible = true;
+        applyOpacityAndDepth(earthMesh.material, params.earthOpacity);
+      } else {
+        disposeObject(earthMesh);
+        earthMesh = makeEarthFieldSurfaceMesh(
+          fieldObject,
+          radius,
+          params.earthOpacity,
+          vmin,
+          vmax,
+          params.earthColormap,
+          clipOptions
+        );
+        earthMesh.visible = true;
+        scene.add(earthMesh);
+      }
+
+      if (attribution) attribution.style.display = "none";
+    } else {
+      hideColourbarForSlot("earth");
+      const radius = Number(metadata?.radii?.outer || metadata?.r_outer || 1.0)
+        * Number(params.earthRadiusScale);
+
+      const canReuseTexture = reuseGeometry
+        && earthMesh?.userData?.viewerTopology?.kind === "earth-texture"
+        && Math.abs(Number(earthMesh.userData.viewerTopology.radius) - radius) < 1.0e-12;
+
+      if (canReuseTexture) {
+        earthMesh.visible = true;
+        applyOpacityAndDepth(earthMesh.material, params.earthOpacity);
+      } else {
+        const texture = await ensureEarthTexture();
+        disposeObject(earthMesh);
+        earthMesh = makeEarthSurfaceMesh(
+          radius,
+          params.earthOpacity,
+          texture,
+          params.earthLongitudeDeg,
+          clipOptions
+        );
+        earthMesh.userData.viewerTopology = { kind: "earth-texture", radius };
+        earthMesh.visible = true;
+        scene.add(earthMesh);
+      }
+
+      if (attribution) attribution.style.display = "block";
     }
-    earthMesh = makeEarthSurfaceMesh(radius, params.earthOpacity, texture, params.earthLongitudeDeg, clipOptions);
-    earthMesh.visible = true;
-    scene.add(earthMesh);
-    const a = document.getElementById("earth-attribution");
-    if (a) a.style.display = "block";
+
     await rebuildGapFillers();
   } catch (err) {
-    console.warn("Could not load Earth texture", err);
-    setStatus(`Earth texture could not be loaded: ${err.message}`);
+    console.warn("Could not update Earth surface", err);
+    hideColourbarForSlot("earth");
+    setStatus(`Earth surface could not be loaded: ${err.message}`);
   }
 }
 
@@ -1370,7 +1541,16 @@ function getPreloadFieldRequests(meta) {
     addVolume(fieldName);
   }
 
+  function addEarth(fieldName) {
+    if (!fieldName) return;
+    const surfaceInfo = meta.surface_fields?.[fieldName];
+    if (surfaceInfo?.surface === "earth" && surfaceInfo.file) {
+      requests.set(surfaceInfo.file, surfaceLength);
+    }
+  }
+
   if (params.showCMB) addCmb(params.cmbField);
+  if (params.showEarthSurface && params.earthDisplayMode === "magnetic") addEarth(params.earthField);
   if (params.showICB) addVolume(params.icbField);
   if (params.showRadialSurface) addVolume(params.radialField);
   if (params.showEquator) addVolume(params.equatorField);
@@ -1501,7 +1681,7 @@ async function loadFrameByIndex(index, options = {}) {
     }
 
     // Keep the current selected fields when available; otherwise fall back safely.
-    for (const key of ["cmbField", "icbField", "radialField", "equatorField", "equator2Field", "meridianField", "meridian2Field"]) {
+    for (const key of ["cmbField", "earthField", "icbField", "radialField", "equatorField", "equator2Field", "meridianField", "meridian2Field"]) {
       if (!validFieldForState(key, params[key])) {
         applyDefaultFields();
         break;
@@ -1535,7 +1715,6 @@ async function loadFrameByIndex(index, options = {}) {
       await loadFieldLines();
     }
 
-    if (!options.skipEarthUpdate && !gridUnchanged) await updateEarthSurface();
     updateVisibility();
     if (playbackUpdate) setDeferredSequenceObjectVisibility(true);
     setStatus(`Frame ${i + 1}/${n}: ${frame.label || frame.state_number || i}; cache=${formatBytes(dataCacheBytes)}`);
@@ -1838,6 +2017,26 @@ async function loadCmbDisplayField(fieldName) {
 
   const data = await loadField(fieldName);
   return { kind: "volume", name: fieldName, data };
+}
+
+async function loadEarthDisplayField(fieldName) {
+  const ref = resolveFieldSource(fieldName);
+  const surfaceInfo = ref.meta.surface_fields?.[ref.rawName];
+  if (!surfaceInfo || surfaceInfo.surface !== "earth") {
+    throw new Error(`Surface field ${fieldName} is not an Earth-surface field.`);
+  }
+  if (ref.meta.ntheta !== metadata.ntheta || ref.meta.nphi !== metadata.nphi) {
+    throw new Error(`Earth surface field ${fieldName} does not match the primary theta/phi grid.`);
+  }
+  const expectedLength = ref.meta.ntheta * ref.meta.nphi;
+  const data = await loadFloat32ForBase(ref.basePath, surfaceInfo.file, expectedLength);
+  return {
+    kind: "earth_surface",
+    name: fieldName,
+    data,
+    nphi: ref.meta.nphi,
+    info: surfaceInfo,
+  };
 }
 
 function cmbValue(fieldObject, radiusIndex, it, ip) {
@@ -4520,7 +4719,10 @@ function setStatusSummary(lastFieldName = null) {
   const sim = metadata.magnetic?.classification ? `${metadata.magnetic.classification} | ` : "";
   const shownMap = {shell: "shell/internal", exterior: "exterior potential/poloidal", both: "both"};
   const lineMode = metadata.field_lines?.mode ? `B lines=${metadata.field_lines.mode}, shown=${shownMap[params.fieldLineDisplay] || params.fieldLineDisplay} | ` : "";
-  const fieldText = `CMB=${params.cmbField}, ICB=${params.icbField}, R=${params.radialField}@${Number(params.radialSurfaceRadiusRo).toFixed(3)}ro, Eq1=${params.equatorField}, Eq2=${params.equator2Field}, Mer1=${params.meridianField}, Mer2=${params.meridian2Field}`;
+  const earthText = params.showEarthSurface
+    ? `, Earth=${params.earthDisplayMode === "magnetic" ? params.earthField : "texture"}`
+    : "";
+  const fieldText = `CMB=${params.cmbField}, ICB=${params.icbField}, R=${params.radialField}@${Number(params.radialSurfaceRadiusRo).toFixed(3)}ro${earthText}, Eq1=${params.equatorField}, Eq2=${params.equator2Field}, Mer1=${params.meridianField}, Mer2=${params.meridian2Field}`;
   const changed = lastFieldName ? ` | updated=${lastFieldName}` : "";
   setStatus(`${dataset}${title}${sim}${lineMode}${fieldText}${changed} | grid ${metadata.nr} x ${metadata.ntheta} x ${metadata.nphi}`);
 }
@@ -4736,6 +4938,7 @@ async function rebuildAllMeshes(options = {}) {
   if (!visibleOnly || params.showEquator2) await rebuildEquator2({ reuseGeometry });
   if (!visibleOnly || params.showMeridian) await rebuildMeridian({ reuseGeometry });
   if (!visibleOnly || params.showMeridian2) await rebuildMeridian2({ reuseGeometry });
+  if (!visibleOnly || params.showEarthSurface) await updateEarthSurface({ reuseGeometry });
   if (includeHeavy && (!visibleOnly || params.showIsosurfaces)) await rebuildIsosurfaces();
 
   updateVisibility();
@@ -4761,6 +4964,11 @@ function updateVisibility() {
   if (colourbars.cmb?.row) colourbars.cmb.row.style.display = params.showCMB && cmbMesh ? "block" : "none";
   if (colourbars.icb?.row) colourbars.icb.row.style.display = params.showICB && icbMesh ? "block" : "none";
   if (colourbars.radial?.row) colourbars.radial.row.style.display = params.showRadialSurface && radialSurfaceMesh ? "block" : "none";
+  if (colourbars.earth?.row) {
+    colourbars.earth.row.style.display = params.showEarthSurface
+      && params.earthDisplayMode === "magnetic"
+      && earthMesh ? "block" : "none";
+  }
   if (colourbars.equator?.row) colourbars.equator.row.style.display = params.showEquator && equatorMesh ? "block" : "none";
   if (colourbars.equator2?.row) colourbars.equator2.row.style.display = params.showEquator2 && equator2Mesh ? "block" : "none";
   if (colourbars.meridian?.row) colourbars.meridian.row.style.display = params.showMeridian && meridianMesh ? "block" : "none";
@@ -4780,7 +4988,10 @@ function updateVisibility() {
   axes.visible = false;
   if (earthMesh) earthMesh.visible = params.showEarthSurface;
   const earthAttribution = document.getElementById("earth-attribution");
-  if (earthAttribution) earthAttribution.style.display = params.showEarthSurface ? "block" : "none";
+  if (earthAttribution) {
+    earthAttribution.style.display = params.showEarthSurface
+      && params.earthDisplayMode === "texture" ? "block" : "none";
+  }
   updateAxesOverlay();
 }
 
@@ -4792,6 +5003,7 @@ function updateOpacities() {
   if (equator2Mesh) applyOpacityAndDepth(equator2Mesh.material, params.equator2Opacity);
   if (meridianMesh) applyOpacityAndDepth(meridianMesh.material, params.meridianOpacity);
   if (meridian2Mesh) applyOpacityAndDepth(meridian2Mesh.material, params.meridian2Opacity);
+  if (earthMesh) applyOpacityAndDepth(earthMesh.material, params.earthOpacity);
   if (isoPositiveMesh) applyOpacityAndDepth(isoPositiveMesh.material, params.isoOpacity);
   if (isoNegativeMesh) applyOpacityAndDepth(isoNegativeMesh.material, params.isoOpacity);
   if (equatorFillerMesh) applyOpacityAndDepth(equatorFillerMesh.material, params.sliceGapFillerOpacity);
@@ -5013,11 +5225,32 @@ function getCmbFieldNames() {
   return [...getPrimaryCmbFieldNames(), ...getSecondaryCmbFieldNames()];
 }
 
+function getPrimaryEarthFieldNames() {
+  return Object.entries(metadata.surface_fields || {})
+    .filter(([, info]) => info.surface === "earth")
+    .map(([name]) => name);
+}
+
+function getSecondaryEarthFieldNames() {
+  if (!secondaryDataset?.metadata) return [];
+  return Object.entries(secondaryDataset.metadata.surface_fields || {})
+    .filter(([, info]) => info.surface === "earth")
+    .map(([name]) => prefixedSecondaryFieldName(name));
+}
+
+function getEarthFieldNames() {
+  return [...getPrimaryEarthFieldNames(), ...getSecondaryEarthFieldNames()];
+}
+
 function applyDefaultFields() {
   const fields = getVolumeFieldNames();
   if (fields.length === 0) throw new Error("metadata.fields is empty.");
 
-  params.cmbField = chooseField(["Br", "Br_CMB_lmax10", "C", "Comp", "ur", "Uabs"], getCmbFieldNames());
+  params.cmbField = chooseField(["Br", "Br_CMB_lmax13", "Br_CMB_lmax10", "C", "Comp", "ur", "Uabs"], getCmbFieldNames());
+  const earthFields = getEarthFieldNames();
+  if (earthFields.length > 0) {
+    params.earthField = chooseField(["Br_Earth_lmax13"], earthFields);
+  }
   params.icbField = chooseField(["Br", "C", "Comp", "ur", "Uabs"], fields);
   params.radialField = chooseField(["Br", "C", "Comp", "ur", "Uabs"], fields);
   params.equatorField = chooseField(["C", "Comp", "Br", "Uabs"], fields);
@@ -5076,8 +5309,9 @@ function decodeViewState(code) {
 }
 
 function validFieldForState(key, value) {
-  if (!["cmbField", "icbField", "radialField", "equatorField", "equator2Field", "meridianField", "meridian2Field"].includes(key)) return true;
+  if (!["cmbField", "earthField", "icbField", "radialField", "equatorField", "equator2Field", "meridianField", "meridian2Field"].includes(key)) return true;
   if (key === "cmbField") return getCmbFieldNames().includes(value);
+  if (key === "earthField") return getEarthFieldNames().includes(value);
   return getVolumeFieldNames().includes(value);
 }
 
@@ -5088,6 +5322,7 @@ function applySnapshotParam(key, value) {
   if (key.endsWith("Scale") && !["symmetric", "minmax", "manual"].includes(value)) return;
   if (!validFieldForState(key, value)) return;
   if (key === "fieldLineDisplay" && !getAvailableFieldLineModes().includes(value)) return;
+  if (key === "earthDisplayMode" && !["texture", "magnetic"].includes(value)) return;
   params[key] = value;
 }
 
@@ -5362,10 +5597,27 @@ function buildGui() {
   isoFolder.add(params, "isoOpacity", 0.05, 1.0, 0.01).name("Opacity").onChange(updateOpacities);
 
   const earthFolder = gui.addFolder("Earth surface");
+  const earthFields = getEarthFieldNames();
+  const earthModes = { "Earth image": "texture" };
+  if (earthFields.length > 0) earthModes["Magnetic B_r"] = "magnetic";
+  if (params.earthDisplayMode === "magnetic" && earthFields.length === 0) {
+    params.earthDisplayMode = "texture";
+  }
+  if (earthFields.length > 0 && !earthFields.includes(params.earthField)) {
+    params.earthField = chooseField(["Br_Earth_lmax13"], earthFields);
+  }
   earthFolder.add(params, "showEarthSurface").name("Show").onChange(updateEarthSurface);
-  earthFolder.add(params, "earthLongitudeDeg", -180, 180, 1).name("Texture longitude").onChange(updateEarthSurface);
-  earthFolder.add(params, "earthRadiusScale", 1.0, 2.5, 0.01).name("Radius / core").onChange(updateEarthSurface);
-  earthFolder.add(params, "earthOpacity", 0.05, 1.0, 0.01).name("Opacity").onChange(updateEarthSurface);
+  earthFolder.add(params, "earthDisplayMode", earthModes).name("Display").onChange(() => updateEarthSurface({ reuseGeometry: false }));
+  if (earthFields.length > 0) {
+    earthFolder.add(params, "earthField", earthFields).name("Magnetic field").onChange(() => updateEarthSurface({ reuseGeometry: false }));
+    earthFolder.add(params, "earthScale", ["symmetric", "minmax", "manual"]).name("Scale").onChange(() => updateEarthSurface({ reuseGeometry: true }));
+    earthFolder.add(params, "earthColormap", colourMapNames).name("Colour map").onChange(() => updateEarthSurface({ reuseGeometry: true }));
+    earthFolder.add(params, "earthMin").name("Manual min").onChange(() => updateEarthSurface({ reuseGeometry: true }));
+    earthFolder.add(params, "earthMax").name("Manual max").onChange(() => updateEarthSurface({ reuseGeometry: true }));
+  }
+  earthFolder.add(params, "earthLongitudeDeg", -180, 180, 1).name("Texture longitude").onChange(() => updateEarthSurface({ reuseGeometry: false }));
+  earthFolder.add(params, "earthRadiusScale", 1.0, 2.5, 0.01).name("Texture radius / core").onChange(() => updateEarthSurface({ reuseGeometry: false }));
+  earthFolder.add(params, "earthOpacity", 0.05, 1.0, 0.01).name("Opacity").onChange(updateOpacities);
   earthFolder.add(params, "showSliceGapFiller").name("Slice gap filler").onChange(rebuildGapFillers);
   earthFolder.add(params, "sliceGapFillerOpacity", 0.0, 1.0, 0.01).name("Filler opacity").onChange(updateOpacities);
 
