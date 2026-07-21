@@ -402,6 +402,7 @@ const videoState = {
   sequenceCurrentFrame: 0,
   sequenceTargetFrame: 0,
   sequenceFrameCount: 0,
+  offline: false,
 };
 
 const cameraParamControllers = [];
@@ -5684,7 +5685,7 @@ function buildGui() {
   }).name("Rotation mode");
   exportFolder.add(params, "videoCustomMotion").name("Custom motion");
   exportFolder.add(params, "videoActivatePlayback").name("Activate playback");
-  exportFolder.add(params, "videoBackgroundExport").name("Background export");
+  exportFolder.add(params, "videoBackgroundExport").name("Hidden-tab export (WebM)");
   exportFolder.add(params, "recordFullRotation").name("Record video");
   const pngSequenceFolder = exportFolder.addFolder("PNG snapshot sequence");
   const nSequenceFrames = Math.max(1, sequenceIndex?.frames?.length || 1);
@@ -5693,7 +5694,7 @@ function buildGui() {
   pngSequenceFolder.add(params, "sequencePngStep", 1, Math.max(1, nSequenceFrames - 1), 1).name("Frame step");
   pngSequenceFolder.add(params, "sequencePngWidthPx", 800, 6000, 100).name("PNG width px");
   pngSequenceFolder.add(params, "sequencePngRefreshHeavy").name("Refresh iso/lines");
-  pngSequenceFolder.add(params, "sequencePngBackgroundExport").name("Background export");
+  pngSequenceFolder.add(params, "sequencePngBackgroundExport").name("Hidden-tab export");
   pngSequenceFolder.add(params, "renderSequencePng").name("Render PNG sequence");
   pngSequenceFolder.add(params, "cancelSequencePng").name("Cancel PNG render");
 
@@ -5804,6 +5805,7 @@ async function saveBlob(blob, filename, description = "file") {
       const pickerTypes = {
         png: [{ description: "PNG image", accept: { "image/png": [".png"] } }],
         pdf: [{ description: "PDF document", accept: { "application/pdf": [".pdf"] } }],
+        webm: [{ description: "WebM video", accept: { "video/webm": [".webm"] } }],
         webm: [{ description: "WebM video", accept: { "video/webm": [".webm"] } }],
       };
       const handle = await window.showSaveFilePicker({
@@ -6170,7 +6172,11 @@ async function renderSequencePngFrames() {
         skipEarthUpdate: true,
       });
       setDeferredSequenceObjectVisibility(!params.sequencePngRefreshHeavy);
-      await waitForRenderedFrame();
+      if (params.sequencePngBackgroundExport) {
+        renderer.render(scene, camera);
+      } else {
+        await waitForRenderedFrame();
+      }
       const blob = await exportCanvasBlob("image/png", 1.0, params.sequencePngWidthPx);
       const filename = `frame_${String(frameIndex).padStart(5, "0")}.png`;
       if (directoryHandle) {
@@ -6309,15 +6315,18 @@ function getSupportedVideoMimeType() {
   return "";
 }
 
-function resizeRendererForVideoIfNeeded() {
-  const width = Math.round(Number(params.videoWidthPx));
+function resizeRendererForVideoIfNeeded(forceEvenDimensions = false) {
+  let width = Math.round(Number(params.videoWidthPx));
   if (!Number.isFinite(width) || width <= 0) return;
+  if (forceEvenDimensions && width % 2 !== 0) width -= 1;
 
   videoState.previousRendererSize = renderer.getSize(new THREE.Vector2());
   videoState.previousPixelRatio = renderer.getPixelRatio();
   videoState.previousAspect = camera.aspect;
 
-  const height = Math.max(1, Math.round(width / camera.aspect));
+  let height = Math.max(1, Math.round(width / camera.aspect));
+  if (forceEvenDimensions && height % 2 !== 0) height -= 1;
+  height = Math.max(2, height);
   renderer.setPixelRatio(1);
   renderer.setSize(width, height, false);
   updateFieldLineVisuals();
@@ -6458,6 +6467,399 @@ function evaluateVideoCustomMotion(frac, startAzimuth, startPolar, segments, tot
 }
 
 
+
+function getVideoCameraAnglesAtFraction(frac) {
+  let azimuth = videoState.startAngle;
+  let polar = videoState.polarAngle;
+
+  if (videoState.mode === "phi360") {
+    azimuth = videoState.startAngle + 2.0 * Math.PI * frac;
+  } else if (videoState.mode === "phi360Theta180") {
+    const phiPhase = Math.min(1.0, frac / 0.75);
+    const thetaPhase = frac <= 0.75 ? 0.0 : (frac - 0.75) / 0.25;
+    azimuth = videoState.startAngle + 2.0 * Math.PI * phiPhase;
+    polar = videoState.polarAngle + Math.PI * thetaPhase;
+  } else if (videoState.mode === "custom") {
+    const customPosition = evaluateVideoCustomMotion(
+      frac,
+      videoState.startAngle,
+      videoState.polarAngle,
+      videoState.customSegments,
+      videoState.customTotalDegrees
+    );
+    azimuth = customPosition.azimuth;
+    polar = customPosition.polar;
+  }
+
+  return { azimuth, polar };
+}
+
+function applyVideoCameraAtFraction(frac) {
+  const { azimuth, polar } = getVideoCameraAnglesAtFraction(clamp(frac, 0, 1));
+  camera.position.copy(
+    cameraPositionFromRawSpherical(videoState.target, videoState.radius, polar, azimuth)
+  );
+  camera.up.set(0.0, 0.0, 1.0);
+  camera.lookAt(videoState.target);
+}
+
+async function requestOfflineVideoFileHandle(filename) {
+  if (!(window.isSecureContext && "showSaveFilePicker" in window)) {
+    return { handle: null, cancelled: false };
+  }
+
+  try {
+    const handle = await window.showSaveFilePicker({
+      suggestedName: filename,
+      types: [{
+        description: "VP8 WebM video",
+        accept: { "video/webm": [".webm"] },
+      }],
+    });
+    return { handle, cancelled: false };
+  } catch (err) {
+    if (err?.name === "AbortError") return { handle: null, cancelled: true };
+    console.warn("Offline video save picker failed; using browser download.", err);
+    return { handle: null, cancelled: false };
+  }
+}
+
+async function chooseOfflineVideoEncoderConfig(width, height, fps) {
+  if (typeof VideoEncoder === "undefined" || typeof VideoFrame === "undefined") {
+    throw new Error(
+      "Background WebM encoding requires WebCodecs. Use a recent Chromium-based browser over localhost or HTTPS."
+    );
+  }
+
+  const bitrate = Math.max(2_000_000, Math.round(width * height * fps * 0.12));
+  const config = {
+    codec: "vp8",
+    width,
+    height,
+    bitrate,
+    framerate: fps,
+    latencyMode: "quality",
+  };
+
+  if (typeof VideoEncoder.isConfigSupported === "function") {
+    const support = await VideoEncoder.isConfigSupported(config);
+    if (!support?.supported) {
+      throw new Error("This browser does not provide a supported VP8 WebCodecs encoder.");
+    }
+    return support.config || config;
+  }
+  return config;
+}
+
+function concatByteArrays(parts) {
+  const totalLength = parts.reduce((sum, part) => sum + part.length, 0);
+  const output = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const part of parts) {
+    output.set(part, offset);
+    offset += part.length;
+  }
+  return output;
+}
+
+function encodeEbmlSize(value) {
+  const length = BigInt(value);
+  for (let width = 1; width <= 8; width++) {
+    const maxValue = (1n << BigInt(7 * width)) - 2n;
+    if (length <= maxValue) {
+      let encoded = length | (1n << BigInt(7 * width));
+      const bytes = new Uint8Array(width);
+      for (let i = width - 1; i >= 0; i--) {
+        bytes[i] = Number(encoded & 0xffn);
+        encoded >>= 8n;
+      }
+      return bytes;
+    }
+  }
+  throw new Error("WebM element is too large for an EBML size field.");
+}
+
+function encodeEbmlUnsigned(value, minimumBytes = 1) {
+  let number = BigInt(Math.max(0, Math.round(Number(value) || 0)));
+  let width = Math.max(1, minimumBytes);
+  while (number >= (1n << BigInt(8 * width))) width++;
+  const bytes = new Uint8Array(width);
+  for (let i = width - 1; i >= 0; i--) {
+    bytes[i] = Number(number & 0xffn);
+    number >>= 8n;
+  }
+  return bytes;
+}
+
+function encodeEbmlFloat64(value) {
+  const bytes = new Uint8Array(8);
+  new DataView(bytes.buffer).setFloat64(0, Number(value), false);
+  return bytes;
+}
+
+function encodeEbmlString(value) {
+  return new TextEncoder().encode(String(value));
+}
+
+function makeEbmlElement(idBytes, payload) {
+  const data = payload instanceof Uint8Array ? payload : new Uint8Array(payload);
+  return concatByteArrays([new Uint8Array(idBytes), encodeEbmlSize(data.length), data]);
+}
+
+function makeWebMSimpleBlock(chunk, clusterTimecodeMs) {
+  const absoluteTimecodeMs = Math.round((Number(chunk.timestamp) || 0) / 1000);
+  const relativeTimecode = absoluteTimecodeMs - clusterTimecodeMs;
+  if (relativeTimecode < -32768 || relativeTimecode > 32767) {
+    throw new Error("WebM cluster timecode exceeded the SimpleBlock range.");
+  }
+
+  const header = new Uint8Array(4);
+  header[0] = 0x81; // Track number 1 as an EBML variable-length integer.
+  new DataView(header.buffer).setInt16(1, relativeTimecode, false);
+  header[3] = chunk.type === "key" ? 0x80 : 0x00;
+  return makeEbmlElement([0xa3], concatByteArrays([header, chunk.data]));
+}
+
+function makeWebMVideoBlob(encodedChunks, width, height, fps) {
+  const chunks = [...encodedChunks].sort((a, b) => a.timestamp - b.timestamp);
+  if (chunks.length === 0) throw new Error("No VP8 chunks are available for WebM muxing.");
+
+  const frameDurationUs = Math.max(1, Math.round(1_000_000 / fps));
+  const durationMs = (
+    (Number(chunks[chunks.length - 1].timestamp) || 0)
+    + (Number(chunks[chunks.length - 1].duration) || frameDurationUs)
+  ) / 1000;
+
+  const ebmlHeader = makeEbmlElement([0x1a, 0x45, 0xdf, 0xa3], concatByteArrays([
+    makeEbmlElement([0x42, 0x86], encodeEbmlUnsigned(1)),
+    makeEbmlElement([0x42, 0xf7], encodeEbmlUnsigned(1)),
+    makeEbmlElement([0x42, 0xf2], encodeEbmlUnsigned(4)),
+    makeEbmlElement([0x42, 0xf3], encodeEbmlUnsigned(8)),
+    makeEbmlElement([0x42, 0x82], encodeEbmlString("webm")),
+    makeEbmlElement([0x42, 0x87], encodeEbmlUnsigned(4)),
+    makeEbmlElement([0x42, 0x85], encodeEbmlUnsigned(2)),
+  ]));
+
+  const info = makeEbmlElement([0x15, 0x49, 0xa9, 0x66], concatByteArrays([
+    makeEbmlElement([0x2a, 0xd7, 0xb1], encodeEbmlUnsigned(1_000_000)),
+    makeEbmlElement([0x44, 0x89], encodeEbmlFloat64(durationMs)),
+    makeEbmlElement([0x4d, 0x80], encodeEbmlString("dynamo-three-viewer")),
+    makeEbmlElement([0x57, 0x41], encodeEbmlString("dynamo-three-viewer")),
+  ]));
+
+  const video = makeEbmlElement([0xe0], concatByteArrays([
+    makeEbmlElement([0xb0], encodeEbmlUnsigned(width)),
+    makeEbmlElement([0xba], encodeEbmlUnsigned(height)),
+  ]));
+
+  const trackEntry = makeEbmlElement([0xae], concatByteArrays([
+    makeEbmlElement([0xd7], encodeEbmlUnsigned(1)),
+    makeEbmlElement([0x73, 0xc5], encodeEbmlUnsigned(1)),
+    makeEbmlElement([0x83], encodeEbmlUnsigned(1)),
+    makeEbmlElement([0x9c], encodeEbmlUnsigned(0)),
+    makeEbmlElement([0x86], encodeEbmlString("V_VP8")),
+    makeEbmlElement([0x23, 0xe3, 0x83], encodeEbmlUnsigned(Math.round(1_000_000_000 / fps))),
+    video,
+  ]));
+  const tracks = makeEbmlElement([0x16, 0x54, 0xae, 0x6b], trackEntry);
+
+  const clusters = [];
+  let clusterStartMs = null;
+  let clusterBlocks = [];
+
+  const flushCluster = () => {
+    if (clusterStartMs === null || clusterBlocks.length === 0) return;
+    clusters.push(makeEbmlElement([0x1f, 0x43, 0xb6, 0x75], concatByteArrays([
+      makeEbmlElement([0xe7], encodeEbmlUnsigned(clusterStartMs)),
+      ...clusterBlocks,
+    ])));
+    clusterBlocks = [];
+  };
+
+  for (const chunk of chunks) {
+    const timecodeMs = Math.round((Number(chunk.timestamp) || 0) / 1000);
+    const shouldStartCluster = clusterStartMs === null
+      || timecodeMs - clusterStartMs > 30_000
+      || (chunk.type === "key" && clusterBlocks.length > 0);
+
+    if (shouldStartCluster) {
+      flushCluster();
+      clusterStartMs = timecodeMs;
+    }
+    clusterBlocks.push(makeWebMSimpleBlock(chunk, clusterStartMs));
+  }
+  flushCluster();
+
+  const segmentPayload = concatByteArrays([info, tracks, ...clusters]);
+  const segment = makeEbmlElement([0x18, 0x53, 0x80, 0x67], segmentPayload);
+  return new Blob([ebmlHeader, segment], { type: "video/webm" });
+}
+
+async function writeBlobToFileHandleOrDownload(fileHandle, blob, filename, description) {
+  if (fileHandle) {
+    const writable = await fileHandle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+    setStatus(`Saved ${filename}.`);
+    return;
+  }
+  await saveBlob(blob, filename, description);
+}
+
+async function renderBackgroundVideoOffline(options) {
+  const {
+    activatePlayback,
+    playbackWasPlaying,
+    customMotion,
+    offset,
+    videoSequencePreloadCount,
+    fileHandle,
+    filename,
+  } = options;
+
+  const fps = Math.max(1, Math.round(Number(params.videoFps) || 30));
+  const durationSec = Math.max(1, Number(params.videoDurationSec) || 1);
+  const totalFrames = Math.max(1, Math.round(durationSec * fps));
+  const originalFrame = Math.round(params.sequenceFrame);
+  const originalPosition = camera.position.clone();
+
+  resizeRendererForVideoIfNeeded(true);
+  const width = renderer.domElement.width;
+  const height = renderer.domElement.height;
+  const encoderConfig = await chooseOfflineVideoEncoderConfig(width, height, fps);
+  const encodedChunks = [];
+  let encoderError = null;
+
+  const encoder = new VideoEncoder({
+    output: (chunk) => {
+      const data = new Uint8Array(chunk.byteLength);
+      chunk.copyTo(data);
+      encodedChunks.push({
+        data,
+        timestamp: Number(chunk.timestamp) || 0,
+        duration: Number(chunk.duration) || 0,
+        type: chunk.type,
+      });
+    },
+    error: (err) => {
+      encoderError = err;
+      console.error("Offline video encoder error", err);
+    },
+  });
+
+  encoder.configure(encoderConfig);
+
+  videoState.active = true;
+  videoState.offline = true;
+  videoState.recorder = null;
+  videoState.startAngle = Math.atan2(offset.y, offset.x);
+  videoState.radiusXY = Math.hypot(offset.x, offset.y);
+  videoState.zOffset = offset.z;
+  videoState.radius = offset.length();
+  videoState.polarAngle = Math.acos(clamp(offset.z / videoState.radius, -1.0, 1.0));
+  videoState.mode = params.videoRotationMode;
+  videoState.customSegments = customMotion?.segments || [];
+  videoState.customTotalDegrees = customMotion?.totalDegrees || 0;
+  videoState.customDescription = customMotion?.normalized || "";
+  videoState.target.copy(controls.target);
+  videoState.startPosition.copy(originalPosition);
+  videoState.activatePlayback = activatePlayback;
+  videoState.playbackWasPlaying = playbackWasPlaying;
+  videoState.sequenceStartFrame = originalFrame;
+  videoState.sequenceCurrentFrame = originalFrame;
+  videoState.sequenceFrameCount = videoSequencePreloadCount;
+
+  controls.enabled = false;
+  params.sequencePlaying = false;
+  setDeferredSequenceObjectVisibility(activatePlayback);
+  setViewportHiddenForExport(true, "Deterministic background video encoding running...");
+
+  const frameDurationUs = Math.max(1, Math.round(1_000_000 / fps));
+
+  try {
+    for (let frameNumber = 0; frameNumber < totalFrames; frameNumber++) {
+      const frac = totalFrames <= 1 ? 1 : frameNumber / (totalFrames - 1);
+
+      if (activatePlayback && sequenceIndex?.frames?.length) {
+        const sequenceStep = Math.floor(
+          (frameNumber / fps) * Math.max(0.1, Number(params.sequenceFps))
+        );
+        const targetFrame = (
+          videoState.sequenceStartFrame + sequenceStep
+        ) % sequenceIndex.frames.length;
+
+        if (targetFrame !== videoState.sequenceCurrentFrame) {
+          await loadFrameByIndex(targetFrame, {
+            playback: true,
+            skipEarthUpdate: true,
+          });
+          videoState.sequenceCurrentFrame = targetFrame;
+        }
+      }
+
+      applyVideoCameraAtFraction(frac);
+      renderer.render(scene, camera);
+
+      const frame = new VideoFrame(renderer.domElement, {
+        timestamp: frameNumber * frameDurationUs,
+        duration: frameDurationUs,
+      });
+      encoder.encode(frame, { keyFrame: frameNumber % fps === 0 });
+      frame.close();
+
+      if (encoder.encodeQueueSize > 8 || frameNumber === totalFrames - 1) {
+        await encoder.flush();
+      }
+      if (encoderError) throw encoderError;
+
+      if (frameNumber % Math.max(1, Math.round(fps / 2)) === 0) {
+        setStatus(`Encoding background video frame ${frameNumber + 1}/${totalFrames}...`);
+      }
+    }
+
+    await encoder.flush();
+    if (encoderError) throw encoderError;
+    if (encodedChunks.length === 0) throw new Error("The offline encoder produced no video frames.");
+
+    const blob = makeWebMVideoBlob(encodedChunks, width, height, fps);
+    await writeBlobToFileHandleOrDownload(fileHandle, blob, filename, "background video");
+  } finally {
+    try { encoder.close(); } catch (_) {}
+
+    videoState.active = false;
+    videoState.offline = false;
+    videoState.sequenceDriverActive = false;
+    params.sequencePlaying = false;
+    setViewportHiddenForExport(false);
+    controls.enabled = true;
+    camera.position.copy(originalPosition);
+    restoreRendererAfterVideo();
+    controls.update();
+    syncCameraParamsFromCamera(true);
+
+    if (activatePlayback && Math.round(params.sequenceFrame) !== originalFrame) {
+      await loadFrameByIndex(originalFrame, { includeHeavy: true, skipEarthUpdate: false });
+    }
+    setDeferredSequenceObjectVisibility(false);
+    enforceHeavyObjectCacheLimit();
+
+    videoState.activatePlayback = false;
+    videoState.playbackStartedByVideo = false;
+    videoState.playbackWasPlaying = false;
+    videoState.customSegments = [];
+    videoState.customTotalDegrees = 0;
+    videoState.customDescription = "";
+    videoState.sequenceFrameLoading = false;
+    videoState.sequenceFrameCount = 0;
+
+    if (playbackWasPlaying) {
+      await playSequence({ skipPreload: true });
+    } else {
+      await refreshDeferredSequenceObjects();
+    }
+  }
+}
+
 function waitForMediaRecorderState(recorder, expectedState, eventName, timeoutMs = 1500) {
   if (!recorder || recorder.state === expectedState) return Promise.resolve();
 
@@ -6531,7 +6933,24 @@ async function updateVideoSequenceFrame(targetIndex) {
 async function startFullRotationRecording() {
   if (videoState.active) return;
 
-  if (typeof MediaRecorder === "undefined" || !renderer.domElement.captureStream) {
+  const backgroundExport = Boolean(params.videoBackgroundExport);
+  const offlineFilename = `dynamo-viewer-background-${Date.now()}.webm`;
+  let offlineFileHandle = null;
+
+  if (backgroundExport) {
+    if (typeof VideoEncoder === "undefined" || typeof VideoFrame === "undefined") {
+      setStatus(
+        "Background WebM video requires WebCodecs. Use a recent Chromium browser over localhost or HTTPS."
+      );
+      return;
+    }
+    const target = await requestOfflineVideoFileHandle(offlineFilename);
+    if (target.cancelled) {
+      setStatus("Background video export cancelled.");
+      return;
+    }
+    offlineFileHandle = target.handle;
+  } else if (typeof MediaRecorder === "undefined" || !renderer.domElement.captureStream) {
     setStatus("Video recording is not supported in this browser.");
     return;
   }
@@ -6576,6 +6995,29 @@ async function startFullRotationRecording() {
     });
   }
 
+  if (backgroundExport) {
+    try {
+      await renderBackgroundVideoOffline({
+        activatePlayback,
+        playbackWasPlaying,
+        customMotion,
+        offset,
+        videoSequencePreloadCount,
+        fileHandle: offlineFileHandle,
+        filename: offlineFilename,
+      });
+    } catch (err) {
+      console.error(err);
+      setViewportHiddenForExport(false);
+      videoState.active = false;
+      videoState.offline = false;
+      controls.enabled = true;
+      restoreRendererAfterVideo();
+      setStatus(`Background video export failed: ${err.message}`);
+    }
+    return;
+  }
+
   resizeRendererForVideoIfNeeded();
   renderer.render(scene, camera);
 
@@ -6584,6 +7026,7 @@ async function startFullRotationRecording() {
   const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
 
   videoState.active = true;
+  videoState.offline = false;
   videoState.recorder = recorder;
   videoState.chunks = [];
   videoState.startTime = performance.now();
@@ -6658,9 +7101,6 @@ async function startFullRotationRecording() {
   };
 
   controls.enabled = false;
-  if (params.videoBackgroundExport) {
-    setViewportHiddenForExport(true, "Background video export running...");
-  }
   params.sequencePlaying = activatePlayback;
   setDeferredSequenceObjectVisibility(activatePlayback);
   recorder.start();
@@ -6678,7 +7118,7 @@ async function startFullRotationRecording() {
 }
 
 function updateVideoRecordingFrame(nowMs) {
-  if (!videoState.active) return;
+  if (!videoState.active || videoState.offline) return;
 
   const elapsedMs = Math.max(0, nowMs - videoState.startTime);
   const frac = Math.min(1, elapsedMs / videoState.durationMs);
@@ -6699,31 +7139,7 @@ function updateVideoRecordingFrame(nowMs) {
     }
   }
 
-  let azimuth = videoState.startAngle;
-  let polar = videoState.polarAngle;
-
-  if (videoState.mode === "phi360") {
-    azimuth = videoState.startAngle + 2.0 * Math.PI * frac;
-  } else if (videoState.mode === "phi360Theta180") {
-    const phiPhase = Math.min(1.0, frac / 0.75);
-    const thetaPhase = frac <= 0.75 ? 0.0 : (frac - 0.75) / 0.25;
-    azimuth = videoState.startAngle + 2.0 * Math.PI * phiPhase;
-    polar = videoState.polarAngle + Math.PI * thetaPhase;
-  } else if (videoState.mode === "custom") {
-    const customPosition = evaluateVideoCustomMotion(
-      frac,
-      videoState.startAngle,
-      videoState.polarAngle,
-      videoState.customSegments,
-      videoState.customTotalDegrees
-    );
-    azimuth = customPosition.azimuth;
-    polar = customPosition.polar;
-  }
-
-  camera.position.copy(cameraPositionFromRawSpherical(videoState.target, videoState.radius, polar, azimuth));
-  camera.up.set(0.0, 0.0, 1.0);
-  camera.lookAt(videoState.target);
+  applyVideoCameraAtFraction(frac);
 
   if (
     frac >= 1
@@ -6881,9 +7297,9 @@ function bindExportPanelButtons() {
 
 function animate(now = performance.now()) {
   requestAnimationFrame(animate);
-  if (videoState.active) {
+  if (videoState.active && !videoState.offline) {
     updateVideoRecordingFrame(now);
-  } else {
+  } else if (!videoState.active) {
     controls.update();
   }
   renderer.render(scene, camera);

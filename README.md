@@ -1870,3 +1870,36 @@ window when the export completes.
 ### Background export for video and PNG sequences
 
 Video export and PNG-sequence export include a `Background export` option. When enabled, the main viewer canvas and corner axes are hidden while the export runs, so sequence/video updates are not displayed interactively. This is useful on remote desktop or HPC graphical sessions where live viewport updates are slow. The export still uses the current viewer scene and settings, and the viewport is restored automatically when the export completes or is cancelled.
+
+### Hidden-tab and minimized-window exports
+
+Browser tabs normally suspend `requestAnimationFrame` and canvas `captureStream`
+when they are hidden or minimized. The background export paths therefore use
+explicit rendering instead of the interactive animation loop.
+
+- Background PNG sequences render each frame explicitly and do not wait for
+  `requestAnimationFrame`.
+- Background video uses WebCodecs with deterministic frame timestamps and saves
+  a VP8 WebM file (`.ivf`). It continues when the browser tab is hidden or the
+  window is minimized, provided the page itself remains open.
+- Foreground video keeps the normal browser `MediaRecorder` WebM workflow.
+
+Background video requires a recent Chromium-based browser and a secure context
+(`localhost`, an SSH-forwarded localhost URL, or HTTPS). Convert the IVF output
+when a WebM or MP4 container is required:
+
+```bash
+ffmpeg -i dynamo-viewer-background-*.ivf -c:v copy output.webm
+```
+
+or:
+
+```bash
+ffmpeg -i dynamo-viewer-background-*.ivf \
+  -c:v libx264 -crf 18 -pix_fmt yuv420p output.mp4
+```
+
+### Hidden-tab WebM video
+
+Hidden-tab video export uses WebCodecs for deterministic frame-by-frame VP8 encoding, then muxes the encoded frames directly into a standard WebM container in the browser. The saved `.webm` file can be opened directly in browsers, VLC, mpv, and other WebM-compatible players; no IVF conversion step is required.
+
