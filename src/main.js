@@ -67,6 +67,33 @@ axesRenderer.setClearColor(0x000000, 0.0);
 axesRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 axesRenderer.setSize(120, 120);
 if (axesOverlayEl) axesOverlayEl.appendChild(axesRenderer.domElement);
+
+const exportViewportState = {
+  hidden: false,
+  reason: "",
+  savedCanvasVisibility: "",
+  savedAxesVisibility: "",
+};
+
+function setViewportHiddenForExport(hidden, reason = "") {
+  if (hidden) {
+    if (exportViewportState.hidden) return;
+    exportViewportState.hidden = true;
+    exportViewportState.reason = reason;
+    exportViewportState.savedCanvasVisibility = renderer.domElement.style.visibility || "";
+    exportViewportState.savedAxesVisibility = axesOverlayEl?.style.visibility || "";
+    renderer.domElement.style.visibility = "hidden";
+    if (axesOverlayEl) axesOverlayEl.style.visibility = "hidden";
+    if (reason) setStatus(reason);
+    return;
+  }
+
+  if (!exportViewportState.hidden) return;
+  renderer.domElement.style.visibility = exportViewportState.savedCanvasVisibility;
+  if (axesOverlayEl) axesOverlayEl.style.visibility = exportViewportState.savedAxesVisibility;
+  exportViewportState.hidden = false;
+  exportViewportState.reason = "";
+}
 const axesCornerHelper = new THREE.AxesHelper(0.9);
 axesScene.add(axesCornerHelper);
 
@@ -255,6 +282,7 @@ const params = {
   videoRotationMode: "phi360",
   videoCustomMotion: "-180p,45t;180p",
   videoActivatePlayback: false,
+  videoBackgroundExport: false,
   exportPngWhite: () => exportCurrentViewPNG(),
   exportPdfWhite: () => exportCurrentViewPDF(),
   recordFullRotation: () => startFullRotationRecording(),
@@ -279,10 +307,12 @@ const params = {
   sequencePngStep: 1,
   sequencePngWidthPx: 1920,
   sequencePngRefreshHeavy: true,
+  sequencePngBackgroundExport: false,
   playSequence: () => playSequence(),
   pauseSequence: () => pauseSequence(),
   reloadSequence: () => reloadSequenceIndex(),
   preloadSequenceFrames: () => preloadSequenceFrames(),
+  preloadEntireSequence: () => preloadEntireSequence(),
   clearSequenceCache: () => clearLoadedDataCaches(true),
   renderSequencePng: () => renderSequencePngFrames(),
   cancelSequencePng: () => { sequencePngCancelRequested = true; },
@@ -315,9 +345,12 @@ let fieldLineGroups = { shell: null, exterior: null };
 let earthMesh = null;
 let earthTexture = null;
 const fieldLineDataCache = new Map();
+const fieldLineDataCacheMeta = new Map();
 const isosurfaceObjectCache = new Map();
 const fieldLineObjectCache = new Map();
-let heavyObjectCacheCounter = 0;
+let fieldLineDataCacheBytes = 0;
+let heavyObjectCacheBytes = 0;
+let cacheAccessCounter = 0;
 
 const EARTH_TEXTURE_URL = "/assets/earth_blue_marble.jpg";
 const EARTH_TEXTURE_ATTRIBUTION = "Earth texture: local file public/assets/earth_blue_marble.jpg."; 
@@ -326,7 +359,6 @@ const dataCache = new Map();
 const dataCacheMeta = new Map();
 const jsonCache = new Map();
 let dataCacheBytes = 0;
-let dataCacheCounter = 0;
 let guiRoot = null;
 let povGuiRoot = null;
 let datasetRootPath = "/data";
@@ -338,7 +370,6 @@ let sequenceFrameLoading = false;
 let sequencePngExportActive = false;
 let sequencePngCancelRequested = false;
 let deferredSequenceObjectsHidden = false;
-let sequenceHeavyCacheLimitOverride = 0;
 const sequenceControllers = [];
 
 const videoState = {
@@ -1106,12 +1137,50 @@ function formatBytes(bytes) {
 }
 
 
-function heavyObjectCacheLimit() {
-  return Math.max(
-    1,
-    Math.round(Number(params.sequenceMaxCachedFrames) || 10),
-    Math.round(Number(sequenceHeavyCacheLimitOverride) || 0)
-  );
+function sequencePreloadFrameCount(requested = params.sequenceMaxCachedFrames) {
+  const n = Array.isArray(sequenceIndex?.frames) ? sequenceIndex.frames.length : 0;
+  if (n <= 0) return 0;
+  const value = Math.round(Number(requested));
+  return Math.max(1, Math.min(n, Number.isFinite(value) ? value : n));
+}
+
+function cacheLimitBytes() {
+  return Math.max(32, Number(params.sequenceCacheLimitMB) || 1500) * 1024 * 1024;
+}
+
+function totalCacheBytes() {
+  return dataCacheBytes + fieldLineDataCacheBytes + heavyObjectCacheBytes;
+}
+
+function geometryMemoryBytes(geometry) {
+  if (!geometry) return 0;
+  const buffers = new Set();
+
+  function addAttribute(attribute) {
+    const array = attribute?.array || attribute?.data?.array || null;
+    const buffer = array?.buffer || null;
+    if (buffer) buffers.add(buffer);
+  }
+
+  for (const attribute of Object.values(geometry.attributes || {})) addAttribute(attribute);
+  addAttribute(geometry.index);
+  for (const attributes of Object.values(geometry.morphAttributes || {})) {
+    for (const attribute of attributes || []) addAttribute(attribute);
+  }
+
+  let bytes = 0;
+  for (const buffer of buffers) bytes += Number(buffer.byteLength) || 0;
+  return bytes;
+}
+
+function object3DMemoryBytes(object) {
+  if (!object) return 0;
+  let bytes = 0;
+  object.traverse?.((child) => {
+    bytes += geometryMemoryBytes(child.geometry);
+  });
+  if (!object.traverse) bytes += geometryMemoryBytes(object.geometry);
+  return bytes;
 }
 
 function disposeMeshResources(mesh) {
@@ -1161,31 +1230,75 @@ function isActiveFieldLineEntry(entry) {
   );
 }
 
-function enforceHeavyObjectCacheLimit() {
-  const limit = heavyObjectCacheLimit();
+function removeIsosurfaceCacheEntry(key, entry) {
+  if (!entry) return;
+  disposeMeshResources(entry.positive);
+  disposeMeshResources(entry.negative);
+  heavyObjectCacheBytes = Math.max(0, heavyObjectCacheBytes - (entry.bytes || 0));
+  isosurfaceObjectCache.delete(key);
+}
 
-  if (isosurfaceObjectCache.size > limit) {
-    const entries = [...isosurfaceObjectCache.entries()]
-      .sort((a, b) => (a[1].last || 0) - (b[1].last || 0));
-    for (const [key, entry] of entries) {
-      if (isosurfaceObjectCache.size <= limit) break;
-      if (isActiveIsosurfaceEntry(entry)) continue;
-      disposeMeshResources(entry.positive);
-      disposeMeshResources(entry.negative);
-      isosurfaceObjectCache.delete(key);
-    }
+function removeFieldLineObjectCacheEntry(key, entry) {
+  if (!entry) return;
+  for (const group of Object.values(entry.groups || {})) {
+    disposeFieldLineGroupResources(group);
   }
+  heavyObjectCacheBytes = Math.max(0, heavyObjectCacheBytes - (entry.bytes || 0));
+  fieldLineObjectCache.delete(key);
+}
 
-  if (fieldLineObjectCache.size > limit) {
-    const entries = [...fieldLineObjectCache.entries()]
-      .sort((a, b) => (a[1].last || 0) - (b[1].last || 0));
-    for (const [key, entry] of entries) {
-      if (fieldLineObjectCache.size <= limit) break;
-      if (isActiveFieldLineEntry(entry)) continue;
-      for (const group of Object.values(entry.groups || {})) {
-        disposeFieldLineGroupResources(group);
+function enforceCacheMemoryLimit(protectedEntry = null) {
+  const limitBytes = cacheLimitBytes();
+
+  while (totalCacheBytes() > limitBytes) {
+    const candidates = [];
+
+    for (const [key, info] of dataCacheMeta.entries()) {
+      if (!(protectedEntry?.type === "scalar" && protectedEntry.key === key)) {
+        candidates.push({ type: "scalar", key, last: info.last || 0, bytes: info.bytes || 0 });
       }
-      fieldLineObjectCache.delete(key);
+    }
+
+    for (const [key, info] of fieldLineDataCacheMeta.entries()) {
+      if (!(protectedEntry?.type === "line-data" && protectedEntry.key === key)) {
+        candidates.push({ type: "line-data", key, last: info.last || 0, bytes: info.bytes || 0 });
+      }
+    }
+
+    for (const [key, entry] of isosurfaceObjectCache.entries()) {
+      if (
+        !isActiveIsosurfaceEntry(entry)
+        && !(protectedEntry?.type === "isosurface" && protectedEntry.key === key)
+      ) {
+        candidates.push({ type: "isosurface", key, entry, last: entry.last || 0, bytes: entry.bytes || 0 });
+      }
+    }
+
+    for (const [key, entry] of fieldLineObjectCache.entries()) {
+      if (
+        !isActiveFieldLineEntry(entry)
+        && !(protectedEntry?.type === "field-lines" && protectedEntry.key === key)
+      ) {
+        candidates.push({ type: "field-lines", key, entry, last: entry.last || 0, bytes: entry.bytes || 0 });
+      }
+    }
+
+    if (candidates.length === 0) break;
+    candidates.sort((a, b) => a.last - b.last);
+    const victim = candidates[0];
+
+    if (victim.type === "scalar") {
+      dataCache.delete(victim.key);
+      dataCacheMeta.delete(victim.key);
+      dataCacheBytes = Math.max(0, dataCacheBytes - victim.bytes);
+    } else if (victim.type === "line-data") {
+      fieldLineDataCache.delete(victim.key);
+      fieldLineDataCacheMeta.delete(victim.key);
+      fieldLineDataCacheBytes = Math.max(0, fieldLineDataCacheBytes - victim.bytes);
+    } else if (victim.type === "isosurface") {
+      removeIsosurfaceCacheEntry(victim.key, victim.entry);
+    } else if (victim.type === "field-lines") {
+      removeFieldLineObjectCacheEntry(victim.key, victim.entry);
     }
   }
 }
@@ -1220,6 +1333,7 @@ function disposeHeavyPlaybackCaches() {
     }
   }
   fieldLineObjectCache.clear();
+  heavyObjectCacheBytes = 0;
 }
 
 function roundedCacheNumber(value) {
@@ -1304,7 +1418,8 @@ async function buildIsosurfaceObjectCacheEntry() {
     negative,
     triangleCount,
     clipped: Boolean(params.isoClipWithMeridian),
-    last: ++heavyObjectCacheCounter,
+    bytes: object3DMemoryBytes(positive) + object3DMemoryBytes(negative),
+    last: ++cacheAccessCounter,
   };
 }
 
@@ -1315,9 +1430,10 @@ async function ensureIsosurfaceObjectCacheEntry() {
     entry = await buildIsosurfaceObjectCacheEntry();
     entry.key = key;
     isosurfaceObjectCache.set(key, entry);
-    enforceHeavyObjectCacheLimit();
+    heavyObjectCacheBytes += entry.bytes || 0;
+    enforceCacheMemoryLimit({ type: "isosurface", key });
   } else {
-    entry.last = ++heavyObjectCacheCounter;
+    entry.last = ++cacheAccessCounter;
   }
   return entry;
 }
@@ -1325,7 +1441,7 @@ async function ensureIsosurfaceObjectCacheEntry() {
 async function buildFieldLineObjectCacheEntry() {
   const availableModes = getAvailableFieldLineModes();
   if (availableModes.length === 0) {
-    return { groups: {}, allLoadedLines: [], last: ++heavyObjectCacheCounter };
+    return { groups: {}, strengthRange: null, bytes: 0, last: ++cacheAccessCounter };
   }
 
   if (!availableModes.includes(params.fieldLineDisplay)) {
@@ -1350,8 +1466,9 @@ async function buildFieldLineObjectCacheEntry() {
 
   return {
     groups,
-    allLoadedLines,
-    last: ++heavyObjectCacheCounter,
+    strengthRange: allLoadedLines.length > 0 ? getFieldLineRange(allLoadedLines) : null,
+    bytes: Object.values(groups).reduce((sum, group) => sum + object3DMemoryBytes(group), 0),
+    last: ++cacheAccessCounter,
   };
 }
 
@@ -1362,9 +1479,10 @@ async function ensureFieldLineObjectCacheEntry() {
     entry = await buildFieldLineObjectCacheEntry();
     entry.key = key;
     fieldLineObjectCache.set(key, entry);
-    enforceHeavyObjectCacheLimit();
+    heavyObjectCacheBytes += entry.bytes || 0;
+    enforceCacheMemoryLimit({ type: "field-lines", key });
   } else {
-    entry.last = ++heavyObjectCacheCounter;
+    entry.last = ++cacheAccessCounter;
   }
   return entry;
 }
@@ -1409,16 +1527,7 @@ async function preloadHeavyObjectsForFrame(basePath, frameMetadata) {
 }
 
 function enforceDataCacheLimit() {
-  const limitBytes = Math.max(32, Number(params.sequenceCacheLimitMB) || 1500) * 1024 * 1024;
-  if (dataCacheBytes <= limitBytes) return;
-
-  const entries = [...dataCacheMeta.entries()].sort((a, b) => a[1].last - b[1].last);
-  for (const [key, info] of entries) {
-    if (dataCacheBytes <= limitBytes) break;
-    dataCache.delete(key);
-    dataCacheMeta.delete(key);
-    dataCacheBytes -= info.bytes || 0;
-  }
+  enforceCacheMemoryLimit();
 }
 
 function clearLoadedDataCaches(showMessage = false) {
@@ -1427,7 +1536,10 @@ function clearLoadedDataCaches(showMessage = false) {
   dataCacheMeta.clear();
   jsonCache.clear();
   fieldLineDataCache.clear();
+  fieldLineDataCacheMeta.clear();
   dataCacheBytes = 0;
+  fieldLineDataCacheBytes = 0;
+  heavyObjectCacheBytes = 0;
   if (showMessage) setStatus("Dataset/sequence cache cleared.");
 }
 
@@ -1571,9 +1683,9 @@ async function preloadSequenceFrames(options = {}) {
   const n = sequenceIndex.frames.length;
   const start = clamp(Math.round(params.sequenceFrame), 0, n - 1);
   const requestedFrameCount = options.frameCount !== undefined
-    ? Math.round(Number(options.frameCount))
-    : Math.round(Number(params.sequenceMaxCachedFrames) || 10);
-  const maxFrames = Math.max(1, Math.min(n, requestedFrameCount));
+    ? options.frameCount
+    : params.sequenceMaxCachedFrames;
+  const maxFrames = sequencePreloadFrameCount(requestedFrameCount);
 
   const heavyDescription = [
     params.showIsosurfaces && !params.sequenceDeferIsosurfaces ? "isosurfaces" : null,
@@ -1611,7 +1723,7 @@ async function preloadSequenceFrames(options = {}) {
       `Preloaded ${k + 1}/${maxFrames} frames, ${loadedFiles} arrays`
       + `${preparedIsosurfaces ? `, ${preparedIsosurfaces} isosurfaces` : ""}`
       + `${preparedFieldLines ? `, ${preparedFieldLines} field-line sets` : ""}`
-      + `; cache=${formatBytes(dataCacheBytes)}.`
+      + `; cache=${formatBytes(totalCacheBytes())}.`
     );
 
     await new Promise((resolve) => requestAnimationFrame(resolve));
@@ -1621,8 +1733,17 @@ async function preloadSequenceFrames(options = {}) {
     `Preload complete: ${maxFrames} frames`
     + `${preparedIsosurfaces ? `, ${preparedIsosurfaces} isosurfaces` : ""}`
     + `${preparedFieldLines ? `, ${preparedFieldLines} field-line sets` : ""}`
-    + `; scalar cache=${formatBytes(dataCacheBytes)}.`
+    + `; combined cache=${formatBytes(totalCacheBytes())}.`
   );
+}
+
+async function preloadEntireSequence() {
+  if (!sequenceIndex) await loadSequenceIndex(false);
+  const n = Array.isArray(sequenceIndex?.frames) ? sequenceIndex.frames.length : 0;
+  if (n <= 0) return;
+  params.sequenceMaxCachedFrames = n;
+  refreshSequenceControllers();
+  await preloadSequenceFrames({ frameCount: n });
 }
 
 function setDeferredSequenceObjectVisibility(hidden) {
@@ -1717,7 +1838,7 @@ async function loadFrameByIndex(index, options = {}) {
 
     updateVisibility();
     if (playbackUpdate) setDeferredSequenceObjectVisibility(true);
-    setStatus(`Frame ${i + 1}/${n}: ${frame.label || frame.state_number || i}; cache=${formatBytes(dataCacheBytes)}`);
+    setStatus(`Frame ${i + 1}/${n}: ${frame.label || frame.state_number || i}; cache=${formatBytes(totalCacheBytes())}`);
     return true;
   } finally {
     sequenceFrameLoading = false;
@@ -1752,7 +1873,7 @@ async function playSequence(options = {}) {
   scheduleNextSequenceFrame();
   setStatus(
     `Playing preloaded sequence at ${params.sequenceFps} fps; `
-    + `preloaded ${Math.min(sequenceIndex.frames.length, heavyObjectCacheLimit())} frames.`
+    + `requested ${sequencePreloadFrameCount()} preloaded frames; cache=${formatBytes(totalCacheBytes())}.`
   );
 }
 
@@ -1938,7 +2059,7 @@ async function loadFloat32ForBase(basePath, filename, expectedLength) {
   const cacheKey = `${cleanBase}/${filename}`;
   if (dataCache.has(cacheKey)) {
     const info = dataCacheMeta.get(cacheKey);
-    if (info) info.last = ++dataCacheCounter;
+    if (info) info.last = ++cacheAccessCounter;
     return dataCache.get(cacheKey);
   }
 
@@ -1956,9 +2077,9 @@ async function loadFloat32ForBase(basePath, filename, expectedLength) {
   }
 
   dataCache.set(cacheKey, arr);
-  dataCacheMeta.set(cacheKey, { bytes: arr.byteLength, last: ++dataCacheCounter });
+  dataCacheMeta.set(cacheKey, { bytes: arr.byteLength, last: ++cacheAccessCounter });
   dataCacheBytes += arr.byteLength;
-  enforceDataCacheLimit();
+  enforceCacheMemoryLimit({ type: "scalar", key: cacheKey });
   return arr;
 }
 
@@ -5017,6 +5138,8 @@ async function fetchFieldLineFile(filename) {
 
   const cacheKey = `${dataBasePath}/${filename}`;
   if (fieldLineDataCache.has(cacheKey)) {
+    const info = fieldLineDataCacheMeta.get(cacheKey);
+    if (info) info.last = ++cacheAccessCounter;
     return fieldLineDataCache.get(cacheKey);
   }
 
@@ -5026,8 +5149,13 @@ async function fetchFieldLineFile(filename) {
     return [];
   }
 
-  const lines = await response.json();
+  const raw = await response.text();
+  const lines = JSON.parse(raw);
+  const bytes = new TextEncoder().encode(raw).byteLength;
   fieldLineDataCache.set(cacheKey, lines);
+  fieldLineDataCacheMeta.set(cacheKey, { bytes, last: ++cacheAccessCounter });
+  fieldLineDataCacheBytes += bytes;
+  enforceCacheMemoryLimit({ type: "line-data", key: cacheKey });
   return lines;
 }
 
@@ -5161,8 +5289,8 @@ async function loadFieldLines() {
     scene.add(group);
   }
 
-  if (params.lineColourMode === "strength" && entry.allLoadedLines.length > 0) {
-    const [vmin, vmax] = getFieldLineRange(entry.allLoadedLines);
+  if (params.lineColourMode === "strength" && Array.isArray(entry.strengthRange)) {
+    const [vmin, vmax] = entry.strengthRange;
     setFieldLineColourbar(vmin, vmax);
   } else {
     hideFieldLineColourbar();
@@ -5477,11 +5605,20 @@ function buildGui() {
   sequenceFolder.add(params, "reloadSequence").name("Reload sequence.json");
   sequenceControllers.push(sequenceFolder.add(params, "sequenceFrame", 0, Math.max(0, (sequenceIndex?.frames?.length || 1) - 1), 1).name("Frame").onChange(loadFrameByIndex));
   sequenceFolder.add(params, "sequenceFps", 0.5, 30, 0.5).name("FPS").onChange(() => { if (sequenceTimer) playSequence(); });
-  sequenceFolder.add(params, "sequenceMaxCachedFrames", 1, 20, 1).name("Preload frames");
-  sequenceFolder.add(params, "sequenceCacheLimitMB", 128, 8192, 64).name("Cache limit MB").onChange(enforceDataCacheLimit);
+  const sequenceLength = Math.max(1, sequenceIndex?.frames?.length || 1);
+  params.sequenceMaxCachedFrames = clamp(
+    Math.round(Number(params.sequenceMaxCachedFrames) || 10),
+    1,
+    sequenceLength
+  );
+  sequenceControllers.push(
+    sequenceFolder.add(params, "sequenceMaxCachedFrames", 1, sequenceLength, 1).name("Preload frames")
+  );
+  sequenceFolder.add(params, "sequenceCacheLimitMB", 128, 65536, 64).name("Cache limit MB").onChange(enforceDataCacheLimit);
   sequenceFolder.add(params, "sequenceDeferIsosurfaces").name("Defer isosurfaces").onChange(() => { if (params.sequencePlaying) setDeferredSequenceObjectVisibility(true); });
   sequenceFolder.add(params, "sequenceDeferFieldLines").name("Defer field lines").onChange(() => { if (params.sequencePlaying) setDeferredSequenceObjectVisibility(true); });
-  sequenceFolder.add(params, "preloadSequenceFrames").name("Preload current view");
+  sequenceFolder.add(params, "preloadSequenceFrames").name("Preload N frames");
+  sequenceFolder.add(params, "preloadEntireSequence").name("Preload full sequence");
   sequenceFolder.add(params, "clearSequenceCache").name("Clear cache");
   sequenceFolder.add(params, "playSequence").name("Play");
   sequenceFolder.add(params, "pauseSequence").name("Pause");
@@ -5540,12 +5677,14 @@ function buildGui() {
   exportFolder.add(params, "videoDurationSec", 2, 120, 1).name("Video duration s");
   exportFolder.add(params, "videoFps", 10, 60, 1).name("Video FPS");
   exportFolder.add(params, "videoRotationMode", {
+    "No motion (current view)": "none",
     "360° in phi": "phi360",
     "360° phi + 180° theta": "phi360Theta180",
     "Personalized motion": "custom",
   }).name("Rotation mode");
   exportFolder.add(params, "videoCustomMotion").name("Custom motion");
   exportFolder.add(params, "videoActivatePlayback").name("Activate playback");
+  exportFolder.add(params, "videoBackgroundExport").name("Background export");
   exportFolder.add(params, "recordFullRotation").name("Record video");
   const pngSequenceFolder = exportFolder.addFolder("PNG snapshot sequence");
   const nSequenceFrames = Math.max(1, sequenceIndex?.frames?.length || 1);
@@ -5554,6 +5693,7 @@ function buildGui() {
   pngSequenceFolder.add(params, "sequencePngStep", 1, Math.max(1, nSequenceFrames - 1), 1).name("Frame step");
   pngSequenceFolder.add(params, "sequencePngWidthPx", 800, 6000, 100).name("PNG width px");
   pngSequenceFolder.add(params, "sequencePngRefreshHeavy").name("Refresh iso/lines");
+  pngSequenceFolder.add(params, "sequencePngBackgroundExport").name("Background export");
   pngSequenceFolder.add(params, "renderSequencePng").name("Render PNG sequence");
   pngSequenceFolder.add(params, "cancelSequencePng").name("Cancel PNG render");
 
@@ -6015,6 +6155,10 @@ async function renderSequencePngFrames() {
   sequencePngCancelRequested = false;
   pauseSequence(false);
   controls.enabled = false;
+  if (params.sequencePngBackgroundExport) {
+    setViewportHiddenForExport(true, "Background PNG-sequence export running...");
+  }
+  setStatus(`${params.sequencePngBackgroundExport ? "Preparing background PNG sequence render" : "Preparing PNG sequence render"}... browser resize is ignored until export completes.`);
 
   try {
     for (let k = 0; k < indices.length; k++) {
@@ -6052,8 +6196,10 @@ async function renderSequencePngFrames() {
     sequencePngExportActive = false;
     sequencePngCancelRequested = false;
     controls.enabled = true;
+    setViewportHiddenForExport(false);
     await loadFrameByIndex(originalFrame, { includeHeavy: true, skipEarthUpdate: false });
     setDeferredSequenceObjectVisibility(false);
+    syncRendererToWindowSize();
     if (completionMessage) setStatus(completionMessage);
   }
 }
@@ -6188,6 +6334,18 @@ function restoreRendererAfterVideo() {
   camera.aspect = videoState.previousAspect;
   camera.updateProjectionMatrix();
   videoState.resizedRenderer = false;
+}
+
+function syncRendererToWindowSize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  if (typeof controls.handleResize === "function") controls.handleResize();
+  axesRenderer.setSize(120, 120);
+  updateFieldLineVisuals();
+  syncCameraParamsFromCamera(true);
+  updateAxesOverlay();
 }
 
 function cameraPositionFromRawSpherical(target, radius, polarAngle, azimuthAngle) {
@@ -6410,13 +6568,7 @@ async function startFullRotationRecording() {
   let videoSequencePreloadCount = 0;
   if (activatePlayback) {
     pauseSequence(false);
-    const sequenceSteps = Math.max(
-      1,
-      Math.ceil(Math.max(1, Number(params.videoDurationSec))
-        * Math.max(0.1, Number(params.sequenceFps))) + 1
-    );
-    videoSequencePreloadCount = Math.min(sequenceIndex.frames.length, sequenceSteps);
-    sequenceHeavyCacheLimitOverride = videoSequencePreloadCount;
+    videoSequencePreloadCount = sequencePreloadFrameCount();
     await preloadSequenceFrames({
       automatic: true,
       forVideo: true,
@@ -6479,6 +6631,7 @@ async function startFullRotationRecording() {
       }
 
       controls.enabled = true;
+      setViewportHiddenForExport(false);
       videoState.active = false;
       camera.position.copy(videoState.startPosition);
       restoreRendererAfterVideo();
@@ -6493,7 +6646,6 @@ async function startFullRotationRecording() {
       videoState.customDescription = "";
       videoState.sequenceFrameLoading = false;
       videoState.sequenceFrameCount = 0;
-      sequenceHeavyCacheLimitOverride = 0;
       enforceHeavyObjectCacheLimit();
 
       if (resumeNormalPlayback) {
@@ -6506,6 +6658,9 @@ async function startFullRotationRecording() {
   };
 
   controls.enabled = false;
+  if (params.videoBackgroundExport) {
+    setViewportHiddenForExport(true, "Background video export running...");
+  }
   params.sequencePlaying = activatePlayback;
   setDeferredSequenceObjectVisibility(activatePlayback);
   recorder.start();
@@ -6544,10 +6699,12 @@ function updateVideoRecordingFrame(nowMs) {
     }
   }
 
-  let azimuth = videoState.startAngle + 2.0 * Math.PI * frac;
+  let azimuth = videoState.startAngle;
   let polar = videoState.polarAngle;
 
-  if (videoState.mode === "phi360Theta180") {
+  if (videoState.mode === "phi360") {
+    azimuth = videoState.startAngle + 2.0 * Math.PI * frac;
+  } else if (videoState.mode === "phi360Theta180") {
     const phiPhase = Math.min(1.0, frac / 0.75);
     const thetaPhase = frac <= 0.75 ? 0.0 : (frac - 0.75) / 0.25;
     azimuth = videoState.startAngle + 2.0 * Math.PI * phiPhase;
@@ -6793,7 +6950,7 @@ async function init() {
 window.addEventListener("keydown", handleViewerKeyboardShortcut);
 
 window.addEventListener("resize", () => {
-  if (videoState.active) return;
+  if (videoState.active || sequencePngExportActive) return;
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);

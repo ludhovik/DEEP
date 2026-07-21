@@ -1051,7 +1051,8 @@ Sequence playback
   Cache limit MB
   Defer isosurfaces
   Defer field lines
-  Preload current view
+  Preload N frames
+  Preload full sequence
   Clear cache
   Play
   Pause
@@ -1061,11 +1062,16 @@ Recommended workflow:
 
 ```text
 1. Select the visible fields and objects.
-2. Set Preload frames to 6-10.
-3. Set Cache limit MB to 1500-3000 if memory permits.
-4. Click Preload current view.
+2. Set Preload frames to any value from 1 to the full sequence length.
+3. Set Cache limit MB according to available RAM and GPU memory.
+4. Click Preload N frames, or Preload full sequence.
 5. Click Play.
 ```
+
+The `Preload frames` upper bound is the number of snapshots in `sequence.json`.
+There is no separate hard frame-count limit. Setting it equal to the sequence
+length requests that the complete sequence be cached for both interactive
+playback and playback-enabled video export.
 
 The viewer loads only arrays used by visible objects.
 
@@ -1096,8 +1102,11 @@ Defer field lines = off
   Preload and display frame-specific line geometry.
 ```
 
-Heavy caches are bounded by the number of preload frames. Old inactive entries
-are disposed as new frames enter the rolling cache.
+Scalar arrays, field-line JSON, isosurface meshes and field-line GPU geometry
+share the same `Cache limit MB`. The viewer uses least-recently-used eviction of
+inactive entries only when this combined memory limit is exceeded. Therefore,
+all requested frames remain preloaded when the configured memory cache is large
+enough.
 
 ---
 
@@ -1168,8 +1177,10 @@ Export > Activate playback
 before recording.
 
 The video timeline controls the sequence frame rather than using the normal
-real-time playback timer. Required frames are preloaded before recording,
-including isosurfaces and field-line geometry when their defer controls are off.
+real-time playback timer. The same `Preload frames` value used by interactive
+playback is used before recording. Set it to the complete sequence length to
+request a fully cached movie sequence. Isosurfaces and field-line geometry are
+included when their defer controls are off.
 
 If a remaining frame swap is necessary, the recorder is paused until the new
 field reaches the canvas, preventing loading intervals from being encoded as
@@ -1602,17 +1613,18 @@ Recommendations:
 
 ```text
 Use --skip-field-lines for large sequences.
-Preload 6-10 frames initially.
-Use a cache limit of 1500-3000 MB only if system memory permits.
+Choose any preload count up to the complete sequence length.
+Use a cache limit of 1500-3000 MB initially and increase it only if system and GPU memory permit.
 Keep isosurfaces deferred during interactive playback unless required.
 Start isosurface resolution at 24-32.
 Use --spectral-lmax before angular post-downsampling.
 Reduce radial resolution when necessary.
 ```
 
-For video with non-deferred isosurfaces or lines, all unique frames required by
-the movie may temporarily occupy GPU memory. Reduce sequence FPS, video
-duration, preload count or isosurface resolution if memory becomes limiting.
+For video with non-deferred isosurfaces or lines, cached geometry contributes to
+the same memory limit as scalar arrays and field-line data. Increase `Cache limit
+MB` to retain more frames, or reduce the preload count or isosurface resolution
+if memory becomes limiting.
 
 ---
 
@@ -1708,10 +1720,13 @@ ls public/data/frames/state03100/metadata.json
 Use:
 
 ```text
-Preload frames = 6-10
-Cache limit MB = 1500-3000
-Preload current view
+Preload frames = as many snapshots as memory permits
+Cache limit MB = increase according to available RAM/GPU memory
+Preload N frames
 ```
+
+To request the complete sequence, set `Preload frames` to the sequence length or
+click `Preload full sequence`. The only cache constraint is `Cache limit MB`.
 
 Also consider:
 
@@ -1730,8 +1745,9 @@ ready before playback reaches it.
 Use the current viewer version. Playback-enabled video export uses a dedicated
 frame-synchronised driver and pauses recording during any remaining frame swap.
 
-Preload the required frames and reduce heavy geometry if the browser still
-cannot maintain the requested rate.
+Preload the required number of frames, ideally the complete sequence when memory
+permits, and reduce heavy geometry if the browser still cannot maintain the
+requested rate.
 
 ## 19.9 Earth texture cannot be loaded
 
@@ -1839,3 +1855,18 @@ Save code to file
 A view state includes selected fields, colour maps, ranges, opacity, camera,
 lighting, surfaces, slices, field lines, isosurfaces, Earth settings and
 sequence settings. It is useful for reproducing a figure across datasets.
+
+### Fixed-view video and background PNG sequences
+
+Video export now has a `No motion (current view)` rotation mode. This records the
+current camera view without any camera motion; if `Activate playback` is enabled,
+the video records only the sequence evolution.
+
+PNG-sequence rendering now ignores browser `resize` events until the export is
+finished, so the exported image size stays fixed even if the browser window size
+changes during rendering. The viewer size is synchronised back to the browser
+window when the export completes.
+
+### Background export for video and PNG sequences
+
+Video export and PNG-sequence export include a `Background export` option. When enabled, the main viewer canvas and corner axes are hidden while the export runs, so sequence/video updates are not displayed interactively. This is useful on remote desktop or HPC graphical sessions where live viewport updates are slow. The export still uses the current viewer scene and settings, and the viewport is restored automatically when the export completes or is cancelled.
