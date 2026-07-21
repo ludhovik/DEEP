@@ -736,7 +736,81 @@ Shortcuts are ignored during video recording and offline PNG-sequence export.
 
 # 10. Load datasets in the viewer
 
-Browser paths are relative to `public/`.
+The viewer accepts three dataset-source types.
+
+## 10.1 Select any folder with the browser
+
+This is the recommended method for data outside the project. Use:
+
+```text
+Dataset
+  Select primary folder
+```
+
+Then select the converted dataset directory itself, for example:
+
+```text
+C:\Users\wgdh881\Downloads\data_FLAYER_C19
+```
+
+The selected folder may contain either:
+
+```text
+metadata.json
+```
+
+or a sequence root containing:
+
+```text
+sequence.json
+frames/...
+```
+
+The viewer reads `metadata.json`, coordinates, `.f32` arrays, field-line JSON,
+and sequence subdirectories directly through the browser filesystem API. The
+folder does not need to be copied under `public/`.
+
+Chrome and Edge use the native directory picker. Browsers without
+`showDirectoryPicker` use a directory-upload fallback. A selected-folder handle
+is temporary and must normally be selected again after reloading the page.
+
+## 10.2 Enter an absolute path in the text box
+
+When running the development server with:
+
+```bash
+npm run dev
+```
+
+enter an absolute Windows path directly:
+
+```text
+C:\Users\wgdh881\Downloads\data_FLAYER_C19
+```
+
+The viewer converts it internally to Vite's `/@fs/` filesystem route.
+
+For a POSIX path, use the explicit `file:` prefix:
+
+```text
+file:/work/n03/n03/wgdh881/data_FLAYER_C19
+file:/uolstore/Research/a/a88/earcd/DYNAMOS/data_FLAYER_C19
+```
+
+Then press:
+
+```text
+Dataset
+  Load primary path
+```
+
+Absolute text paths are supported by `npm run dev`. They are not portable to a
+static production server because `/@fs/` is a Vite development-server feature.
+The server remains bound to `127.0.0.1`; do not expose it to an untrusted network.
+
+## 10.3 Load from `public/`
+
+The original browser paths remain supported:
 
 ```text
 public/data/             -> /data
@@ -749,33 +823,20 @@ Use:
 
 ```text
 Dataset
-  Primary public folder
-  Load primary dataset
+  Primary path / URL
+  Load primary path
 ```
 
-Enter a browser path such as:
-
-```text
-/data_run2
-```
-
-Do not enter the operating-system path such as:
-
-```text
-/home/user/dynamo-three-viewer/public/data_run2
-```
-
-The viewer remembers the most recent primary folder in browser storage.
-
-A dataset can also be selected through the URL:
+A public dataset can also be selected through the URL:
 
 ```text
 http://127.0.0.1:5173/?dataset=/datasets/run_A
 ```
 
-## 10.1 Load two datasets simultaneously
+## 10.4 Load two datasets simultaneously
 
-The viewer supports one primary and one secondary dataset.
+The viewer supports one primary and one secondary dataset. The secondary source
+can also be selected with a folder picker or entered as a path/URL.
 
 The primary dataset controls the spherical grid. The secondary dataset is
 accepted only when these dimensions match:
@@ -790,9 +851,10 @@ Use:
 
 ```text
 Dataset
-  Secondary public folder
+  Secondary path / URL
+  Select secondary folder
   Secondary label
-  Load secondary dataset
+  Load secondary path
 ```
 
 Secondary fields receive a prefix, for example:
@@ -1688,21 +1750,26 @@ python -c 'import modules; print(modules.__file__)'
 
 ## 19.5 Dataset selector cannot load a folder
 
-Use the browser path relative to `public/`:
+For a folder outside the project, prefer:
 
 ```text
-/data
-/data_run2
-/datasets/run_A
+Dataset > Select primary folder
 ```
 
-Do not use:
+For a typed Windows path, run `npm run dev` and enter:
 
 ```text
-public/data
-/home/user/.../public/data
-C:\Users\...\public\data
+C:\Users\wgdh881\Downloads\data_FLAYER_C19
 ```
+
+For a typed POSIX path, use:
+
+```text
+file:/absolute/path/to/data_FLAYER_C19
+```
+
+When using `npm run preview` or another static server, absolute text paths are
+not available; use the folder picker or a path under `public/` instead.
 
 ## 19.6 `Unexpected token '<'` while reading JSON
 
@@ -1838,7 +1905,7 @@ npm run make-data # regenerate demonstration data
 node --check src/main.js
 ```
 
-The browser can only fetch files served under `public/`. Do not place converted
+The viewer can load files under `public/`, through the folder picker, or through Vite `/@fs/` absolute paths. Do not place converted
 data under `src/`.
 
 ## View-state code
@@ -1879,25 +1946,15 @@ explicit rendering instead of the interactive animation loop.
 
 - Background PNG sequences render each frame explicitly and do not wait for
   `requestAnimationFrame`.
-- Background video uses WebCodecs with deterministic frame timestamps and saves
-  a VP8 WebM file (`.ivf`). It continues when the browser tab is hidden or the
-  window is minimized, provided the page itself remains open.
+- Background video uses WebCodecs with deterministic frame timestamps and muxes
+  VP8 frames directly into a standard `.webm` file. It continues when the
+  browser tab is hidden or the window is minimized, provided the page remains
+  open.
 - Foreground video keeps the normal browser `MediaRecorder` WebM workflow.
 
 Background video requires a recent Chromium-based browser and a secure context
-(`localhost`, an SSH-forwarded localhost URL, or HTTPS). Convert the IVF output
-when a WebM or MP4 container is required:
-
-```bash
-ffmpeg -i dynamo-viewer-background-*.ivf -c:v copy output.webm
-```
-
-or:
-
-```bash
-ffmpeg -i dynamo-viewer-background-*.ivf \
-  -c:v libx264 -crf 18 -pix_fmt yuv420p output.mp4
-```
+(`localhost`, an SSH-forwarded localhost URL, or HTTPS). The resulting WebM file
+can be opened directly; no IVF conversion is required.
 
 ### Hidden-tab WebM video
 

@@ -288,10 +288,12 @@ const params = {
   recordFullRotation: () => startFullRotationRecording(),
 
   datasetPath: "/data",
+  selectPrimaryDatasetFolder: () => selectDatasetFolder("primary"),
   reloadDataset: () => loadDatasetFromParams(),
 
   secondaryDatasetPath: "/data2",
   secondaryDatasetLabel: "D2",
+  selectSecondaryDatasetFolder: () => selectDatasetFolder("secondary"),
   loadSecondaryDataset: () => loadSecondaryDatasetFromParams(),
   clearSecondaryDataset: () => clearSecondaryDataset(),
 
@@ -364,6 +366,7 @@ let povGuiRoot = null;
 let datasetRootPath = "/data";
 let dataBasePath = "/data";
 let secondaryDataset = null;
+const datasetFolderSources = new Map();
 let sequenceIndex = null;
 let sequenceTimer = null;
 let sequenceFrameLoading = false;
@@ -1069,12 +1072,157 @@ async function updateEarthSurface(options = {}) {
 
 
 function normaliseDatasetRoot(path) {
-  let p = String(path || "/data").trim().replace(/\\/g, "/");
-  p = p.replace(/^public\//, "");
+  let raw = String(path || "/data").trim();
+  if (!raw) return "/data";
+
+  if (/^fsdir:[^/]+(?:\/.*)?$/i.test(raw)) {
+    return raw.replace(/\\/g, "/").replace(/\/+$/, "");
+  }
+
+  raw = raw.replace(/\\/g, "/");
+
+  // A browser cannot fetch local filesystem paths directly. Under the Vite
+  // development server, /@fs/ exposes an absolute path. Windows absolute paths
+  // are detected automatically; POSIX paths can use file:/absolute/path.
+  if (/^file:\/\/[A-Za-z]:\//i.test(raw)) {
+    raw = raw.replace(/^file:\/\//i, "");
+  } else if (/^file:\/\//i.test(raw)) {
+    raw = raw.replace(/^file:\/\//i, "");
+  } else if (/^file:\//i.test(raw)) {
+    raw = raw.replace(/^file:/i, "");
+  }
+
+  if (/^[A-Za-z]:\//.test(raw)) {
+    return `/@fs/${raw.replace(/\/+$/, "")}`;
+  }
+  if (raw.startsWith("/@fs/")) {
+    return raw.replace(/\/+$/, "");
+  }
+  if (String(path || "").trim().toLowerCase().startsWith("file:/")) {
+    return `/@fs/${raw.replace(/^\/+/, "").replace(/\/+$/, "")}`;
+  }
+
+  let p = raw.replace(/^public\//, "");
   p = p.replace(/\/+$/, "");
   if (!p) p = "/data";
   if (!p.startsWith("/")) p = `/${p}`;
   return p;
+}
+
+function parseFolderSourcePath(path) {
+  const match = String(path || "").match(/^fsdir:([^/]+)(?:\/(.*))?$/i);
+  if (!match) return null;
+  return {
+    role: match[1].toLowerCase(),
+    relativePath: String(match[2] || "").replace(/^\/+|\/+$/g, ""),
+  };
+}
+
+async function fileFromDirectoryHandle(directoryHandle, relativePath) {
+  const parts = String(relativePath || "").split("/").filter(Boolean);
+  if (parts.length === 0) throw new Error("No file path was supplied.");
+
+  let current = directoryHandle;
+  for (let i = 0; i < parts.length - 1; i++) {
+    current = await current.getDirectoryHandle(parts[i]);
+  }
+  const fileHandle = await current.getFileHandle(parts[parts.length - 1]);
+  return await fileHandle.getFile();
+}
+
+async function fetchDatasetResource(path) {
+  const folderPath = parseFolderSourcePath(path);
+  if (!folderPath) return await fetch(path);
+
+  const source = datasetFolderSources.get(folderPath.role);
+  if (!source) {
+    return new Response("Selected folder is no longer available.", {
+      status: 404,
+      statusText: "Folder unavailable",
+    });
+  }
+
+  try {
+    let file = null;
+    if (source.type === "handle") {
+      file = await fileFromDirectoryHandle(source.handle, folderPath.relativePath);
+    } else {
+      file = source.files.get(folderPath.relativePath) || null;
+    }
+
+    if (!file) {
+      return new Response("File not found", { status: 404, statusText: "Not Found" });
+    }
+    return new Response(file, {
+      status: 200,
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+    });
+  } catch (err) {
+    if (err?.name !== "NotFoundError") console.warn("Could not read selected folder file", err);
+    return new Response("File not found", { status: 404, statusText: "Not Found" });
+  }
+}
+
+function selectDirectoryUsingFileInput() {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    input.setAttribute("webkitdirectory", "");
+    input.style.display = "none";
+    document.body.appendChild(input);
+
+    input.addEventListener("change", () => {
+      const files = new Map();
+      for (const file of input.files || []) {
+        let relative = String(file.webkitRelativePath || file.name).replace(/\\/g, "/");
+        const firstSlash = relative.indexOf("/");
+        if (firstSlash >= 0) relative = relative.slice(firstSlash + 1);
+        files.set(relative, file);
+      }
+      input.remove();
+      resolve(files.size > 0 ? { type: "files", files } : null);
+    }, { once: true });
+
+    input.click();
+  });
+}
+
+async function chooseDatasetDirectory(role) {
+  try {
+    if (typeof window.showDirectoryPicker === "function") {
+      const handle = await window.showDirectoryPicker({ mode: "read" });
+      return { type: "handle", handle };
+    }
+    return await selectDirectoryUsingFileInput();
+  } catch (err) {
+    if (err?.name !== "AbortError") throw err;
+    return null;
+  }
+}
+
+async function selectDatasetFolder(role) {
+  try {
+    const source = await chooseDatasetDirectory(role);
+    if (!source) {
+      setStatus("Folder selection cancelled.");
+      return;
+    }
+
+    datasetFolderSources.set(role, source);
+    const syntheticPath = `fsdir:${role}`;
+
+    if (role === "secondary") {
+      params.secondaryDatasetPath = syntheticPath;
+      await loadSecondaryDatasetFromParams();
+    } else {
+      params.datasetPath = syntheticPath;
+      await loadDatasetFromParams();
+    }
+  } catch (err) {
+    console.error(err);
+    setStatus(`Could not select dataset folder: ${err.message}`);
+  }
 }
 
 function getDatasetPathFromQuery() {
@@ -1091,14 +1239,18 @@ function askForDatasetRoot(message = null) {
 
   const saved = localStorage.getItem("dynamoThreeViewer.datasetPath") || params.datasetPath || "/data";
   const promptMessage = message || [
-    "Enter the dataset folder to load from public/.",
+    "Enter a dataset path or public URL path.",
     "",
-    "Examples:",
+    "Examples under public/:",
     "  /data",
     "  /data_run2",
     "  /datasets/run_A",
     "",
-    "If the data are in public/datasets/run_A, enter /datasets/run_A."
+    "Absolute path with npm run dev:",
+    "  C:\\Users\\wgdh881\\Downloads\\data_FLAYER_C19",
+    "  file:/work/project/data_FLAYER_C19",
+    "",
+    "You can also use Dataset > Select primary folder after startup."
   ].join("\n");
 
   const chosen = window.prompt(promptMessage, saved);
@@ -1108,7 +1260,9 @@ function askForDatasetRoot(message = null) {
 function rememberDatasetRoot(path) {
   const p = normaliseDatasetRoot(path);
   try {
-    localStorage.setItem("dynamoThreeViewer.datasetPath", p);
+    if (!p.startsWith("fsdir:")) {
+      localStorage.setItem("dynamoThreeViewer.datasetPath", p);
+    }
   } catch {
     // localStorage can be disabled; this is not fatal.
   }
@@ -1117,7 +1271,7 @@ function rememberDatasetRoot(path) {
 
 function dataUrlForBase(basePath, path) {
   const cleanBase = normaliseDatasetRoot(basePath);
-  const cleanPath = String(path || "").replace(/^\/+/, "");
+  const cleanPath = String(path || "").replace(/\\/g, "/").replace(/^\/+/, "");
   return cleanPath ? `${cleanBase}/${cleanPath}` : cleanBase;
 }
 
@@ -1548,7 +1702,7 @@ function clearLoadedDataCaches(showMessage = false) {
 async function fetchJsonStrict(url, label) {
   if (jsonCache.has(url)) return jsonCache.get(url);
 
-  const response = await fetch(url);
+  const response = await fetchDatasetResource(url);
   if (!response.ok) {
     throw new Error(`${label} not found at ${url} (HTTP ${response.status}).`);
   }
@@ -1557,7 +1711,7 @@ async function fetchJsonStrict(url, label) {
   if (trimmed.startsWith("<!doctype") || trimmed.startsWith("<html") || trimmed.startsWith("<")) {
     throw new Error(
       `${label} at ${url} returned HTML instead of JSON. ` +
-      `Check that the file exists under public${datasetRootPath} and that paths in sequence.json are relative to that dataset folder.`
+      `Check that the file exists in the selected dataset folder and that paths in sequence.json are relative to that folder.`
     );
   }
   try {
@@ -1924,7 +2078,7 @@ async function loadCoordinatesForBase(basePath, meta) {
   const url = dataUrlForBase(basePath, meta.coordinates);
   if (jsonCache.has(url)) return jsonCache.get(url);
 
-  const response = await fetch(url);
+  const response = await fetchDatasetResource(url);
   if (!response.ok) {
     console.warn(`Could not load ${url}; falling back to uniform coordinates.`);
     return empty;
@@ -2065,7 +2219,7 @@ async function loadFloat32ForBase(basePath, filename, expectedLength) {
   }
 
   const url = dataUrlForBase(cleanBase, filename);
-  const response = await fetch(url);
+  const response = await fetchDatasetResource(url);
   if (!response.ok) throw new Error(`Could not load ${url}`);
 
   const buffer = await response.arrayBuffer();
@@ -5144,7 +5298,7 @@ async function fetchFieldLineFile(filename) {
     return fieldLineDataCache.get(cacheKey);
   }
 
-  const response = await fetch(dataUrl(filename));
+  const response = await fetchDatasetResource(dataUrl(filename));
   if (!response.ok) {
     console.warn(`Could not load field lines: ${filename}`);
     return [];
@@ -5592,11 +5746,13 @@ function buildGui() {
   gui.add(params, "resetCamera").name("Reset camera view");
 
   const datasetFolder = gui.addFolder("Dataset");
-  datasetFolder.add(params, "datasetPath").name("Primary public folder");
-  datasetFolder.add(params, "reloadDataset").name("Load primary dataset");
-  datasetFolder.add(params, "secondaryDatasetPath").name("Secondary public folder");
+  datasetFolder.add(params, "datasetPath").name("Primary path / URL");
+  datasetFolder.add(params, "selectPrimaryDatasetFolder").name("Select primary folder");
+  datasetFolder.add(params, "reloadDataset").name("Load primary path");
+  datasetFolder.add(params, "secondaryDatasetPath").name("Secondary path / URL");
   datasetFolder.add(params, "secondaryDatasetLabel").name("Secondary label");
-  datasetFolder.add(params, "loadSecondaryDataset").name("Load secondary dataset");
+  datasetFolder.add(params, "selectSecondaryDatasetFolder").name("Select secondary folder");
+  datasetFolder.add(params, "loadSecondaryDataset").name("Load secondary path");
   datasetFolder.add(params, "clearSecondaryDataset").name("Clear secondary");
   if (secondaryDataset) {
     datasetFolder.add({ loaded: `${secondaryDataset.label}: ${secondaryDataset.basePath}` }, "loaded").name("Loaded secondary");
@@ -7314,12 +7470,12 @@ async function init() {
       const message = attempt === 0 ? null : [
         `Could not load dataset: ${params.datasetPath}`,
         "",
-        "Enter another dataset folder under public/.",
+        "Enter another public path or absolute filesystem path.",
         "",
         "Examples:",
         "  /data",
-        "  /data_run2",
-        "  /datasets/run_A"
+        "  C:\\Users\\wgdh881\\Downloads\\data_FLAYER_C19",
+        "  file:/work/project/data_FLAYER_C19"
       ].join("\n");
 
       datasetRootPath = rememberDatasetRoot(askForDatasetRoot(message));
