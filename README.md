@@ -1960,3 +1960,12 @@ can be opened directly; no IVF conversion is required.
 
 Hidden-tab video export uses WebCodecs for deterministic frame-by-frame VP8 encoding, then muxes the encoded frames directly into a standard WebM container in the browser. The saved `.webm` file can be opened directly in browsers, VLC, mpv, and other WebM-compatible players; no IVF conversion step is required.
 
+### Playback and video frame range
+
+`Sequence playback` now includes `First played frame` and `Last played frame`.
+Normal playback, keyboard frame stepping, preloading, foreground video, and
+hidden-tab WebM export all loop only within this inclusive range. Video export
+starts from the selected first frame and restores the frame that was displayed
+before recording after export completes. `Preload selected range` prepares all
+frames in the selected interval, subject only to `Cache limit MB`.
+

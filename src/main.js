@@ -298,6 +298,8 @@ const params = {
   clearSecondaryDataset: () => clearSecondaryDataset(),
 
   sequenceFrame: 0,
+  sequencePlaybackFirst: 0,
+  sequencePlaybackLast: -1,
   sequenceFps: 4,
   sequencePlaying: false,
   sequenceMaxCachedFrames: 10,
@@ -405,6 +407,7 @@ const videoState = {
   sequenceCurrentFrame: 0,
   sequenceTargetFrame: 0,
   sequenceFrameCount: 0,
+  originalSequenceFrame: 0,
   offline: false,
 };
 
@@ -1292,11 +1295,48 @@ function formatBytes(bytes) {
 }
 
 
-function sequencePreloadFrameCount(requested = params.sequenceMaxCachedFrames) {
+function normaliseSequencePlaybackRange(changed = null) {
   const n = Array.isArray(sequenceIndex?.frames) ? sequenceIndex.frames.length : 0;
-  if (n <= 0) return 0;
+  if (n <= 0) return { first: 0, last: 0, count: 0 };
+
+  let first = clamp(Math.round(Number(params.sequencePlaybackFirst) || 0), 0, n - 1);
+  const rawLast = Number(params.sequencePlaybackLast);
+  let last = Number.isFinite(rawLast) && rawLast >= 0
+    ? clamp(Math.round(rawLast), 0, n - 1)
+    : n - 1;
+
+  if (first > last) {
+    if (changed === "first") last = first;
+    else if (changed === "last") first = last;
+    else [first, last] = [last, first];
+  }
+
+  params.sequencePlaybackFirst = first;
+  params.sequencePlaybackLast = last;
+  return { first, last, count: last - first + 1 };
+}
+
+function sequenceFrameInPlaybackRange(frameIndex) {
+  const range = normaliseSequencePlaybackRange();
+  const frame = Math.round(Number(frameIndex));
+  return range.count > 0 && frame >= range.first && frame <= range.last;
+}
+
+function sequenceFrameAtRangeOffset(offset, startFrame = null) {
+  const range = normaliseSequencePlaybackRange();
+  if (range.count <= 0) return 0;
+  const requestedStart = startFrame === null ? Math.round(Number(params.sequenceFrame)) : Math.round(Number(startFrame));
+  const start = sequenceFrameInPlaybackRange(requestedStart) ? requestedStart : range.first;
+  const relativeStart = start - range.first;
+  const wrapped = ((relativeStart + Math.round(Number(offset) || 0)) % range.count + range.count) % range.count;
+  return range.first + wrapped;
+}
+
+function sequencePreloadFrameCount(requested = params.sequenceMaxCachedFrames) {
+  const range = normaliseSequencePlaybackRange();
+  if (range.count <= 0) return 0;
   const value = Math.round(Number(requested));
-  return Math.max(1, Math.min(n, Number.isFinite(value) ? value : n));
+  return Math.max(1, Math.min(range.count, Number.isFinite(value) ? value : range.count));
 }
 
 function cacheLimitBytes() {
@@ -1756,6 +1796,7 @@ async function loadSequenceIndex(silent = false) {
     const n = Array.isArray(sequenceIndex.frames) ? sequenceIndex.frames.length : 0;
     if (n > 0) {
       params.sequenceFrame = clamp(Math.round(params.sequenceFrame), 0, n - 1);
+      normaliseSequencePlaybackRange();
       params.sequencePngFirst = clamp(Math.round(params.sequencePngFirst), 0, n - 1);
       const requestedLast = Number(params.sequencePngLast);
       params.sequencePngLast = Number.isFinite(requestedLast) && requestedLast > 0
@@ -1835,8 +1876,11 @@ async function preloadSequenceFrames(options = {}) {
   }
   if (!sequenceIndex || !Array.isArray(sequenceIndex.frames) || sequenceIndex.frames.length === 0) return;
 
-  const n = sequenceIndex.frames.length;
-  const start = clamp(Math.round(params.sequenceFrame), 0, n - 1);
+  const range = normaliseSequencePlaybackRange();
+  if (range.count <= 0) return;
+  const start = sequenceFrameInPlaybackRange(params.sequenceFrame)
+    ? Math.round(params.sequenceFrame)
+    : range.first;
   const requestedFrameCount = options.frameCount !== undefined
     ? options.frameCount
     : params.sequenceMaxCachedFrames;
@@ -1848,7 +1892,7 @@ async function preloadSequenceFrames(options = {}) {
   ].filter(Boolean).join(" + ");
 
   setStatus(
-    `Preloading ${maxFrames} sequence frames`
+    `Preloading ${maxFrames} selected sequence frames`
     + `${heavyDescription ? ` with ${heavyDescription}` : ""}...`
   );
 
@@ -1857,7 +1901,7 @@ async function preloadSequenceFrames(options = {}) {
   let preparedFieldLines = 0;
 
   for (let k = 0; k < maxFrames; k++) {
-    const i = (start + k) % n;
+    const i = sequenceFrameAtRangeOffset(k, start);
     const frame = sequenceIndex.frames[i];
     const basePath = sequenceFrameBasePath(frame);
     const meta = await loadMetadataForBase(basePath);
@@ -1875,17 +1919,21 @@ async function preloadSequenceFrames(options = {}) {
 
     refreshSequenceControllers();
     setStatus(
-      `Preloaded ${k + 1}/${maxFrames} frames, ${loadedFiles} arrays`
+      `Preloaded ${k + 1}/${maxFrames} selected frames, ${loadedFiles} arrays`
       + `${preparedIsosurfaces ? `, ${preparedIsosurfaces} isosurfaces` : ""}`
       + `${preparedFieldLines ? `, ${preparedFieldLines} field-line sets` : ""}`
       + `; cache=${formatBytes(totalCacheBytes())}.`
     );
 
-    await new Promise((resolve) => requestAnimationFrame(resolve));
+    if (!document.hidden && !videoState.offline) {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    } else {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    }
   }
 
   setStatus(
-    `Preload complete: ${maxFrames} frames`
+    `Preload complete: ${maxFrames} selected frames`
     + `${preparedIsosurfaces ? `, ${preparedIsosurfaces} isosurfaces` : ""}`
     + `${preparedFieldLines ? `, ${preparedFieldLines} field-line sets` : ""}`
     + `; combined cache=${formatBytes(totalCacheBytes())}.`
@@ -1894,11 +1942,11 @@ async function preloadSequenceFrames(options = {}) {
 
 async function preloadEntireSequence() {
   if (!sequenceIndex) await loadSequenceIndex(false);
-  const n = Array.isArray(sequenceIndex?.frames) ? sequenceIndex.frames.length : 0;
-  if (n <= 0) return;
-  params.sequenceMaxCachedFrames = n;
+  const range = normaliseSequencePlaybackRange();
+  if (range.count <= 0) return;
+  params.sequenceMaxCachedFrames = range.count;
   refreshSequenceControllers();
-  await preloadSequenceFrames({ frameCount: n });
+  await preloadSequenceFrames({ frameCount: range.count });
 }
 
 function setDeferredSequenceObjectVisibility(hidden) {
@@ -2006,8 +2054,12 @@ function scheduleNextSequenceFrame() {
   sequenceTimer = window.setTimeout(async () => {
     sequenceTimer = null;
     if (!params.sequencePlaying) return;
-    const n = sequenceIndex.frames.length;
-    const next = (Math.round(params.sequenceFrame) + 1) % n;
+    const range = normaliseSequencePlaybackRange();
+    if (range.count <= 0) return;
+    const current = Math.round(params.sequenceFrame);
+    const next = sequenceFrameInPlaybackRange(current)
+      ? sequenceFrameAtRangeOffset(1, current)
+      : range.first;
     await loadFrameByIndex(next, { playback: true, skipEarthUpdate: true });
     scheduleNextSequenceFrame();
   }, delayMs);
@@ -2018,6 +2070,12 @@ async function playSequence(options = {}) {
   if (!sequenceIndex || !Array.isArray(sequenceIndex.frames) || sequenceIndex.frames.length === 0) return;
 
   pauseSequence(false);
+  const range = normaliseSequencePlaybackRange();
+  if (range.count <= 0) return;
+
+  if (!sequenceFrameInPlaybackRange(params.sequenceFrame)) {
+    await loadFrameByIndex(range.first, { playback: true, skipEarthUpdate: true });
+  }
 
   if (!options.skipPreload) {
     await preloadSequenceFrames({ automatic: true });
@@ -2027,7 +2085,7 @@ async function playSequence(options = {}) {
   setDeferredSequenceObjectVisibility(true);
   scheduleNextSequenceFrame();
   setStatus(
-    `Playing preloaded sequence at ${params.sequenceFps} fps; `
+    `Playing frames ${range.first}-${range.last} at ${params.sequenceFps} fps; `
     + `requested ${sequencePreloadFrameCount()} preloaded frames; cache=${formatBytes(totalCacheBytes())}.`
   );
 }
@@ -5760,9 +5818,20 @@ function buildGui() {
 
   const sequenceFolder = gui.addFolder("Sequence playback");
   sequenceFolder.add(params, "reloadSequence").name("Reload sequence.json");
-  sequenceControllers.push(sequenceFolder.add(params, "sequenceFrame", 0, Math.max(0, (sequenceIndex?.frames?.length || 1) - 1), 1).name("Frame").onChange(loadFrameByIndex));
-  sequenceFolder.add(params, "sequenceFps", 0.5, 30, 0.5).name("FPS").onChange(() => { if (sequenceTimer) playSequence(); });
   const sequenceLength = Math.max(1, sequenceIndex?.frames?.length || 1);
+  normaliseSequencePlaybackRange();
+  sequenceControllers.push(sequenceFolder.add(params, "sequenceFrame", 0, sequenceLength - 1, 1).name("Frame").onChange(loadFrameByIndex));
+  sequenceControllers.push(
+    sequenceFolder.add(params, "sequencePlaybackFirst", 0, sequenceLength - 1, 1)
+      .name("First played frame")
+      .onChange(() => { normaliseSequencePlaybackRange("first"); refreshSequenceControllers(); })
+  );
+  sequenceControllers.push(
+    sequenceFolder.add(params, "sequencePlaybackLast", 0, sequenceLength - 1, 1)
+      .name("Last played frame")
+      .onChange(() => { normaliseSequencePlaybackRange("last"); refreshSequenceControllers(); })
+  );
+  sequenceFolder.add(params, "sequenceFps", 0.5, 30, 0.5).name("FPS").onChange(() => { if (sequenceTimer) playSequence(); });
   params.sequenceMaxCachedFrames = clamp(
     Math.round(Number(params.sequenceMaxCachedFrames) || 10),
     1,
@@ -5775,7 +5844,7 @@ function buildGui() {
   sequenceFolder.add(params, "sequenceDeferIsosurfaces").name("Defer isosurfaces").onChange(() => { if (params.sequencePlaying) setDeferredSequenceObjectVisibility(true); });
   sequenceFolder.add(params, "sequenceDeferFieldLines").name("Defer field lines").onChange(() => { if (params.sequencePlaying) setDeferredSequenceObjectVisibility(true); });
   sequenceFolder.add(params, "preloadSequenceFrames").name("Preload N frames");
-  sequenceFolder.add(params, "preloadEntireSequence").name("Preload full sequence");
+  sequenceFolder.add(params, "preloadEntireSequence").name("Preload selected range");
   sequenceFolder.add(params, "clearSequenceCache").name("Clear cache");
   sequenceFolder.add(params, "playSequence").name("Play");
   sequenceFolder.add(params, "pauseSequence").name("Pause");
@@ -6871,12 +6940,14 @@ async function renderBackgroundVideoOffline(options) {
     videoSequencePreloadCount,
     fileHandle,
     filename,
+    playbackRange,
+    originalFrameBeforeVideo,
   } = options;
 
   const fps = Math.max(1, Math.round(Number(params.videoFps) || 30));
   const durationSec = Math.max(1, Number(params.videoDurationSec) || 1);
   const totalFrames = Math.max(1, Math.round(durationSec * fps));
-  const originalFrame = Math.round(params.sequenceFrame);
+  const originalFrame = Math.round(originalFrameBeforeVideo);
   const originalPosition = camera.position.clone();
 
   resizeRendererForVideoIfNeeded(true);
@@ -6921,8 +6992,8 @@ async function renderBackgroundVideoOffline(options) {
   videoState.startPosition.copy(originalPosition);
   videoState.activatePlayback = activatePlayback;
   videoState.playbackWasPlaying = playbackWasPlaying;
-  videoState.sequenceStartFrame = originalFrame;
-  videoState.sequenceCurrentFrame = originalFrame;
+  videoState.sequenceStartFrame = playbackRange.first;
+  videoState.sequenceCurrentFrame = playbackRange.first;
   videoState.sequenceFrameCount = videoSequencePreloadCount;
 
   controls.enabled = false;
@@ -6940,9 +7011,7 @@ async function renderBackgroundVideoOffline(options) {
         const sequenceStep = Math.floor(
           (frameNumber / fps) * Math.max(0.1, Number(params.sequenceFps))
         );
-        const targetFrame = (
-          videoState.sequenceStartFrame + sequenceStep
-        ) % sequenceIndex.frames.length;
+        const targetFrame = playbackRange.first + (sequenceStep % playbackRange.count);
 
         if (targetFrame !== videoState.sequenceCurrentFrame) {
           await loadFrameByIndex(targetFrame, {
@@ -6997,7 +7066,7 @@ async function renderBackgroundVideoOffline(options) {
       await loadFrameByIndex(originalFrame, { includeHeavy: true, skipEarthUpdate: false });
     }
     setDeferredSequenceObjectVisibility(false);
-    enforceHeavyObjectCacheLimit();
+    enforceCacheMemoryLimit();
 
     videoState.activatePlayback = false;
     videoState.playbackStartedByVideo = false;
@@ -7121,6 +7190,16 @@ async function startFullRotationRecording() {
     }
   }
 
+  const originalFrameBeforeVideo = Math.round(params.sequenceFrame);
+  const playbackRange = activatePlayback
+    ? normaliseSequencePlaybackRange()
+    : { first: originalFrameBeforeVideo, last: originalFrameBeforeVideo, count: 1 };
+
+  if (activatePlayback && playbackRange.count <= 0) {
+    setStatus("Cannot activate playback during video export: the selected frame range is empty.");
+    return;
+  }
+
   let customMotion = null;
   if (params.videoRotationMode === "custom") {
     try {
@@ -7143,6 +7222,9 @@ async function startFullRotationRecording() {
   let videoSequencePreloadCount = 0;
   if (activatePlayback) {
     pauseSequence(false);
+    if (Math.round(params.sequenceFrame) !== playbackRange.first) {
+      await loadFrameByIndex(playbackRange.first, { includeHeavy: true, skipEarthUpdate: true });
+    }
     videoSequencePreloadCount = sequencePreloadFrameCount();
     await preloadSequenceFrames({
       automatic: true,
@@ -7161,6 +7243,8 @@ async function startFullRotationRecording() {
         videoSequencePreloadCount,
         fileHandle: offlineFileHandle,
         filename: offlineFilename,
+        playbackRange,
+        originalFrameBeforeVideo,
       });
     } catch (err) {
       console.error(err);
@@ -7203,9 +7287,10 @@ async function startFullRotationRecording() {
   videoState.playbackStartedByVideo = activatePlayback;
   videoState.sequenceDriverActive = activatePlayback;
   videoState.sequenceFrameLoading = false;
-  videoState.sequenceStartFrame = Math.round(params.sequenceFrame);
-  videoState.sequenceCurrentFrame = Math.round(params.sequenceFrame);
-  videoState.sequenceTargetFrame = Math.round(params.sequenceFrame);
+  videoState.sequenceStartFrame = playbackRange.first;
+  videoState.sequenceCurrentFrame = playbackRange.first;
+  videoState.sequenceTargetFrame = playbackRange.first;
+  videoState.originalSequenceFrame = originalFrameBeforeVideo;
   videoState.sequenceFrameCount = videoSequencePreloadCount;
 
   recorder.ondataavailable = (event) => {
@@ -7245,7 +7330,10 @@ async function startFullRotationRecording() {
       videoState.customDescription = "";
       videoState.sequenceFrameLoading = false;
       videoState.sequenceFrameCount = 0;
-      enforceHeavyObjectCacheLimit();
+      if (activatePlayback && Math.round(params.sequenceFrame) !== videoState.originalSequenceFrame) {
+        await loadFrameByIndex(videoState.originalSequenceFrame, { includeHeavy: true, skipEarthUpdate: false });
+      }
+      enforceCacheMemoryLimit();
 
       if (resumeNormalPlayback) {
         await playSequence({ skipPreload: true });
@@ -7283,9 +7371,8 @@ function updateVideoRecordingFrame(nowMs) {
     const sequenceStep = Math.floor(
       (elapsedMs / 1000) * Math.max(0.1, Number(params.sequenceFps))
     );
-    const targetFrame = (
-      videoState.sequenceStartFrame + sequenceStep
-    ) % sequenceIndex.frames.length;
+    const range = normaliseSequencePlaybackRange();
+    const targetFrame = range.first + (sequenceStep % range.count);
 
     if (
       targetFrame !== videoState.sequenceCurrentFrame
@@ -7392,9 +7479,11 @@ async function stepSequenceFrameByKeyboard(delta) {
     if (wasPlaying) pauseSequence(false);
     await waitForSequenceFrameIdle();
 
-    const n = sequenceIndex.frames.length;
-    const current = clamp(Math.round(Number(params.sequenceFrame) || 0), 0, n - 1);
-    const next = ((current + Math.sign(delta)) % n + n) % n;
+    const range = normaliseSequencePlaybackRange();
+    const current = sequenceFrameInPlaybackRange(params.sequenceFrame)
+      ? Math.round(params.sequenceFrame)
+      : range.first;
+    const next = sequenceFrameAtRangeOffset(Math.sign(delta), current);
 
     await loadFrameByIndex(next, {
       playback: wasPlaying,
