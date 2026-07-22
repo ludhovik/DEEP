@@ -10,6 +10,7 @@ This script expects your existing `modules.py` to provide:
     SH_to_spat
     SH_to_spat_nom0
     gradient_spat
+    curl_spat
 
 It writes:
 
@@ -484,7 +485,35 @@ def compute_helicity(Ur: np.ndarray, Ut: np.ndarray, Up: np.ndarray, r: np.ndarr
     helicity = Ur * omega_r + Ut * omega_theta + Up * omega_phi
     return np.ascontiguousarray(helicity, dtype=np.float64)
 
+def compute_EMF(Ur: np.ndarray, Ut: np.ndarray, Up: np.ndarray, Br: np.ndarray, Bt: np.ndarray, Bp: np.ndarray, r: np.ndarray, theta: np.ndarray, phi: np.ndarray) -> np.ndarray:
+    vr = Ur - np.reshape(np.mean(Ur, axis=2), (Ur.shape[0],Ur.shape[1],1))
+    vt = Ut - np.reshape(np.mean(Ut, axis=2), (Ur.shape[0], Ur.shape[1],1))
+    vp = Up - np.reshape(np.mean(Up, axis=2), (Ur.shape[0], Ur.shape[1],1))
+    br = Br - np.reshape(np.mean(Br, axis=2), (Br.shape[0],Br.shape[1],1))
+    bt = Bt - np.reshape(np.mean(Bt, axis=2), (Br.shape[0], Br.shape[1],1))
+    bp = Bp - np.reshape(np.mean(Bp, axis=2), (Br.shape[0], Br.shape[1],1))
+    EMF_r = Ur*Bp - Bt*Up
+    EMF_t = Up*Br - Ur*Bp
+    EMF_p = Ur*Bt - Br*Ut
+    EMF_fluct_r = vt*bp - bt*vp
+    EMF_fluct_t = vp*br - vr*bp
+    EMF_fluct_p = vr*bt - br*vt
+    return(EMF_r, EMF_t, EMF_p, EMF_fluct_r, EMF_fluct_t, EMF_fluct_p)
 
+def compute_induction( Ur: np.ndarray, 
+                       Ut: np.ndarray, 
+                       Up: np.ndarray, 
+                       Br: np.ndarray,
+                       Bt: np.ndarray, 
+                       Bp: np.ndarray, 
+                       r: np.ndarray, 
+                       theta: np.ndarray, 
+                       phi: np.ndarray,
+                       curl_spat: Any
+                       ) -> np.ndarray:
+    Ar, At, Ap = Ut*Bp-Up*Bt, Up*Br-Ur*Bp, Ur*Bt-Ut*Br #A = u x B
+    Ir, It, Ip = curl_spat(Ar, At, Ap, r, theta, phi)
+    return(Ir, It, Ip)
 # -----------------------------------------------------------------------------
 # Spherical geometry / field-line helpers
 # -----------------------------------------------------------------------------
@@ -1657,6 +1686,7 @@ def main() -> None:
     SH_to_spat = user_modules.SH_to_spat
     SH_to_spat_nom0 = user_modules.SH_to_spat_nom0
     gradient_spat = user_modules.gradient_spat
+    curl_spat = user_modules.curl_spat
 
     if args.folder:
         path = latest_state_file(args.folder, args.pattern)
@@ -1776,6 +1806,10 @@ def main() -> None:
     if has_magnetic_field:
         Babs = np.sqrt(Br * Br + Bt * Bt + Bp * Bp)
 
+    R, THETA, PHI = np.meshgrid(r, theta, phi, indexing='ij')
+    Us = Ur*np.sin(THETA) + Ut*np.cos(THETA)
+    Uz = Ur*np.cos(THETA) - Ut*np.sin(THETA)
+
     Cspatnol0 = remove_global_mean(Cspat)
     Compspatnol0 = remove_global_mean(Compspat)
 
@@ -1798,6 +1832,9 @@ def main() -> None:
     N2_volume = remove_m0_phi(N2_full)
 
     helicity = compute_helicity(Ur, Ut, Up, r, theta, phi)
+    Ir, It, Ip = compute_induction(Ur, Ut, Up, Br, Bt, Bp, r, theta, phi, curl_spat)
+    Iz = Ir*np.cos(THETA) - It*np.sin(THETA)
+    EMF_r, EMF_t, EMF_p, EMF_fluct_r, EMF_fluct_t, EMF_fluct_p = compute_EMF(Ur, Ut, Up, Br, Bt, Bp, r, theta, phi)
 
     # Keep simple 1-D profiles for reference.
     N2_profile = np.mean(N2_full, axis=(1, 2))
@@ -1813,6 +1850,8 @@ def main() -> None:
         "ur": Ur,
         "ut": Ut,
         "up": Up,
+        "us": Us,
+        "uz": Uz,
         "Uabs": Uabs,
         "ur_phiavg": Ur_phiavg,
         "ut_phiavg": Ut_phiavg,
@@ -1840,6 +1879,16 @@ def main() -> None:
             "Br_phiavg": Br_phiavg,
             "Bt_phiavg": Bt_phiavg,
             "Bp_phiavg": Bp_phiavg,
+            "Ir": Ir,
+            "It": It,
+            "Ip": Ip,
+            "Iz": Iz,
+            "EMFr": EMF_r,
+            "EMFt": EMF_t,
+            "EMFp":EMF_p,
+            "EMFr_fluct": EMF_fluct_r,
+            "EMFt_fluct": EMF_fluct_t,
+            "EMFp_fluct":EMF_fluct_p,
             **fields,
         }
 
