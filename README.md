@@ -571,7 +571,52 @@ python tools/convert_state_to_viewer.py \
   --skip-field-lines
 ```
 
-## 7.7 Explicit physical parameters
+## 7.7 Full-sphere state without an inner core
+
+For a Leeds state whose radial grid includes the centre, use:
+
+```bash
+python tools/convert_state_to_viewer.py \
+  --file "/path/to/state0026.cdf.dat" \
+  --modules-dir "$HOME/leeds-postprocessing" \
+  --out public/data_full_sphere \
+  --no-inner-core \
+  --spectral-lmax 128 \
+  --skip-field-lines
+```
+
+`--full-sphere` is an alias for `--no-inner-core`. The converter also detects
+full-sphere states automatically when the first radial coordinate is `r=0`, but
+the explicit option is useful in batch scripts and records the intended geometry
+in `metadata.json`.
+
+The Leeds poloidal/toroidal transform contains factors proportional to `1/r`.
+At the exact centre, spherical vector components are not uniquely defined because
+the spherical basis itself is singular. The converter therefore:
+
+1. replaces only the transform copy of the exact `r=0` coordinate by a very small
+   positive radius;
+2. leaves every positive-radius coordinate unchanged;
+3. performs the normal Leeds transform;
+4. sets `ur`, `ut` and `up` to zero on the exported centre layer;
+5. applies the same policy to magnetic spherical components when present;
+6. makes scalar fields angularly uniform at the centre;
+7. sets angular scalar derivatives and helicity to zero at the centre.
+
+This removes the divide-by-zero warnings without modifying the physical fields at
+positive radius. The details and the temporary transform radius are written under
+`center_regularization` in `metadata.json`.
+
+The default centre-detection tolerance is:
+
+```bash
+--center-tolerance 1e-12
+```
+
+For a full-sphere sequence, include `--no-inner-core` in the sequence command; it
+is propagated to every converted frame.
+
+## 7.8 Explicit physical parameters
 
 The converter attempts to read parameters from the input path. They can also be
 set explicitly:
@@ -1567,7 +1612,40 @@ public/data/
     state03105/
 ```
 
-## 16.4 Field-line modes
+## 16.4 Full-sphere centre regularization
+
+The converter supports Leeds states with `riro=0` and a radial grid beginning at
+`r[0]=0`. Enable the mode explicitly with either:
+
+```bash
+--no-inner-core
+--full-sphere
+```
+
+The mode is also activated automatically when the radial grid contains one centre
+point at index zero. An explicit request fails if the state does not contain
+`r=0`, which prevents a shell state from being mislabeled as a full sphere.
+
+The exact centre is a coordinate singularity for spherical vector components, not
+a physical singularity of the Cartesian vector field. Consequently, the exported
+centre layer is a finite visualization/diagnostic representation, while all
+positive-radius values retain the standard Leeds transform result.
+
+Metadata records:
+
+```text
+full_sphere
+has_inner_core
+center_regularization.enabled
+center_regularization.requested_explicitly
+center_regularization.detected_from_radius_grid
+center_regularization.transform_safe_radius
+center_regularization.vector_center_policy
+center_regularization.scalar_center_policy
+center_regularization.helicity_center_policy
+```
+
+## 16.5 Field-line modes
 
 ```text
 shell     field lines inside the fluid shell
