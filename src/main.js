@@ -1084,25 +1084,32 @@ function normaliseDatasetRoot(path) {
 
   raw = raw.replace(/\\/g, "/");
 
-  // A browser cannot fetch local filesystem paths directly. Under the Vite
-  // development server, /@fs/ exposes an absolute path. Windows absolute paths
-  // are detected automatically; POSIX paths can use file:/absolute/path.
+  // Local absolute paths use a synthetic localfs: root. Vite serves them via
+  // the localhost middleware in vite.config.js. This is more reliable on
+  // Windows than Vite's internal /@fs/ route and also works in preview mode.
+  if (/^localfs:/i.test(raw)) {
+    return `localfs:${raw.replace(/^localfs:/i, "").replace(/\/+$/, "")}`;
+  }
+
+  // Backward compatibility with roots saved by older viewer versions.
+  if (raw.startsWith("/@fs/")) {
+    return `localfs:${raw.slice(5).replace(/\/+$/, "")}`;
+  }
+
+  const wasFileUrl = /^file:/i.test(raw);
   if (/^file:\/\/[A-Za-z]:\//i.test(raw)) {
     raw = raw.replace(/^file:\/\//i, "");
   } else if (/^file:\/\//i.test(raw)) {
-    raw = raw.replace(/^file:\/\//i, "");
+    raw = raw.replace(/^file:\/\//i, "/");
   } else if (/^file:\//i.test(raw)) {
     raw = raw.replace(/^file:/i, "");
   }
 
   if (/^[A-Za-z]:\//.test(raw)) {
-    return `/@fs/${raw.replace(/\/+$/, "")}`;
+    return `localfs:${raw.replace(/\/+$/, "")}`;
   }
-  if (raw.startsWith("/@fs/")) {
-    return raw.replace(/\/+$/, "");
-  }
-  if (String(path || "").trim().toLowerCase().startsWith("file:/")) {
-    return `/@fs/${raw.replace(/^\/+/, "").replace(/\/+$/, "")}`;
+  if (wasFileUrl && raw.startsWith("/")) {
+    return `localfs:${raw.replace(/\/+$/, "")}`;
   }
 
   let p = raw.replace(/^public\//, "");
@@ -1110,6 +1117,23 @@ function normaliseDatasetRoot(path) {
   if (!p) p = "/data";
   if (!p.startsWith("/")) p = `/${p}`;
   return p;
+}
+
+function parseLocalFilesystemPath(path) {
+  const raw = String(path || "");
+  if (!/^localfs:/i.test(raw)) return null;
+  const absolutePath = raw.replace(/^localfs:/i, "");
+  return absolutePath || null;
+}
+
+function encodeLocalFilesystemPath(path) {
+  const bytes = new TextEncoder().encode(String(path || ""));
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
 }
 
 function parseFolderSourcePath(path) {
@@ -1134,6 +1158,13 @@ async function fileFromDirectoryHandle(directoryHandle, relativePath) {
 }
 
 async function fetchDatasetResource(path) {
+  const localPath = parseLocalFilesystemPath(path);
+  if (localPath) {
+    const encodedPath = encodeLocalFilesystemPath(localPath);
+    const endpoint = `/__localfs__/${encodedPath}`;
+    return await fetch(endpoint, { cache: "no-store" });
+  }
+
   const folderPath = parseFolderSourcePath(path);
   if (!folderPath) return await fetch(path);
 
@@ -1751,7 +1782,7 @@ async function fetchJsonStrict(url, label) {
   if (trimmed.startsWith("<!doctype") || trimmed.startsWith("<html") || trimmed.startsWith("<")) {
     throw new Error(
       `${label} at ${url} returned HTML instead of JSON. ` +
-      `Check that the file exists in the selected dataset folder and that paths in sequence.json are relative to that folder.`
+      `For an absolute local path, run npm run dev or npm run preview, or use Select primary folder. Check that metadata.json exists directly inside the selected path.`
     );
   }
   try {

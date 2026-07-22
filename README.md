@@ -571,7 +571,95 @@ python tools/convert_state_to_viewer.py \
   --skip-field-lines
 ```
 
-## 7.7 Explicit physical parameters
+## 7.7 Full-sphere state without an inner core
+
+For a Leeds state whose radial grid includes the centre, use:
+
+```bash
+python tools/convert_state_to_viewer.py \
+  --file "/path/to/state0026.cdf.dat" \
+  --modules-dir "$HOME/leeds-postprocessing" \
+  --out public/data_full_sphere \
+  --no-inner-core \
+  --spectral-lmax 128 \
+  --skip-field-lines
+```
+
+`--full-sphere` is an alias for `--no-inner-core`. The converter also detects a
+full sphere automatically when the first radial coordinate is `r=0`.
+
+Current Leeds full-sphere states do **not** store the conventional potentials
+that the shell `PolTor_to_spat` routine expects. Stage 5/6 stores the bounded
+regular coefficients directly:
+
+```text
+radial_representation = "regular_r_power_g_x"
+radial_power_offset   = 0
+```
+
+with
+
+```text
+f_lm(r) = r^(l+p0) G_lm(x),    x = r^2.
+```
+
+The converter reads these attributes separately for `uP`, `uT`, `BP`, `BT`,
+`C`, and `Comp`. It then uses the same direct regular reconstruction as
+`var_coll_TorPol2qst_fullsphere` in the Leeds code. For
+`P=r^(l+pP)G(x)` and `T=r^(l+pT)H(x)`, the SHTns coefficients are
+
+```text
+Q = l(l+1) r^(l+pP-1) G,
+S = +r^(l+pP-1) [(l+pP+1)G + 2x dG/dx],
+T = r^(l+pT) H.
+```
+
+No quantity is divided by `r`. The positive `S` sign follows the actual Leeds
+full-sphere chain: `var_coll_TorPol2qst_fullsphere` forms positive `s`, and
+`tra_qst2rtp_shtns` applies a positive `shtns_norm_st`. The shell helper in
+`modules.py` uses a negative conventional-potential `S` expression (and marks
+that line `#check the sign`); that shell convention is not used for regular
+full-sphere velocity or magnetic fields. The derivative `dG/dx` uses the same
+local, factorial-scaled finite-difference operator as Leeds `D%dx(1)`, with the
+standard `i_KL=3` seven-point stencil.
+
+This is important because passing stored `G` directly to the shell transform
+would incorrectly evaluate terms such as `l(l+1)G/r`, producing very large
+velocity close to the centre.
+
+At `r=0`, only the regular `l=1` vector limit can remain finite. The converter
+synthesizes that limit directly, converts it to a single Cartesian centre
+vector, and projects the same vector back onto every spherical basis direction.
+It does not force velocity to zero unless the physical `l=1` centre limit is
+zero. Regular scalar coefficients are first converted to their physical form
+`r^(l+p0)G`, so only the `l=0` scalar remains at the exact centre.
+
+For an older full-sphere state marked
+`conventional_r_coefficient` (or lacking the representation attribute), the
+converter first applies the bounded Leeds stage-5 projection from
+`f=r^pG` to `G`. This uses `K=2*i_KL+1=7` and the same `1e-6` resolvability
+threshold as `var_fullsphere_projection_precompute`; it never divides a mode
+pointwise by a small `r^l`.
+
+The detected representations, projection path, derivative method, and centre
+Cartesian diagnostics are written to:
+
+```text
+state_radial_representations
+full_sphere_transform
+center_regularization
+```
+
+The default centre-detection tolerance is:
+
+```bash
+--center-tolerance 1e-12
+```
+
+For a full-sphere sequence, include `--no-inner-core` in the sequence command;
+it is propagated to every converted frame.
+
+## 7.8 Explicit physical parameters
 
 The converter attempts to read parameters from the input path. They can also be
 set explicitly:
@@ -1567,7 +1655,52 @@ public/data/
     state03105/
 ```
 
-## 16.4 Field-line modes
+## 16.4 Full-sphere regular-coefficient conversion
+
+The converter supports Leeds states with `riro=0` and `r[0]=0`. Enable the mode
+explicitly with either:
+
+```bash
+--no-inner-core
+--full-sphere
+```
+
+The mode is also activated automatically when the radial grid contains one
+centre point at index zero. An explicit request fails if the state does not
+contain `r=0`.
+
+The converter follows the regular formulation in the Leeds full-sphere source:
+
+- stored fields are identified using `radial_representation` and
+  `radial_power_offset`;
+- regular velocity and magnetic potentials are reconstructed directly in
+  `x=r^2` using the Leeds QST identities;
+- `d/dx` uses the local `i_KL=3` seven-point Leeds finite-difference stencil;
+- legacy conventional full-sphere modes are converted with the bounded `K=7`
+  Leeds projection rather than division by `r^l`;
+- scalar regular coefficients are multiplied by `r^(l+p0)` before angular
+  synthesis;
+- the exact-centre vector is represented by its unique Cartesian regular limit.
+
+Metadata records:
+
+```text
+full_sphere
+has_inner_core
+state_radial_representations
+full_sphere_transform.enabled
+full_sphere_transform.method
+full_sphere_transform.fields
+center_regularization.enabled
+center_regularization.requested_explicitly
+center_regularization.detected_from_radius_grid
+center_regularization.method
+center_regularization.vector_center_policy
+center_regularization.scalar_center_policy
+center_regularization.vector_center_diagnostics
+```
+
+## 16.5 Field-line modes
 
 ```text
 shell     field lines inside the fluid shell
@@ -1968,4 +2101,31 @@ hidden-tab WebM export all loop only within this inclusive range. Video export
 starts from the selected first frame and restores the frame that was displayed
 before recording after export completes. `Preload selected range` prepares all
 frames in the selected interval, subject only to `Cache limit MB`.
+
+### Windows absolute paths
+
+Enter a Windows dataset folder directly, for example:
+
+```text
+C:\Users\wgdh881\Desktop\public\data_FLAYER_C19
+```
+
+The viewer converts it to an internal `localfs:` source and reads files through
+a localhost-only Vite endpoint. This works with both `npm run dev` and
+`npm run preview`. With a generic static server, use `Select primary folder`
+instead, because browsers cannot read arbitrary local paths directly.
+
+### Windows OneDrive paths
+
+Absolute Windows paths containing spaces, such as:
+
+```text
+C:\Users\wgdh881\OneDrive - University of Leeds\DEEP\public\data_FLAYER_C19
+```
+
+are sent to the Vite server using a base64url-encoded local-filesystem endpoint,
+so spaces and punctuation are preserved exactly. Restart `npm run dev` or
+`npm run preview` after updating because `vite.config.js` implements this route.
+If the Vite server runs inside WSL rather than Windows, use the corresponding
+`/mnt/c/Users/...` path or the folder-selection button.
 
