@@ -968,37 +968,113 @@ def gradient_spat(A, r, tta, phi=[]):
 
 
 
-def curl_spat(A, r, tta, phi=[]):
+def curl_spat(Ar, Atta, Aphi, r, tta, phi):
+    """Compute the curl of a vector field in spherical coordinates.
+
+    Parameters
+    ----------
+    Ar, Atta, Aphi : ndarray, shape (nr, ntheta, nphi)
+        Radial, colatitudinal, and azimuthal components of the vector field.
+    r, tta, phi : array_like
+        Radial, colatitudinal, and azimuthal coordinates.  The SHTns latitude
+        grid excludes the coordinate-singular poles.
+
+    Returns
+    -------
+    curl_r, curl_tta, curl_phi : ndarray
+        Components of ``nabla x A`` on the same grid.
+
+    Notes
+    -----
+    The component formula is evaluated through ``gradient_spat`` exactly as
+    used in the Leeds post-processing workflow.  For a full sphere, the
+    coordinate-singular r=0 layer is replaced by the unique regular Cartesian
+    limit estimated from the nearest non-zero radial shell.
     """
-    Computes the curl of the scalar field A using finite differences
-    """
-    if len(phi)==0:
-        R, TTA = np.meshgrid(r, tta, indexing='ij')
-    else:
-        R, TTA, PHI = np.meshgrid(r, tta, phi, indexing='ij')
-    dA_dr = np.zeros(A.shape)
-    dA_dr[1:-1] = (A[2:] - A[:-2]) / (R[2:] - R[:-2])
-    dA_dr[0] = (A[1] - A[0]) / (R[1] - R[0])
-    dA_dr[-1] = (A[-1] - A[-2]) / (R[-1] - R[-2])
+    Ar = np.asarray(Ar, dtype=np.float64)
+    Atta = np.asarray(Atta, dtype=np.float64)
+    Aphi = np.asarray(Aphi, dtype=np.float64)
+    r = np.asarray(r, dtype=np.float64)
+    tta = np.asarray(tta, dtype=np.float64)
+    phi = np.asarray(phi, dtype=np.float64)
 
-    dA_dtta = np.zeros(A.shape)
-    dA_dtta[:,1:-1] = (A[:,2:] - A[:,:-2]) / (TTA[:,2:] - TTA[:,:-2])
-    dA_dtta[:,0] = (A[:,1] - A[:,0]) / (TTA[:,1] - TTA[:,0])
-    dA_dtta[:,-1] = (A[:,-1] - A[:,-2]) / (TTA[:,-1] - TTA[:,-2])
-    
-    grad_r = dA_dr
-    grad_tta = dA_dtta/R
+    expected_shape = (r.size, tta.size, phi.size)
+    if Ar.shape != expected_shape or Atta.shape != expected_shape or Aphi.shape != expected_shape:
+        raise ValueError(
+            "curl_spat expects Ar, Atta, and Aphi with shape "
+            f"{expected_shape}; received {Ar.shape}, {Atta.shape}, {Aphi.shape}."
+        )
+    if min(r.size, tta.size, phi.size) < 3:
+        raise ValueError("curl_spat requires at least three points in r, theta, and phi.")
 
-    if len(phi)!=0:
-        dA_dphi = np.zeros(A.shape)
-        dA_dphi[:,:,1:-1] = (A[:,:,2:] - A[:,:,:-2]) / (PHI[:,:,2:] - PHI[:,:,:-2])
-        dA_dphi[:,:,0] = (A[:,:,1] - A[:,:,0]) / (PHI[:,:,1] - PHI[:,:,0])
-        dA_dphi[:,:,-1] = (A[:,:,-1] - A[:,:,-2]) / (PHI[:,:,-1] - PHI[:,:,-2])
+    R, TTA, _ = np.meshgrid(r, tta, phi, indexing='ij')
+    sin_tta = np.sin(TTA)
 
-        grad_phi = dA_dphi/(R*np.sin(TTA))
-        return(grad_r, grad_tta, grad_phi)
+    # User-selected formulation, expressed through the physical components
+    # returned by gradient_spat:
+    #   grad[0] = d/dr
+    #   grad[1] = (1/r) d/dtheta
+    #   grad[2] = (1/(r sin(theta))) d/dphi
+    with np.errstate(divide='ignore', invalid='ignore', over='ignore'):
+        grad_sin_Aphi = gradient_spat(sin_tta * Aphi, r, tta, phi)
+        grad_r_Aphi = gradient_spat(R * Aphi, r, tta, phi)
+        grad_r_Atta = gradient_spat(R * Atta, r, tta, phi)
+        grad_Ar = gradient_spat(Ar, r, tta, phi)
+        grad_Atta = gradient_spat(Atta, r, tta, phi)
 
-    return(grad_r, grad_tta)
+        curl_r = grad_sin_Aphi[1] / sin_tta - grad_Atta[2]
+        curl_tta = grad_Ar[2] - grad_r_Aphi[0] / R
+        curl_phi = grad_r_Atta[0] / R - grad_Ar[1]
+
+    curl_r = np.asarray(curl_r, dtype=np.float64)
+    curl_tta = np.asarray(curl_tta, dtype=np.float64)
+    curl_phi = np.asarray(curl_phi, dtype=np.float64)
+
+    # A regular vector has one Cartesian value at the geometrical centre even
+    # though its spherical components depend on angle.  Reconstruct that value
+    # from the closest non-zero shell and project it onto the centre basis.
+    scale = max(1.0, float(np.max(np.abs(r))))
+    center_mask = np.abs(r) <= 1.0e-12 * scale
+    if np.any(center_mask):
+        noncenter = np.flatnonzero(~center_mask)
+        if noncenter.size == 0:
+            raise ValueError("curl_spat cannot regularize an all-zero radial grid.")
+        src = int(noncenter[0])
+
+        th = tta[:, None]
+        ph = phi[None, :]
+        st, ct = np.sin(th), np.cos(th)
+        sp, cp = np.sin(ph), np.cos(ph)
+
+        cr = curl_r[src]
+        ct_comp = curl_tta[src]
+        cp_comp = curl_phi[src]
+        vx = cr * st * cp + ct_comp * ct * cp - cp_comp * sp
+        vy = cr * st * sp + ct_comp * ct * sp + cp_comp * cp
+        vz = cr * ct - ct_comp * st
+        finite = np.isfinite(vx) & np.isfinite(vy) & np.isfinite(vz)
+        if not np.any(finite):
+            raise ValueError("No finite curl values exist near the full-sphere centre.")
+
+        center = np.array(
+            [np.mean(vx[finite]), np.mean(vy[finite]), np.mean(vz[finite])],
+            dtype=np.float64,
+        )
+        for ir in np.flatnonzero(center_mask):
+            curl_r[int(ir)] = center[0] * st * cp + center[1] * st * sp + center[2] * ct
+            curl_tta[int(ir)] = center[0] * ct * cp + center[1] * ct * sp - center[2] * st
+            curl_phi[int(ir)] = -center[0] * sp + center[1] * cp
+
+    for name, arr in (("curl_r", curl_r), ("curl_tta", curl_tta), ("curl_phi", curl_phi)):
+        if not np.all(np.isfinite(arr)):
+            count = int(np.sum(~np.isfinite(arr)))
+            raise ValueError(f"{name} contains {count} non-finite values.")
+
+    return (
+        np.ascontiguousarray(curl_r),
+        np.ascontiguousarray(curl_tta),
+        np.ascontiguousarray(curl_phi),
+    )
 
 def SH_to_spat(clm, lmax, mmax, r=None, full_sphere=None,
                power_offset=0, regular_coefficients=True):
