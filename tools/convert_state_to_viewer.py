@@ -10,7 +10,6 @@ This script expects `modules.py` to provide the spherical-shell routines:
     SH_to_spat
     SH_to_spat_nom0
     gradient_spat
-    curl_spat
 
 For Leeds full-sphere states, the bundled v2 module also provides:
 
@@ -726,37 +725,177 @@ def compute_helicity(Ur: np.ndarray, Ut: np.ndarray, Up: np.ndarray, r: np.ndarr
         raise ValueError(f"Helicity contains {count} non-finite values after centre regularization.")
     return np.ascontiguousarray(helicity, dtype=np.float64)
 
-def compute_EMF(Ur: np.ndarray, Ut: np.ndarray, Up: np.ndarray, Br: np.ndarray, Bt: np.ndarray, Bp: np.ndarray, r: np.ndarray, theta: np.ndarray, phi: np.ndarray) -> np.ndarray:
-    vr = Ur - np.reshape(np.mean(Ur, axis=2), (Ur.shape[0],Ur.shape[1],1))
-    vt = Ut - np.reshape(np.mean(Ut, axis=2), (Ur.shape[0], Ur.shape[1],1))
-    vp = Up - np.reshape(np.mean(Up, axis=2), (Ur.shape[0], Ur.shape[1],1))
-    br = Br - np.reshape(np.mean(Br, axis=2), (Br.shape[0],Br.shape[1],1))
-    bt = Bt - np.reshape(np.mean(Bt, axis=2), (Br.shape[0], Br.shape[1],1))
-    bp = Bp - np.reshape(np.mean(Bp, axis=2), (Br.shape[0], Br.shape[1],1))
-    EMF_r = Ur*Bp - Bt*Up
-    EMF_t = Up*Br - Ur*Bp
-    EMF_p = Ur*Bt - Br*Ut
-    EMF_fluct_r = vt*bp - bt*vp
-    EMF_fluct_t = vp*br - vr*bp
-    EMF_fluct_p = vr*bt - br*vt
-    return(EMF_r, EMF_t, EMF_p, EMF_fluct_r, EMF_fluct_t, EMF_fluct_p)
-    
-    
-def compute_induction( Ur: np.ndarray, 
-                       Ut: np.ndarray, 
-                       Up: np.ndarray, 
-                       Br: np.ndarray,
-                       Bt: np.ndarray, 
-                       Bp: np.ndarray, 
-                       r: np.ndarray, 
-                       theta: np.ndarray, 
-                       phi: np.ndarray,
-                       curl_spat: Any
-                       ) -> np.ndarray:
-    Ar, At, Ap = Ut*Bp-Up*Bt, Up*Br-Ur*Bp, Ur*Bt-Ut*Br #A = u x B
-    Ir, It, Ip = curl_spat(Ar, At, Ap, r, theta, phi)
-    return(Ir, It, Ip)
-    
+
+
+def compute_emf(
+    Ur: np.ndarray,
+    Ut: np.ndarray,
+    Up: np.ndarray,
+    Br: np.ndarray,
+    Bt: np.ndarray,
+    Bp: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return the motional EMF A = u x B in spherical components."""
+    components = {
+        "Ur": Ur, "Ut": Ut, "Up": Up,
+        "Br": Br, "Bt": Bt, "Bp": Bp,
+    }
+    if any(value is None for value in components.values()):
+        missing = [name for name, value in components.items() if value is None]
+        raise ValueError(
+            "Cannot compute EMF because these physical-space components are missing: "
+            + ", ".join(missing)
+        )
+
+    arrays = {name: np.asarray(value, dtype=np.float64) for name, value in components.items()}
+    shape = arrays["Ur"].shape
+    if any(value.shape != shape for value in arrays.values()):
+        shapes = ", ".join(f"{name}={value.shape}" for name, value in arrays.items())
+        raise ValueError(f"EMF component shapes are inconsistent: {shapes}")
+
+    Er = arrays["Ut"] * arrays["Bp"] - arrays["Up"] * arrays["Bt"]
+    Et = arrays["Up"] * arrays["Br"] - arrays["Ur"] * arrays["Bp"]
+    Ep = arrays["Ur"] * arrays["Bt"] - arrays["Ut"] * arrays["Br"]
+    return (
+        np.ascontiguousarray(Er, dtype=np.float64),
+        np.ascontiguousarray(Et, dtype=np.float64),
+        np.ascontiguousarray(Ep, dtype=np.float64),
+    )
+
+
+def compute_induction_from_emf(
+    Er: np.ndarray,
+    Et: np.ndarray,
+    Ep: np.ndarray,
+    r: np.ndarray,
+    theta: np.ndarray,
+    phi: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    r"""Return curl(u x B) from EMF components in spherical coordinates.
+
+    For A = u x B,
+
+      (curl A)_r     = [d_theta(sin(theta) A_phi) - d_phi A_theta]
+                       / [r sin(theta)]
+      (curl A)_theta = [(d_phi A_r)/sin(theta) - d_r(r A_phi)] / r
+      (curl A)_phi   = [d_r(r A_theta) - d_theta A_r] / r
+
+    The full-sphere r=0 layer is reconstructed as one Cartesian vector from the
+    nearest non-zero radial shell, avoiding division by zero at the coordinate
+    singularity.
+    """
+    Er = np.asarray(Er, dtype=np.float64)
+    Et = np.asarray(Et, dtype=np.float64)
+    Ep = np.asarray(Ep, dtype=np.float64)
+    rr = np.asarray(r, dtype=np.float64)
+    th = np.asarray(theta, dtype=np.float64)
+    ph = np.asarray(phi, dtype=np.float64)
+
+    if Er.shape != Et.shape or Er.shape != Ep.shape:
+        raise ValueError(
+            f"EMF component shapes differ: Er={Er.shape}, Et={Et.shape}, Ep={Ep.shape}."
+        )
+    if Er.shape != (rr.size, th.size, ph.size):
+        raise ValueError(
+            f"Expected EMF shape {(rr.size, th.size, ph.size)}, received {Er.shape}."
+        )
+    if rr.size < 3 or th.size < 3 or ph.size < 3:
+        raise ValueError("At least three points are required in r, theta, and phi.")
+
+    theta3 = th[None, :, None]
+    sin_theta = np.sin(theta3)
+    sin_scale = max(1.0, float(np.max(np.abs(sin_theta))))
+    sin_safe = np.where(np.abs(sin_theta) > 1.0e-12 * sin_scale, sin_theta, np.nan)
+
+    r3 = rr[:, None, None]
+    r_scale = max(1.0, float(np.max(np.abs(rr))))
+    center_mask = np.abs(rr) <= 1.0e-12 * r_scale
+    r_safe = np.where(center_mask, np.nan, rr)[:, None, None]
+
+    dtheta_sinEp = np.gradient(
+        sin_theta * Ep, th, axis=1, edge_order=2
+    )
+    dphi_Et = gradient_phi_periodic(Et, ph)
+    dphi_Er = gradient_phi_periodic(Er, ph)
+    dr_rEp = np.gradient(r3 * Ep, rr, axis=0, edge_order=2)
+    dr_rEt = np.gradient(r3 * Et, rr, axis=0, edge_order=2)
+    dtheta_Er = np.gradient(Er, th, axis=1, edge_order=2)
+
+    with np.errstate(invalid="ignore", divide="ignore", over="ignore"):
+        Ir = (dtheta_sinEp - dphi_Et) / (r_safe * sin_safe)
+        It = ((dphi_Er / sin_safe) - dr_rEp) / r_safe
+        Ip = (dr_rEt - dtheta_Er) / r_safe
+
+    # SHTns Gaussian grids normally exclude the poles. If a user-supplied grid
+    # contains a pole, use the closest finite angular value there.
+    for arr in (Ir, It, Ip):
+        if np.any(~np.isfinite(arr[:, 0, :])) and th.size > 1:
+            arr[:, 0, :] = arr[:, 1, :]
+        if np.any(~np.isfinite(arr[:, -1, :])) and th.size > 1:
+            arr[:, -1, :] = arr[:, -2, :]
+
+    # At r=0, estimate the regular Cartesian limit from the closest non-zero
+    # shell, then project that single vector onto every spherical basis vector.
+    if np.any(center_mask):
+        noncenter = np.flatnonzero(~center_mask)
+        if noncenter.size == 0:
+            raise ValueError("Induction cannot be reconstructed on an all-zero radial grid.")
+        src = int(noncenter[0])
+        tt = th[:, None]
+        pp = ph[None, :]
+        st, ct = np.sin(tt), np.cos(tt)
+        sp, cp = np.sin(pp), np.cos(pp)
+
+        rr_src, tt_src, pp_src = Ir[src], It[src], Ip[src]
+        vx = rr_src * st * cp + tt_src * ct * cp - pp_src * sp
+        vy = rr_src * st * sp + tt_src * ct * sp + pp_src * cp
+        vz = rr_src * ct - tt_src * st
+        finite = np.isfinite(vx) & np.isfinite(vy) & np.isfinite(vz)
+        if not np.any(finite):
+            raise ValueError("No finite induction values exist near the full-sphere centre.")
+        center = np.array(
+            [np.mean(vx[finite]), np.mean(vy[finite]), np.mean(vz[finite])],
+            dtype=np.float64,
+        )
+        for ir in np.flatnonzero(center_mask):
+            Ir[int(ir)] = center[0] * st * cp + center[1] * st * sp + center[2] * ct
+            It[int(ir)] = center[0] * ct * cp + center[1] * ct * sp - center[2] * st
+            Ip[int(ir)] = -center[0] * sp + center[1] * cp
+
+    for name, arr in (("Ir", Ir), ("It", It), ("Ip", Ip)):
+        if not np.all(np.isfinite(arr)):
+            count = int(np.sum(~np.isfinite(arr)))
+            raise ValueError(f"{name} contains {count} non-finite values.")
+
+    return (
+        np.ascontiguousarray(Ir, dtype=np.float64),
+        np.ascontiguousarray(It, dtype=np.float64),
+        np.ascontiguousarray(Ip, dtype=np.float64),
+    )
+
+
+def compute_induction(
+    Ur: np.ndarray,
+    Ut: np.ndarray,
+    Up: np.ndarray,
+    Br: np.ndarray,
+    Bt: np.ndarray,
+    Bp: np.ndarray,
+    r: np.ndarray,
+    theta: np.ndarray,
+    phi: np.ndarray,
+    curl_spat: Any | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Backward-compatible wrapper returning curl(u x B).
+
+    ``curl_spat`` is accepted for compatibility with older calls, but is not
+    used: modules.py::curl_spat differentiates a scalar and is not a vector-curl
+    operator.
+    """
+    Er, Et, Ep = compute_emf(Ur, Ut, Up, Br, Bt, Bp)
+    return compute_induction_from_emf(Er, Et, Ep, r, theta, phi)
+
+
 # -----------------------------------------------------------------------------
 # Spherical geometry / field-line helpers
 # -----------------------------------------------------------------------------
@@ -1674,7 +1813,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--magnetic-tol",
         type=float,
         default=1.0e-300,
-        help="If max(abs(BP)) is <= this value, treat the state as non-magnetic and skip B fields.",
+        help="If max(max(abs(BP)), max(abs(BT))) is <= this value, treat the state as non-magnetic and skip B fields.",
     )
     p.add_argument(
         "--cmb-br-ltrunc",
@@ -1777,6 +1916,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Field-line RK4 step length. Default is 0.5 * median radial spacing for shell lines or 0.5 * exterior radial spacing for exterior lines.",
     )
 
+    magnetic_diagnostics = p.add_argument_group("optional magnetic diagnostics")
+    magnetic_diagnostics.add_argument(
+        "--emf",
+        action="store_true",
+        help="Export the motional EMF u x B. Disabled by default.",
+    )
+    magnetic_diagnostics.add_argument(
+        "--induction",
+        action="store_true",
+        help="Export curl(u x B). Disabled by default; EMF is computed internally.",
+    )
+
     p.add_argument(
         "--no-gradients",
         action="store_true",
@@ -1873,6 +2024,10 @@ def run_sequence_conversion(args: argparse.Namespace) -> None:
             cmd += ["--line-seed-theta", str(args.line_seed_theta), "--line-seed-phi", str(args.line_seed_phi)]
         if args.skip_field_lines:
             cmd += ["--skip-field-lines"]
+        if args.emf:
+            cmd += ["--emf"]
+        if args.induction:
+            cmd += ["--induction"]
         if not args.external_closed_only:
             cmd += ["--no-external-closed-only"]
         if args.no_gradients:
@@ -1959,7 +2114,6 @@ def main() -> None:
     SH_to_spat = user_modules.SH_to_spat
     SH_to_spat_nom0 = user_modules.SH_to_spat_nom0
     gradient_spat = user_modules.gradient_spat
-    curl_spat = user_modules.curl_spat
     PolTor_to_spat_fullsphere = getattr(user_modules, "PolTor_to_spat_fullsphere", None)
     SH_to_spat_fullsphere = getattr(user_modules, "SH_to_spat_fullsphere", None)
     SH_to_spat_nom0_fullsphere = getattr(user_modules, "SH_to_spat_nom0_fullsphere", None)
@@ -2110,9 +2264,21 @@ def main() -> None:
             uP, uT, r, lmax_transform, mmax_transform, alpha_map=args.alpha_map
         )
 
+    # A purely toroidal magnetic field is still magnetic. Normalise a missing
+    # spectral component to zero so the vector transform can proceed whenever
+    # at least one of BP or BT is present.
+    if BP is None and BT is not None:
+        BP = np.zeros_like(BT)
+    if BT is None and BP is not None:
+        BT = np.zeros_like(BP)
+
     BP_abs_max = float(np.nanmax(np.abs(BP))) if BP is not None else 0.0
     BT_abs_max = float(np.nanmax(np.abs(BT))) if BT is not None else 0.0
-    has_magnetic_field = BP_abs_max > args.magnetic_tol
+    has_magnetic_field = (
+        BP is not None
+        and BT is not None
+        and max(BP_abs_max, BT_abs_max) > args.magnetic_tol
+    )
 
     if has_magnetic_field:
         print(f"Magnetic state detected: max(abs(BP))={BP_abs_max:.6e}, max(abs(BT))={BT_abs_max:.6e}")
@@ -2156,7 +2322,7 @@ def main() -> None:
                 BP, BT, r, lmax_transform, mmax_transform, alpha_map=args.alpha_map
             )
     else:
-        print(f"No magnetic/dynamo field detected: max(abs(BP))={BP_abs_max:.6e} <= {args.magnetic_tol:.6e}")
+        print(f"No magnetic/dynamo field detected: max(abs(BP),abs(BT))={max(BP_abs_max, BT_abs_max):.6e} <= {args.magnetic_tol:.6e}")
         if BT_abs_max > args.magnetic_tol:
             print(f"Warning: BP is zero but BT is not zero: max(abs(BT))={BT_abs_max:.6e}. Exterior field lines require BP.")
         Br = Bt = Bp = None
@@ -2240,11 +2406,38 @@ def main() -> None:
     Uabs = np.sqrt(Ur * Ur + Ut * Ut + Up * Up)
     if has_magnetic_field:
         Babs = np.sqrt(Br * Br + Bt * Bt + Bp * Bp)
-        
-    R, THETA, PHI = np.meshgrid(r, theta, phi, indexing='ij')
-    Us = Ur*np.sin(THETA) + Ut*np.cos(THETA)
-    Uz = Ur*np.cos(THETA) - Ut*np.sin(THETA)
-    
+
+    Er = Et = Ep = None
+    Ir = It = Ip = None
+    if args.emf or args.induction:
+        magnetic_components_ready = (
+            has_magnetic_field
+            and Br is not None
+            and Bt is not None
+            and Bp is not None
+        )
+        if not magnetic_components_ready:
+            print(
+                "Skipping optional EMF/induction diagnostics because no physical-space "
+                "magnetic field is available."
+            )
+        else:
+            print("Computing motional EMF u x B...")
+            Er, Et, Ep = compute_emf(Ur, Ut, Up, Br, Bt, Bp)
+            if full_sphere:
+                Er, Et, Ep, emf_center_diag = enforce_fullsphere_cartesian_center_limit(
+                    Er, Et, Ep, theta, phi, center_mask, "EMF"
+                )
+                center_vector_diagnostics["EMF"] = emf_center_diag
+            if args.induction:
+                print("Computing induction curl(u x B)...")
+                Ir, It, Ip = compute_induction_from_emf(Er, Et, Ep, r, theta, phi)
+                if full_sphere:
+                    Ir, It, Ip, induction_center_diag = enforce_fullsphere_cartesian_center_limit(
+                        Ir, It, Ip, theta, phi, center_mask, "induction"
+                    )
+                    center_vector_diagnostics["induction"] = induction_center_diag
+
     Cspatnol0 = remove_global_mean(Cspat)
     Compspatnol0 = remove_global_mean(Compspat)
 
@@ -2274,10 +2467,7 @@ def main() -> None:
     N2_volume = remove_m0_phi(N2_full)
 
     helicity = compute_helicity(Ur, Ut, Up, r, theta, phi)
-    Ir, It, Ip = compute_induction(Ur, Ut, Up, Br, Bt, Bp, r, theta, phi, curl_spat)
-    Iz = Ir*np.cos(THETA) - It*np.sin(THETA)
-    EMF_r, EMF_t, EMF_p, EMF_fluct_r, EMF_fluct_t, EMF_fluct_p = compute_EMF(Ur, Ut, Up, Br, Bt, Bp, r, theta, phi)
-    
+
     # Keep simple 1-D profiles for reference.
     N2_profile = np.mean(N2_full, axis=(1, 2))
     N2_fluct_rms = np.sqrt(np.mean(N2_volume * N2_volume, axis=(1, 2)))
@@ -2292,8 +2482,6 @@ def main() -> None:
         "ur": Ur,
         "ut": Ut,
         "up": Up,
-        "us": Us,
-        "uz": Uz,
         "Uabs": Uabs,
         "ur_phiavg": Ur_phiavg,
         "ut_phiavg": Ut_phiavg,
@@ -2309,6 +2497,23 @@ def main() -> None:
         "N2_full": N2_full,
     }
 
+    # Optional magnetic diagnostics are written only when explicitly requested.
+    if args.emf and Er is not None and Et is not None and Ep is not None:
+        fields.update({
+            "EMFr": Er,
+            "EMFt": Et,
+            "EMFp": Ep,
+            "EMFabs": np.sqrt(Er * Er + Et * Et + Ep * Ep),
+        })
+
+    if args.induction and Ir is not None and It is not None and Ip is not None:
+        fields.update({
+            "Ir": Ir,
+            "It": It,
+            "Ip": Ip,
+            "Iabs": np.sqrt(Ir * Ir + It * It + Ip * Ip),
+        })
+
     if has_magnetic_field:
         Br_phiavg = phi_average_volume(Br, "Br")
         Bt_phiavg = phi_average_volume(Bt, "Bt")
@@ -2321,16 +2526,6 @@ def main() -> None:
             "Br_phiavg": Br_phiavg,
             "Bt_phiavg": Bt_phiavg,
             "Bp_phiavg": Bp_phiavg,
-            "Ir": Ir,
-            "It": It,
-            "Ip": Ip,
-            "Iz": Iz,
-            "EMFr": EMF_r,
-            "EMFt": EMF_t,
-            "EMFp":EMF_p,
-            "EMFr_fluct": EMF_fluct_r,
-            "EMFt_fluct": EMF_fluct_t,
-            "EMFp_fluct":EMF_fluct_p,
             **fields,
         }
 
@@ -2680,12 +2875,20 @@ def main() -> None:
             "RaC": json_number(RaC),
         },
         "spectral": spectral_meta,
+        "optional_magnetic_diagnostics": {
+            "emf_requested": bool(args.emf),
+            "emf_exported": bool(args.emf and Er is not None),
+            "induction_requested": bool(args.induction),
+            "induction_exported": bool(args.induction and Ir is not None),
+            "emf_definition": "u x B",
+            "induction_definition": "curl(u x B)",
+        },
         "magnetic": {
             "has_magnetic_field": bool(has_magnetic_field),
             "classification": "dynamo" if has_magnetic_field else "non_magnetic",
             "BP_abs_max": json_number(BP_abs_max),
             "BT_abs_max": json_number(BT_abs_max),
-            "criterion": "BP_abs_max > magnetic_tol",
+            "criterion": "max(BP_abs_max, BT_abs_max) > magnetic_tol",
             "magnetic_tol": json_number(args.magnetic_tol),
         },
         "title": meta_title,
