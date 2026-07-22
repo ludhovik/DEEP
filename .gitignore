@@ -1,4 +1,8 @@
 node_modules/
 dist/
 .DS_Store
-public/data*/
+public/data*
+V*RELEASE
+package*
+_pycache_/
+tools/_pycache_/

@@ -968,27 +968,37 @@ def gradient_spat(A, r, tta, phi=[]):
 
 
 
-def curl_spat(Ar, Atta, Aphi, r, tta, phi):
+def curl_spat(A, r, tta, phi=[]):
     """
     Computes the curl of the scalar field A using finite differences
     """
-    R, TTA, PHI = np.meshgrid(r, tta, phi, indexing='ij')
-    sin_tta = np.sin(TTA)
+    if len(phi)==0:
+        R, TTA = np.meshgrid(r, tta, indexing='ij')
+    else:
+        R, TTA, PHI = np.meshgrid(r, tta, phi, indexing='ij')
+    dA_dr = np.zeros(A.shape)
+    dA_dr[1:-1] = (A[2:] - A[:-2]) / (R[2:] - R[:-2])
+    dA_dr[0] = (A[1] - A[0]) / (R[1] - R[0])
+    dA_dr[-1] = (A[-1] - A[-2]) / (R[-1] - R[-2])
 
-    grad_sin_Aphi = gradient_spat(sin_tta*Aphi, r, tta, phi)
-    grad_r_Aphi = gradient_spat(R*Aphi, r, tta, phi)
-    grad_r_Atta = gradient_spat(R*Atta, r, tta, phi)
-    grad_Ar = gradient_spat(Ar, r, tta, phi)
-    grad_Atta = gradient_spat(Atta, r, tta, phi)
+    dA_dtta = np.zeros(A.shape)
+    dA_dtta[:,1:-1] = (A[:,2:] - A[:,:-2]) / (TTA[:,2:] - TTA[:,:-2])
+    dA_dtta[:,0] = (A[:,1] - A[:,0]) / (TTA[:,1] - TTA[:,0])
+    dA_dtta[:,-1] = (A[:,-1] - A[:,-2]) / (TTA[:,-1] - TTA[:,-2])
+    
+    grad_r = dA_dr
+    grad_tta = dA_dtta/R
 
+    if len(phi)!=0:
+        dA_dphi = np.zeros(A.shape)
+        dA_dphi[:,:,1:-1] = (A[:,:,2:] - A[:,:,:-2]) / (PHI[:,:,2:] - PHI[:,:,:-2])
+        dA_dphi[:,:,0] = (A[:,:,1] - A[:,:,0]) / (PHI[:,:,1] - PHI[:,:,0])
+        dA_dphi[:,:,-1] = (A[:,:,-1] - A[:,:,-2]) / (PHI[:,:,-1] - PHI[:,:,-2])
 
+        grad_phi = dA_dphi/(R*np.sin(TTA))
+        return(grad_r, grad_tta, grad_phi)
 
-    curl_r = grad_sin_Aphi[1] / sin_tta - grad_Atta[2]
-    curl_tta = grad_Ar[2] - grad_r_Aphi[0] / R
-    curl_phi = grad_r_Atta[0] / R - grad_Ar[1]
-
-    return(curl_r, curl_tta, curl_phi)
-
+    return(grad_r, grad_tta)
 
 def SH_to_spat(clm, lmax, mmax, r=None, full_sphere=None,
                power_offset=0, regular_coefficients=True):
