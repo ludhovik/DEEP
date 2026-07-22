@@ -8,10 +8,17 @@ Local Three.js/Vite viewer for spherical-dynamo output from:
 The package contains:
 
 - `tools/convert_state_to_viewer.py` — Leeds state-file converter;
+- `modules.py` — bundled Leeds shell and regular full-sphere SHTns transforms;
 - `tools/convert_xshells_to_viewer.py` — XSHELLS field converter;
 - `src/main.js` — browser viewer;
 - `public/data/` — default browser-readable dataset folder;
 - sample data that can be used to test the viewer immediately.
+
+
+> **V2 full-sphere release.** The converter and `modules.py` now share one regular
+> full-sphere implementation. Spherical shells retain the validated
+> `Slm = -dPol_dr` compensation used by the existing Chebyshev helper, while
+> full spheres use the positive regular expression in `x=r^2`.
 
 The viewer supports CMB and ICB surfaces, arbitrary-radius spherical surfaces,
 equatorial and meridional slices, isosurfaces, magnetic field lines, Earth
@@ -346,54 +353,38 @@ Install NumPy:
 python -m pip install numpy
 ```
 
-The Leeds converter also requires your own Leeds post-processing `modules.py`.
-That file is **not bundled** with this viewer.
-
-It must provide functions including:
+The v2 package bundles `modules.py` in the project root. It provides both the
+validated spherical-shell transform and the Leeds regular full-sphere API:
 
 ```python
 load_state
 PolTor_to_spat
+PolTor_to_spat_fullsphere
 SH_to_spat
 SH_to_spat_nom0
+SH_to_spat_fullsphere
+SH_to_spat_nom0_fullsphere
 gradient_spat
 ```
 
-Copy `modules.py` into a known directory, for example:
-
-```text
-~/leeds-postprocessing/modules.py
-```
-
-Check that it imports:
+Install its Python dependencies in the same environment:
 
 ```bash
-PYTHONPATH="$HOME/leeds-postprocessing:$PYTHONPATH" \
-python -c 'import modules; print(modules.__file__)'
+python -m pip install numpy scipy h5py matplotlib
 ```
 
-Pass its **containing directory** to the converter:
+SHTns must also be available. Cartopy is optional and is required only by the
+map-plotting helpers in `modules.py`, not by the converter.
 
-```bash
---modules-dir "$HOME/leeds-postprocessing"
-```
-
-Do not use:
-
-```text
---modules-dir /path/to/modules.py
-```
-
-because `--modules-dir` expects a directory.
-
-If `modules.py` is copied into the project root, use:
+Run the converter from the project root and use the bundled module explicitly:
 
 ```bash
 --modules-dir .
 ```
 
-Your `modules.py` may itself require additional packages such as SciPy or
-NetCDF. Install those dependencies in the same Python environment.
+`--modules-dir` expects a directory, not the path to `modules.py`. You may still
+point it at another compatible module directory, but full-sphere conversion
+requires the v2 functions listed above.
 
 ## 6.2 XSHELLS converter requirements
 
@@ -449,7 +440,7 @@ The corresponding viewer URL path is:
 ```bash
 python tools/convert_state_to_viewer.py \
   --file "/path/to/STATEFILES/state03125.cdf.dat" \
-  --modules-dir "$HOME/leeds-postprocessing" \
+  --modules-dir . \
   --out public/data \
   --spectral-lmax 128 \
   --cmb-br-ltrunc 13 \
@@ -462,7 +453,7 @@ python tools/convert_state_to_viewer.py \
 ```bash
 python tools/convert_state_to_viewer.py \
   --state "/path/to/STATEFILES/state03125.cdf.dat" \
-  --modules-dir "$HOME/leeds-postprocessing" \
+  --modules-dir . \
   --out public/data \
   --spectral-lmax 128 \
   --cmb-br-ltrunc 13 \
@@ -474,7 +465,7 @@ python tools/convert_state_to_viewer.py \
 ```bash
 python tools/convert_state_to_viewer.py \
   --file "/path/to/STATEFILES/state03125.cdf.dat" \
-  --modules-dir "$HOME/leeds-postprocessing" \
+  --modules-dir . \
   --out public/data \
   --spectral-lmax 128 \
   --cmb-br-ltrunc 13 \
@@ -489,7 +480,7 @@ python tools/convert_state_to_viewer.py \
 ```bash
 python tools/convert_state_to_viewer.py \
   --folder "/path/to/STATEFILES" \
-  --modules-dir "$HOME/leeds-postprocessing" \
+  --modules-dir . \
   --out public/data \
   --spectral-lmax 128 \
   --cmb-br-ltrunc 13 \
@@ -507,7 +498,7 @@ state*.cdf.dat
 ```bash
 python tools/convert_state_to_viewer.py \
   --folder "/path/to/STATEFILES" \
-  --modules-dir "$HOME/leeds-postprocessing" \
+  --modules-dir . \
   --out public/data \
   --spectral-lmax 128 \
   --cmb-br-ltrunc 13 \
@@ -543,7 +534,7 @@ public/data/frames/state03105/
 ```bash
 python tools/convert_state_to_viewer.py \
   --folder "/path/to/STATEFILES" \
-  --modules-dir "$HOME/leeds-postprocessing" \
+  --modules-dir . \
   --out public/data \
   --spectral-lmax 128 \
   --cmb-br-ltrunc 13 \
@@ -564,7 +555,7 @@ sequences unless field lines are needed in every frame.
 ```bash
 python tools/convert_state_to_viewer.py \
   --folder "/uolstore/Research/b/b0251/Data/FLAYER/DYN_C_VBC=1_CompBC=4_CBC=4_Ek=2e-5_Pm=5_Pr=1_Sc=10_Ra=120e6_RaC=1e9_rs=0.83_q=-100/STATEFILES" \
-  --modules-dir "$HOME/leeds-postprocessing" \
+  --modules-dir . \
   --out public/data \
   --spectral-lmax 128 \
   --cmb-br-ltrunc 13 \
@@ -578,7 +569,7 @@ For a Leeds state whose radial grid includes the centre, use:
 ```bash
 python tools/convert_state_to_viewer.py \
   --file "/path/to/state0026.cdf.dat" \
-  --modules-dir "$HOME/leeds-postprocessing" \
+  --modules-dir . \
   --out public/data_full_sphere \
   --no-inner-core \
   --spectral-lmax 128 \
@@ -604,7 +595,10 @@ f_lm(r) = r^(l+p0) G_lm(x),    x = r^2.
 ```
 
 The converter reads these attributes separately for `uP`, `uT`, `BP`, `BT`,
-`C`, and `Comp`. It then uses the same direct regular reconstruction as
+`C`, and `Comp`. It dispatches the fields to the bundled
+`modules.PolTor_to_spat_fullsphere`, `modules.SH_to_spat_fullsphere`, and
+`modules.SH_to_spat_nom0_fullsphere` routines. The converter no longer carries
+a second copy of the regular QST mathematics. The module follows
 `var_coll_TorPol2qst_fullsphere` in the Leeds code. For
 `P=r^(l+pP)G(x)` and `T=r^(l+pT)H(x)`, the SHTns coefficients are
 
@@ -616,10 +610,10 @@ T = r^(l+pT) H.
 
 No quantity is divided by `r`. The positive `S` sign follows the actual Leeds
 full-sphere chain: `var_coll_TorPol2qst_fullsphere` forms positive `s`, and
-`tra_qst2rtp_shtns` applies a positive `shtns_norm_st`. The shell helper in
-`modules.py` uses a negative conventional-potential `S` expression (and marks
-that line `#check the sign`); that shell convention is not used for regular
-full-sphere velocity or magnetic fields. The derivative `dG/dx` uses the same
+`tra_qst2rtp_shtns` applies a positive `shtns_norm_st`. The shell helper keeps
+`Slm = -dPol_dr` because its current Chebyshev matrix returns the negative
+physical radial derivative; that minus sign is a numerical compensation. It is
+not used in the regular full-sphere expression. The derivative `dG/dx` uses the same
 local, factorial-scaled finite-difference operator as Leeds `D%dx(1)`, with the
 standard `i_KL=3` seven-point stencil.
 
@@ -667,7 +661,7 @@ set explicitly:
 ```bash
 python tools/convert_state_to_viewer.py \
   --file "/path/to/state_last.cdf.dat" \
-  --modules-dir "$HOME/leeds-postprocessing" \
+  --modules-dir . \
   --out public/data_SN_fig2 \
   --Ek 1e-5 \
   --Pr 1 \
@@ -1673,8 +1667,8 @@ The converter follows the regular formulation in the Leeds full-sphere source:
 
 - stored fields are identified using `radial_representation` and
   `radial_power_offset`;
-- regular velocity and magnetic potentials are reconstructed directly in
-  `x=r^2` using the Leeds QST identities;
+- regular velocity and magnetic potentials are reconstructed by the bundled
+  `modules.PolTor_to_spat_fullsphere` routine in `x=r^2`;
 - `d/dx` uses the local `i_KL=3` seven-point Leeds finite-difference stencil;
 - legacy conventional full-sphere modes are converted with the bounded `K=7`
   Leeds projection rather than division by `r^l`;
@@ -2019,14 +2013,15 @@ dynamo-three-viewer/
   src/
     main.js
     style.css
+  modules.py
   tools/
     convert_state_to_viewer.py
     convert_xshells_to_viewer.py
     make_demo_data.py
 ```
 
-`modules.py` is external Leeds post-processing code and is not part of this
-layout unless you copy it into the project yourself.
+`modules.py` is part of the v2 package and is the single implementation used by
+the converter for Leeds full-sphere regular transforms.
 
 Useful commands:
 

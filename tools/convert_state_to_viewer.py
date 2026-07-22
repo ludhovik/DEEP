@@ -3,14 +3,19 @@
 Convert a Leeds spherical-dynamo spectral state file into the binary files read by
 this local Three.js viewer.
 
-This script expects your existing `modules.py` to provide:
+This script expects `modules.py` to provide the spherical-shell routines:
 
     load_state
     PolTor_to_spat
     SH_to_spat
     SH_to_spat_nom0
     gradient_spat
-    curl_spat
+
+For Leeds full-sphere states, the bundled v2 module also provides:
+
+    PolTor_to_spat_fullsphere
+    SH_to_spat_fullsphere
+    SH_to_spat_nom0_fullsphere
 
 It writes:
 
@@ -334,295 +339,20 @@ def read_state_radial_representations(path: str) -> dict[str, dict[str, Any]]:
     return result
 
 
-def get_shtns_transform(user_modules: Any, lmax: int, mmax: int) -> tuple[Any, Any]:
-    """Return the SHTns module and configured transform used by modules.py."""
-    shtns_module = getattr(user_modules, "shtns", None)
-    if shtns_module is None:
-        try:
-            shtns_module = importlib.import_module("shtns")
-        except Exception as exc:
-            raise RuntimeError(
-                "Full-sphere regular-coefficient conversion requires SHTns. "
-                "Use the same Python environment as modules.py."
-            ) from exc
-
-    sh = shtns_module.sht(
-        int(lmax),
-        int(mmax),
-        1,
-        shtns_module.sht_schmidt | shtns_module.SHT_NO_CS_PHASE,
-    )
-    return shtns_module, sh
-
-
-def lsd_to_shtns_coefficients(coeffs_lsd: np.ndarray, sh: Any, user_modules: Any) -> np.ndarray:
-    """Convert Leeds real/imag storage to the SHTns complex normalization."""
-    if hasattr(user_modules, "lsd_to_shtns"):
-        out = np.asarray(user_modules.lsd_to_shtns(np.asarray(coeffs_lsd), sh))
-    else:
-        arr = np.asarray(coeffs_lsd)
-        if arr.ndim != 3 or arr.shape[0] != 2:
-            raise ValueError(f"Expected Leeds coefficients (2,nlm,nr), got {arr.shape}.")
-        out = arr[0].astype(np.complex128) + 1j * arr[1].astype(np.complex128)
-        correction = np.where(np.asarray(sh.m) > 0, math.sqrt(2.0), 1.0)
-        out = out * correction[:, None]
-
-    if out.shape[0] != len(sh.l):
-        raise ValueError(
-            f"SHTns coefficient count mismatch: coefficients={out.shape[0]}, transform={len(sh.l)}."
-        )
-    return np.ascontiguousarray(out, dtype=np.complex128)
-
-
-def fullsphere_x_derivative_matrix(r: np.ndarray) -> tuple[np.ndarray, np.ndarray, str]:
-    """Leeds local finite-difference matrix in x=r^2.
-
-    This mirrors ``mes_rdom_init`` in the uploaded Leeds code. With the normal
-    ``i_KL=3``, each interior row uses seven points. The local Taylor matrix is
-    built with columns (x_j-x_n)^k/k!, so row 2 of its inverse gives d/dx.
-    """
-    rr = np.asarray(r, dtype=np.float64)
-    x = rr * rr
-    nrad = x.size
-    if nrad < 3:
-        raise ValueError("Full-sphere conversion requires at least three radial points.")
-    if not np.all(np.diff(x) > 0.0):
-        raise ValueError("Full-sphere x=r^2 grid must be strictly increasing.")
-
-    kl = min(3, max(1, (nrad - 1) // 2))
-    D = np.zeros((nrad, nrad), dtype=np.float64)
-    for n in range(nrad):
-        left = max(0, n - kl)
-        right = min(n + kl, nrad - 1)
-        ids = np.arange(left, right + 1)
-        nn = ids.size
-        A = np.ones((nn, nn), dtype=np.float64)
-        delta = x[ids] - x[n]
-        for column in range(1, nn):
-            A[:, column] = A[:, column - 1] * delta / float(column)
-        try:
-            invA = np.linalg.inv(A)
-        except np.linalg.LinAlgError:
-            invA = np.linalg.pinv(A, rcond=1.0e-14)
-        D[n, ids] = invA[1, :]
-    return D, x, f"leeds_local_finite_difference_x_KL{kl}"
-
-
-def derivative_in_fullsphere_x(values: np.ndarray, r: np.ndarray) -> tuple[np.ndarray, str]:
-    """Differentiate spectral radial values with the Leeds seven-point x stencil."""
-    D, _x, method = fullsphere_x_derivative_matrix(r)
-    arr = np.asarray(values, dtype=np.complex128)
-    out = np.empty_like(arr)
-    for n in range(D.shape[0]):
-        ids = np.flatnonzero(D[n])
-        out[:, n] = arr[:, ids] @ D[n, ids]
-    return np.ascontiguousarray(out), method
-
-
-def safe_radius_powers(r: np.ndarray, powers: np.ndarray) -> np.ndarray:
-    """Return r**power for non-negative integer powers, including r=0."""
-    rr = np.asarray(r, dtype=np.float64)[None, :]
-    pp = np.asarray(powers, dtype=np.int64)[:, None]
-    if np.any(pp < 0):
-        raise ValueError("Negative radial powers are not regular at the full-sphere centre.")
-    out = np.ones((pp.shape[0], rr.shape[1]), dtype=np.float64)
-    positive = pp[:, 0] > 0
-    if np.any(positive):
-        out[positive] = np.power(rr, pp[positive], dtype=np.float64)
-    return out
-
-
-def leeds_regular_projection_weights(
-    r: np.ndarray,
-    power: int,
-    stencil_size: int = 7,
-    amplitude_floor: float = 1.0e-6,
-) -> np.ndarray:
-    """Leeds stage-5 bounded projection f=r^p G -> G.
-
-    This mirrors ``var_fullsphere_projection_precompute`` from the uploaded
-    Leeds code. The standard Leeds ``i_KL=3`` gives K=2*i_KL+1=7.
-    """
-    rr = np.asarray(r, dtype=np.float64)
-    x = rr * rr
-    nrad = rr.size
-    K = min(int(stencil_size), nrad)
-    if K % 2 == 0:
-        K -= 1
-    if K < 3:
-        raise ValueError("Not enough radial points for the full-sphere regular projection.")
-    if power == 0:
-        return np.eye(nrad, dtype=np.float64)
-
-    half = K // 2
-    nsafe = nrad - K
-    for n in range(1, nrad - K + 1):
-        if rr[n] ** power >= amplitude_floor:
-            nsafe = n
-            break
-
-    W = np.zeros((nrad, nrad), dtype=np.float64)
-    for n in range(nsafe, nrad):
-        i0 = max(nsafe, n - half)
-        i0 = min(i0, nrad - K)
-        ids = np.arange(i0, i0 + K)
-        x0 = x[n]
-        scale = max(float(np.max(np.abs(x[ids] - x0))), np.finfo(np.float64).eps)
-        z = (x[ids] - x0) / scale
-        A = np.empty((K, K), dtype=np.float64)
-        A[:, 0] = rr[ids] ** power
-        for k in range(1, K):
-            A[:, k] = A[:, k - 1] * z
-        try:
-            invA = np.linalg.inv(A)
-        except np.linalg.LinAlgError:
-            invA = np.linalg.pinv(A, rcond=1.0e-13)
-        W[n, ids] = invA[0, :]
-
-    if nsafe > 0:
-        W[:nsafe, :] = W[nsafe, :]
-    return W
-
-
-def conventional_lsd_to_regular(
-    coeffs_lsd: np.ndarray,
-    r: np.ndarray,
-    degrees: np.ndarray,
-    power_offset: int,
-    field_name: str,
-) -> np.ndarray:
-    """Project legacy conventional full-sphere coefficients to regular G_lm(x)."""
-    arr = np.asarray(coeffs_lsd, dtype=np.float64)
-    if arr.ndim != 3 or arr.shape[0] != 2:
-        raise ValueError(f"{field_name}: expected coefficients (2,nlm,nr), got {arr.shape}.")
-    out = np.empty_like(arr)
-    cache: dict[int, np.ndarray] = {}
-    for mode, degree in enumerate(np.asarray(degrees, dtype=int)):
-        power = int(degree) + int(power_offset)
-        if power not in cache:
-            cache[power] = leeds_regular_projection_weights(r, power)
-        W = cache[power]
-        out[0, mode, :] = W @ arr[0, mode, :]
-        out[1, mode, :] = W @ arr[1, mode, :]
-    print(
-        f"  {field_name}: projected legacy conventional coefficients to Leeds regular G_lm(x) "
-        "with the bounded K=7 stage-5 projection."
-    )
-    return np.ascontiguousarray(out)
-
-
-def ensure_fullsphere_regular_coefficients(
-    coeffs_lsd: np.ndarray,
+def fullsphere_storage_info(
     radial_meta: dict[str, Any],
-    r: np.ndarray,
-    degrees: np.ndarray,
     field_name: str,
-) -> tuple[np.ndarray, int, str]:
-    """Return regular G_lm(x) coefficients for a full-sphere variable."""
+) -> tuple[bool, int, str]:
+    """Interpret one field's Leeds full-sphere radial storage metadata."""
     representation = radial_meta.get("representation")
     offset = int(radial_meta.get("power_offset", 0))
     if representation == REGULAR_RADIAL_REPRESENTATION:
-        return np.ascontiguousarray(coeffs_lsd), offset, "stored_regular"
+        return True, offset, "stored_regular"
     if representation in (None, "", CONVENTIONAL_RADIAL_REPRESENTATION):
-        regular = conventional_lsd_to_regular(coeffs_lsd, r, degrees, offset, field_name)
-        return regular, offset, "legacy_conventional_projected"
+        return False, offset, "legacy_conventional_projected_by_modules"
     raise ValueError(
         f"{field_name}: unsupported radial_representation={representation!r}."
     )
-
-
-def regular_scalar_lsd_to_conventional(
-    coeffs_lsd: np.ndarray,
-    r: np.ndarray,
-    degrees: np.ndarray,
-    power_offset: int,
-) -> np.ndarray:
-    """Form the physical scalar coefficients f_lm=r^(l+p0)G_lm(x)."""
-    powers = np.asarray(degrees, dtype=int) + int(power_offset)
-    radial_factor = safe_radius_powers(r, powers)
-    return np.ascontiguousarray(np.asarray(coeffs_lsd) * radial_factor[None, :, :])
-
-
-def fullsphere_regular_poltors_to_spat(
-    pol_lsd: np.ndarray,
-    tor_lsd: np.ndarray,
-    r: np.ndarray,
-    lmax: int,
-    mmax: int,
-    user_modules: Any,
-    pol_power_offset: int = 0,
-    tor_power_offset: int = 0,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, str]:
-    """Leeds full-sphere regular QST reconstruction followed by SHTns synthesis.
-
-    For P=r^(l+pP)G(x), T=r^(l+pT)H(x), x=r^2, the coefficients
-    passed directly to SHTns are
-
-      Q = l(l+1) r^(l+pP-1) G,
-      S = +r^(l+pP-1)[(l+pP+1)G + 2x G_x],
-      T = r^(l+pT) H.
-
-    The positive S sign is the Leeds full-sphere convention. In
-    ``var_coll_TorPol2qst_fullsphere`` the code first forms
-    s_code=sqrt(l(l+1))*[...] and t_code=-sqrt(l(l+1))*r^l H;
-    ``tra_qst2rtp_shtns`` then applies the SHTns normalization and negates
-    t_code. The resulting direct SHTns coefficients are therefore +S and +T.
-    This differs from the shell helper ``modules.py::PolTor_to_qst``, whose
-    conventional-potential S line is marked ``#check the sign`` and must not
-    be reused for the regular full-sphere path.
-    """
-    _, sh = get_shtns_transform(user_modules, lmax, mmax)
-    nlat, nphi = sh.set_grid()
-    theta = np.arccos(np.asarray(sh.cos_theta, dtype=np.float64))
-    phi = np.linspace(0.0, 2.0 * np.pi, int(nphi) + 2)[1:-1]
-
-    G = lsd_to_shtns_coefficients(pol_lsd, sh, user_modules)
-    H = lsd_to_shtns_coefficients(tor_lsd, sh, user_modules)
-    Gx, derivative_method = derivative_in_fullsphere_x(G, r)
-
-    degrees = np.asarray(sh.l, dtype=int)
-    ll1 = degrees * (degrees + 1)
-    pol_exponent = degrees + int(pol_power_offset) - 1
-    tor_exponent = degrees + int(tor_power_offset)
-
-    # l=0 is absent from a solenoidal vector. Set its Q/S factors separately
-    # so no negative exponent is ever evaluated.
-    pol_factor = np.zeros((degrees.size, len(r)), dtype=np.float64)
-    active = ll1 > 0
-    if np.any(active):
-        if np.any(pol_exponent[active] < 0):
-            raise ValueError("Full-sphere poloidal power offset produces a singular l>0 mode.")
-        pol_factor[active] = safe_radius_powers(r, pol_exponent[active])
-    tor_factor = safe_radius_powers(r, tor_exponent)
-
-    x = (np.asarray(r, dtype=np.float64) ** 2)[None, :]
-    Qlm = ll1[:, None] * pol_factor * G
-    # Leeds full-sphere -> SHTns convention:
-    # var_coll_TorPol2qst_fullsphere forms a positive code-space s, and
-    # tra_qst2rtp_shtns multiplies it by +shtns_norm_st.  Do not copy the
-    # negative shell-potential sign from modules.py::PolTor_to_qst here.
-    Slm = pol_factor * (
-        (degrees + int(pol_power_offset) + 1)[:, None] * G + 2.0 * x * Gx
-    )
-    Tlm = tor_factor * H
-    Qlm[~active, :] = 0.0
-    Slm[~active, :] = 0.0
-    Tlm[degrees == 0, :] = 0.0
-
-    nr = len(r)
-    vr = np.empty((nr, nlat, nphi), dtype=np.float64)
-    vt = np.empty_like(vr)
-    vp = np.empty_like(vr)
-    for k in range(nr):
-        vr[k], vt[k], vp[k] = sh.synth(Qlm[:, k], Slm[:, k], Tlm[:, k])
-
-    for name, arr in (("radial", vr), ("theta", vt), ("phi", vp)):
-        if not np.all(np.isfinite(arr)):
-            count = int(np.sum(~np.isfinite(arr)))
-            raise ValueError(
-                f"Full-sphere regular {name} vector component contains {count} non-finite values."
-            )
-    return vr, vt, vp, theta, phi, derivative_method
 
 
 def enforce_fullsphere_cartesian_center_limit(
@@ -995,35 +725,7 @@ def compute_helicity(Ur: np.ndarray, Ut: np.ndarray, Up: np.ndarray, r: np.ndarr
         raise ValueError(f"Helicity contains {count} non-finite values after centre regularization.")
     return np.ascontiguousarray(helicity, dtype=np.float64)
 
-def compute_EMF(Ur: np.ndarray, Ut: np.ndarray, Up: np.ndarray, Br: np.ndarray, Bt: np.ndarray, Bp: np.ndarray, r: np.ndarray, theta: np.ndarray, phi: np.ndarray) -> np.ndarray:
-    vr = Ur - np.reshape(np.mean(Ur, axis=2), (Ur.shape[0],Ur.shape[1],1))
-    vt = Ut - np.reshape(np.mean(Ut, axis=2), (Ur.shape[0], Ur.shape[1],1))
-    vp = Up - np.reshape(np.mean(Up, axis=2), (Ur.shape[0], Ur.shape[1],1))
-    br = Br - np.reshape(np.mean(Br, axis=2), (Br.shape[0],Br.shape[1],1))
-    bt = Bt - np.reshape(np.mean(Bt, axis=2), (Br.shape[0], Br.shape[1],1))
-    bp = Bp - np.reshape(np.mean(Bp, axis=2), (Br.shape[0], Br.shape[1],1))
-    EMF_r = Ur*Bp - Bt*Up
-    EMF_t = Up*Br - Ur*Bp
-    EMF_p = Ur*Bt - Br*Ut
-    EMF_fluct_r = vt*bp - bt*vp
-    EMF_fluct_t = vp*br - vr*bp
-    EMF_fluct_p = vr*bt - br*vt
-    return(EMF_r, EMF_t, EMF_p, EMF_fluct_r, EMF_fluct_t, EMF_fluct_p)
 
-def compute_induction( Ur: np.ndarray, 
-                       Ut: np.ndarray, 
-                       Up: np.ndarray, 
-                       Br: np.ndarray,
-                       Bt: np.ndarray, 
-                       Bp: np.ndarray, 
-                       r: np.ndarray, 
-                       theta: np.ndarray, 
-                       phi: np.ndarray,
-                       curl_spat: Any
-                       ) -> np.ndarray:
-    Ar, At, Ap = Ut*Bp-Up*Bt, Up*Br-Ur*Bp, Ur*Bt-Ut*Br #A = u x B
-    Ir, It, Ip = curl_spat(Ar, At, Ap, r, theta, phi)
-    return(Ir, It, Ip)
 # -----------------------------------------------------------------------------
 # Spherical geometry / field-line helpers
 # -----------------------------------------------------------------------------
@@ -2226,7 +1928,9 @@ def main() -> None:
     SH_to_spat = user_modules.SH_to_spat
     SH_to_spat_nom0 = user_modules.SH_to_spat_nom0
     gradient_spat = user_modules.gradient_spat
-    curl_spat = user_modules.curl_spat
+    PolTor_to_spat_fullsphere = getattr(user_modules, "PolTor_to_spat_fullsphere", None)
+    SH_to_spat_fullsphere = getattr(user_modules, "SH_to_spat_fullsphere", None)
+    SH_to_spat_nom0_fullsphere = getattr(user_modules, "SH_to_spat_nom0_fullsphere", None)
 
     if args.folder:
         path = latest_state_file(args.folder, args.pattern)
@@ -2287,8 +1991,20 @@ def main() -> None:
         print("Full-sphere/no-inner-core mode enabled.")
         print(
             "  Using the Leeds regular representation f_lm=r^(l+p0)G_lm(x), x=r^2, "
-            "and direct regular QST reconstruction."
+            "through the bundled modules.py full-sphere API."
         )
+        required_fullsphere = {
+            "PolTor_to_spat_fullsphere": PolTor_to_spat_fullsphere,
+            "SH_to_spat_fullsphere": SH_to_spat_fullsphere,
+            "SH_to_spat_nom0_fullsphere": SH_to_spat_nom0_fullsphere,
+        }
+        missing = [name for name, function in required_fullsphere.items() if not callable(function)]
+        if missing:
+            raise ImportError(
+                "The selected modules.py does not provide the v2 full-sphere API: "
+                + ", ".join(missing)
+                + ". Use the modules.py bundled with this viewer release."
+            )
 
     print(f"lmax={lmax}, mmax={mmax}, nr={len(r)}, time={time:.8e}")
 
@@ -2318,37 +2034,37 @@ def main() -> None:
     print(f"Transform grid: lmax={lmax_transform}, mmax={mmax_transform}")
     fullsphere_transform_meta: dict[str, Any] = {
         "enabled": bool(full_sphere),
-        "method": "shell_PolTor_to_spat" if not full_sphere else "leeds_direct_regular_qst_in_x",
+        "method": "shell_PolTor_to_spat" if not full_sphere else "modules_v2_regular_qst_in_x",
         "fields": {},
     }
 
     if full_sphere:
-        _, sh_regular = get_shtns_transform(user_modules, lmax_transform, mmax_transform)
-        degrees = np.asarray(sh_regular.l, dtype=int)
-
-        print("Transforming velocity from Leeds regular G_lm(x), H_lm(x) coefficients...")
-        uP_regular, uP_offset, uP_source = ensure_fullsphere_regular_coefficients(
-            uP, radial_representations["uP"], r, degrees, "uP"
+        print("Transforming velocity with modules.PolTor_to_spat_fullsphere...")
+        uP_is_regular, uP_offset, uP_source = fullsphere_storage_info(
+            radial_representations["uP"], "uP"
         )
-        uT_regular, uT_offset, uT_source = ensure_fullsphere_regular_coefficients(
-            uT, radial_representations["uT"], r, degrees, "uT"
+        uT_is_regular, uT_offset, uT_source = fullsphere_storage_info(
+            radial_representations["uT"], "uT"
         )
-        Ur, Ut, Up, theta, phi, velocity_derivative_method = fullsphere_regular_poltors_to_spat(
-            uP_regular,
-            uT_regular,
+        Ur, Ut, Up, theta, phi = PolTor_to_spat_fullsphere(
+            uP,
+            uT,
             r,
             lmax_transform,
             mmax_transform,
-            user_modules,
             pol_power_offset=uP_offset,
             tor_power_offset=uT_offset,
+            pol_regular_coefficients=uP_is_regular,
+            tor_regular_coefficients=uT_is_regular,
+            enforce_center=False,
         )
         fullsphere_transform_meta["fields"]["velocity"] = {
             "poloidal_input": uP_source,
             "toroidal_input": uT_source,
             "poloidal_power_offset": int(uP_offset),
             "toroidal_power_offset": int(uT_offset),
-            "x_derivative": velocity_derivative_method,
+            "x_derivative": "leeds_local_finite_difference_x_KL3",
+            "implementation": "modules.PolTor_to_spat_fullsphere",
             "shtns_qst_convention": {
                 "Q": "+l(l+1) r^(l+pP-1) G",
                 "S": "+r^(l+pP-1)[(l+pP+1)G+2xG_x]",
@@ -2369,29 +2085,32 @@ def main() -> None:
     if has_magnetic_field:
         print(f"Magnetic state detected: max(abs(BP))={BP_abs_max:.6e}, max(abs(BT))={BT_abs_max:.6e}")
         if full_sphere:
-            print("Transforming magnetic field with the Leeds full-sphere regular QST formulation...")
-            BP_regular, BP_offset, BP_source = ensure_fullsphere_regular_coefficients(
-                BP, radial_representations["BP"], r, degrees, "BP"
+            print("Transforming magnetic field with modules.PolTor_to_spat_fullsphere...")
+            BP_is_regular, BP_offset, BP_source = fullsphere_storage_info(
+                radial_representations["BP"], "BP"
             )
-            BT_regular, BT_offset, BT_source = ensure_fullsphere_regular_coefficients(
-                BT, radial_representations["BT"], r, degrees, "BT"
+            BT_is_regular, BT_offset, BT_source = fullsphere_storage_info(
+                radial_representations["BT"], "BT"
             )
-            Br, Bt, Bp, theta_B, phi_B, magnetic_derivative_method = fullsphere_regular_poltors_to_spat(
-                BP_regular,
-                BT_regular,
+            Br, Bt, Bp, theta_B, phi_B = PolTor_to_spat_fullsphere(
+                BP,
+                BT,
                 r,
                 lmax_transform,
                 mmax_transform,
-                user_modules,
                 pol_power_offset=BP_offset,
                 tor_power_offset=BT_offset,
+                pol_regular_coefficients=BP_is_regular,
+                tor_regular_coefficients=BT_is_regular,
+                enforce_center=False,
             )
             fullsphere_transform_meta["fields"]["magnetic"] = {
                 "poloidal_input": BP_source,
                 "toroidal_input": BT_source,
                 "poloidal_power_offset": int(BP_offset),
                 "toroidal_power_offset": int(BT_offset),
-                "x_derivative": magnetic_derivative_method,
+                "x_derivative": "leeds_local_finite_difference_x_KL3",
+                "implementation": "modules.PolTor_to_spat_fullsphere",
                 "shtns_qst_convention": {
                     "Q": "+l(l+1) r^(l+pP-1) G",
                     "S": "+r^(l+pP-1)[(l+pP+1)G+2xG_x]",
@@ -2411,32 +2130,44 @@ def main() -> None:
         Br = Bt = Bp = None
 
     print("Transforming scalar fields to physical space...")
-    C_for_transform = C
-    Comp_for_transform = Comp
     if full_sphere:
-        C_meta = radial_representations["C"]
-        if C_meta.get("representation") == REGULAR_RADIAL_REPRESENTATION:
-            C_for_transform = regular_scalar_lsd_to_conventional(
-                C, r, degrees, int(C_meta.get("power_offset", 0))
-            )
-            fullsphere_transform_meta["fields"]["C"] = "stored_regular_to_physical_r_power"
-        else:
-            fullsphere_transform_meta["fields"]["C"] = "stored_conventional"
-
-        Comp_meta = radial_representations["Comp"]
-        if Comp is not None and Comp_meta.get("representation") == REGULAR_RADIAL_REPRESENTATION:
-            Comp_for_transform = regular_scalar_lsd_to_conventional(
-                Comp, r, degrees, int(Comp_meta.get("power_offset", 0))
-            )
-            fullsphere_transform_meta["fields"]["Comp"] = "stored_regular_to_physical_r_power"
-        else:
-            fullsphere_transform_meta["fields"]["Comp"] = "stored_conventional"
-
-    Cspat, theta_C, phi_C = SH_to_spat(C_for_transform, lmax_transform, mmax_transform)
-    Compspat, theta_Comp, phi_Comp = SH_to_spat(Comp_for_transform, lmax_transform, mmax_transform)
-
-    Cspatnom0, _, _ = SH_to_spat_nom0(C_for_transform, lmax_transform, mmax_transform)
-    Compspatnom0, _, _ = SH_to_spat_nom0(Comp_for_transform, lmax_transform, mmax_transform)
+        C_is_regular, C_offset, C_source = fullsphere_storage_info(
+            radial_representations["C"], "C"
+        )
+        Comp_is_regular, Comp_offset, Comp_source = fullsphere_storage_info(
+            radial_representations["Comp"], "Comp"
+        )
+        Cspat, theta_C, phi_C = SH_to_spat_fullsphere(
+            C, r, lmax_transform, mmax_transform,
+            power_offset=C_offset, regular_coefficients=C_is_regular,
+        )
+        Compspat, theta_Comp, phi_Comp = SH_to_spat_fullsphere(
+            Comp, r, lmax_transform, mmax_transform,
+            power_offset=Comp_offset, regular_coefficients=Comp_is_regular,
+        )
+        Cspatnom0, _, _ = SH_to_spat_nom0_fullsphere(
+            C, r, lmax_transform, mmax_transform,
+            power_offset=C_offset, regular_coefficients=C_is_regular,
+        )
+        Compspatnom0, _, _ = SH_to_spat_nom0_fullsphere(
+            Comp, r, lmax_transform, mmax_transform,
+            power_offset=Comp_offset, regular_coefficients=Comp_is_regular,
+        )
+        fullsphere_transform_meta["fields"]["C"] = {
+            "input": C_source,
+            "power_offset": int(C_offset),
+            "implementation": "modules.SH_to_spat_fullsphere",
+        }
+        fullsphere_transform_meta["fields"]["Comp"] = {
+            "input": Comp_source,
+            "power_offset": int(Comp_offset),
+            "implementation": "modules.SH_to_spat_fullsphere",
+        }
+    else:
+        Cspat, theta_C, phi_C = SH_to_spat(C, lmax_transform, mmax_transform)
+        Compspat, theta_Comp, phi_Comp = SH_to_spat(Comp, lmax_transform, mmax_transform)
+        Cspatnom0, _, _ = SH_to_spat_nom0(C, lmax_transform, mmax_transform)
+        Compspatnom0, _, _ = SH_to_spat_nom0(Comp, lmax_transform, mmax_transform)
 
     theta = np.ascontiguousarray(np.asarray(theta, dtype=np.float64))
     phi = np.ascontiguousarray(np.asarray(phi, dtype=np.float64))
@@ -2478,10 +2209,6 @@ def main() -> None:
     if has_magnetic_field:
         Babs = np.sqrt(Br * Br + Bt * Bt + Bp * Bp)
 
-    R, THETA, PHI = np.meshgrid(r, theta, phi, indexing='ij')
-    Us = Ur*np.sin(THETA) + Ut*np.cos(THETA)
-    Uz = Ur*np.cos(THETA) - Ut*np.sin(THETA)
-
     Cspatnol0 = remove_global_mean(Cspat)
     Compspatnol0 = remove_global_mean(Compspat)
 
@@ -2511,9 +2238,6 @@ def main() -> None:
     N2_volume = remove_m0_phi(N2_full)
 
     helicity = compute_helicity(Ur, Ut, Up, r, theta, phi)
-    Ir, It, Ip = compute_induction(Ur, Ut, Up, Br, Bt, Bp, r, theta, phi, curl_spat)
-    Iz = Ir*np.cos(THETA) - It*np.sin(THETA)
-    EMF_r, EMF_t, EMF_p, EMF_fluct_r, EMF_fluct_t, EMF_fluct_p = compute_EMF(Ur, Ut, Up, Br, Bt, Bp, r, theta, phi)
 
     # Keep simple 1-D profiles for reference.
     N2_profile = np.mean(N2_full, axis=(1, 2))
@@ -2529,8 +2253,6 @@ def main() -> None:
         "ur": Ur,
         "ut": Ut,
         "up": Up,
-        "us": Us,
-        "uz": Uz,
         "Uabs": Uabs,
         "ur_phiavg": Ur_phiavg,
         "ut_phiavg": Ut_phiavg,
@@ -2558,16 +2280,6 @@ def main() -> None:
             "Br_phiavg": Br_phiavg,
             "Bt_phiavg": Bt_phiavg,
             "Bp_phiavg": Bp_phiavg,
-            "Ir": Ir,
-            "It": It,
-            "Ip": Ip,
-            "Iz": Iz,
-            "EMFr": EMF_r,
-            "EMFt": EMF_t,
-            "EMFp":EMF_p,
-            "EMFr_fluct": EMF_fluct_r,
-            "EMFt_fluct": EMF_fluct_t,
-            "EMFp_fluct":EMF_fluct_p,
             **fields,
         }
 
