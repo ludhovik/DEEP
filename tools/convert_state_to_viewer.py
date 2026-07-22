@@ -554,15 +554,21 @@ def fullsphere_regular_poltors_to_spat(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, str]:
     """Leeds full-sphere regular QST reconstruction followed by SHTns synthesis.
 
-    For P=r^(l+pP)G(x), T=r^(l+pT)H(x), x=r^2, the SHTns vector
-    coefficients used by the existing ``modules.py`` convention are
+    For P=r^(l+pP)G(x), T=r^(l+pT)H(x), x=r^2, the coefficients
+    passed directly to SHTns are
 
       Q = l(l+1) r^(l+pP-1) G,
-      S = -r^(l+pP-1)[(l+pP+1)G + 2x G_x],
+      S = +r^(l+pP-1)[(l+pP+1)G + 2x G_x],
       T = r^(l+pT) H.
 
-    These are algebraically equivalent to Leeds
-    ``var_coll_TorPol2qst_fullsphere`` and contain no division by r.
+    The positive S sign is the Leeds full-sphere convention. In
+    ``var_coll_TorPol2qst_fullsphere`` the code first forms
+    s_code=sqrt(l(l+1))*[...] and t_code=-sqrt(l(l+1))*r^l H;
+    ``tra_qst2rtp_shtns`` then applies the SHTns normalization and negates
+    t_code. The resulting direct SHTns coefficients are therefore +S and +T.
+    This differs from the shell helper ``modules.py::PolTor_to_qst``, whose
+    conventional-potential S line is marked ``#check the sign`` and must not
+    be reused for the regular full-sphere path.
     """
     _, sh = get_shtns_transform(user_modules, lmax, mmax)
     nlat, nphi = sh.set_grid()
@@ -590,7 +596,11 @@ def fullsphere_regular_poltors_to_spat(
 
     x = (np.asarray(r, dtype=np.float64) ** 2)[None, :]
     Qlm = ll1[:, None] * pol_factor * G
-    Slm = -pol_factor * (
+    # Leeds full-sphere -> SHTns convention:
+    # var_coll_TorPol2qst_fullsphere forms a positive code-space s, and
+    # tra_qst2rtp_shtns multiplies it by +shtns_norm_st.  Do not copy the
+    # negative shell-potential sign from modules.py::PolTor_to_qst here.
+    Slm = pol_factor * (
         (degrees + int(pol_power_offset) + 1)[:, None] * G + 2.0 * x * Gx
     )
     Tlm = tor_factor * H
@@ -2309,6 +2319,12 @@ def main() -> None:
             "poloidal_power_offset": int(uP_offset),
             "toroidal_power_offset": int(uT_offset),
             "x_derivative": velocity_derivative_method,
+            "shtns_qst_convention": {
+                "Q": "+l(l+1) r^(l+pP-1) G",
+                "S": "+r^(l+pP-1)[(l+pP+1)G+2xG_x]",
+                "T": "+r^(l+pT) H",
+                "source": "Leeds var_coll_TorPol2qst_fullsphere + tra_qst2rtp_shtns",
+            },
         }
     else:
         print("Transforming velocity to physical space...")
@@ -2346,6 +2362,12 @@ def main() -> None:
                 "poloidal_power_offset": int(BP_offset),
                 "toroidal_power_offset": int(BT_offset),
                 "x_derivative": magnetic_derivative_method,
+                "shtns_qst_convention": {
+                    "Q": "+l(l+1) r^(l+pP-1) G",
+                    "S": "+r^(l+pP-1)[(l+pP+1)G+2xG_x]",
+                    "T": "+r^(l+pT) H",
+                    "source": "Leeds var_coll_TorPol2qst_fullsphere + tra_qst2rtp_shtns",
+                },
             }
         else:
             print("Transforming magnetic field to physical space...")

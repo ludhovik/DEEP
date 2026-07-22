@@ -610,12 +610,17 @@ The converter reads these attributes separately for `uP`, `uT`, `BP`, `BT`,
 
 ```text
 Q = l(l+1) r^(l+pP-1) G,
-S = -r^(l+pP-1) [(l+pP+1)G + 2x dG/dx],
+S = +r^(l+pP-1) [(l+pP+1)G + 2x dG/dx],
 T = r^(l+pT) H.
 ```
 
-No quantity is divided by `r`. The derivative `dG/dx` uses the same local,
-factorial-scaled finite-difference operator as Leeds `D%dx(1)`, with the
+No quantity is divided by `r`. The positive `S` sign follows the actual Leeds
+full-sphere chain: `var_coll_TorPol2qst_fullsphere` forms positive `s`, and
+`tra_qst2rtp_shtns` applies a positive `shtns_norm_st`. The shell helper in
+`modules.py` uses a negative conventional-potential `S` expression (and marks
+that line `#check the sign`); that shell convention is not used for regular
+full-sphere velocity or magnetic fields. The derivative `dG/dx` uses the same
+local, factorial-scaled finite-difference operator as Leeds `D%dx(1)`, with the
 standard `i_KL=3` seven-point stencil.
 
 This is important because passing stored `G` directly to the shell transform

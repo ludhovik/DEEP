@@ -93,14 +93,37 @@ def check_direct_regular_qst() -> None:
     pol[0, idx] = G
     tor[0, idx] = H
 
+    # Also exercise a non-axisymmetric mode, including the sqrt(2) Leeds-to-
+    # SHTns normalization.  Both real and imaginary parts use the same Q/S/T
+    # signs as the Fortran tra_qst2rtp_shtns path.
+    idx_m1 = int(np.flatnonzero((sh.l == 2) & (sh.m == 1))[0])
+    G21 = 0.4 - 0.05 * x
+    H21 = -0.3 + 0.02 * x
+    pol[0, idx_m1] = G21
+    pol[1, idx_m1] = -0.25 * G21
+    tor[0, idx_m1] = H21
+    tor[1, idx_m1] = 0.5 * H21
+
     converter.fullsphere_regular_poltors_to_spat(pol, tor, r, lmax, mmax, modules)
     assert fake.last is not None
     gx = 0.3 + 0.14 * x
     for ir, rr in enumerate(r):
         q, s, t = fake.last.records[ir]
         np.testing.assert_allclose(q[idx].real, 2.0 * G[ir], atol=3.0e-8)
-        np.testing.assert_allclose(s[idx].real, -(2.0 * G[ir] + 2.0 * x[ir] * gx[ir]), atol=3.0e-8)
+        np.testing.assert_allclose(s[idx].real, +(2.0 * G[ir] + 2.0 * x[ir] * gx[ir]), atol=3.0e-8)
         np.testing.assert_allclose(t[idx].real, rr * H[ir], atol=3.0e-8)
+
+        corr = math.sqrt(2.0)
+        gx21 = -0.05
+        expected_q21 = corr * 6.0 * rr * G21[ir]
+        expected_s21 = corr * rr * (3.0 * G21[ir] + 2.0 * x[ir] * gx21)
+        expected_t21 = corr * rr**2 * H21[ir]
+        np.testing.assert_allclose(q[idx_m1].real, expected_q21, atol=3.0e-8)
+        np.testing.assert_allclose(q[idx_m1].imag, -0.25 * expected_q21, atol=3.0e-8)
+        np.testing.assert_allclose(s[idx_m1].real, expected_s21, atol=3.0e-8)
+        np.testing.assert_allclose(s[idx_m1].imag, -0.25 * expected_s21, atol=3.0e-8)
+        np.testing.assert_allclose(t[idx_m1].real, expected_t21, atol=3.0e-8)
+        np.testing.assert_allclose(t[idx_m1].imag, 0.5 * expected_t21, atol=3.0e-8)
         assert np.isfinite(q).all() and np.isfinite(s).all() and np.isfinite(t).all()
 
 
