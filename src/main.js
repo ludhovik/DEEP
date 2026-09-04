@@ -1094,7 +1094,7 @@ function normaliseExternalDatasetReference(path) {
   if (/^(figshare|zenodo):[^/]+$/i.test(raw)) return raw.toLowerCase();
 
   const figshare = raw.match(
-    /(?:api\.figshare\.com\/v2\/articles\/|figshare\.com\/(?:ndownloader\/articles\/|articles\/(?:[^/]+\/)?))(\d+)/i
+    /(?:api\.figshare\.com\/v2\/articles\/|figshare\.com\/(?:ndownloader\/articles\/|articles\/(?:[^/]+\/)*))(\d+)/i
   ) || raw.match(/10\.6084\/m9\.figshare\.(\d+)/i);
   if (figshare) return `figshare:${figshare[1]}`;
 
