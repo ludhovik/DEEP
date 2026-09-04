@@ -39,7 +39,14 @@
       </div>
     </div>
 
-    <div id="colourbars">
+    <div id="legend-panel" aria-label="Plot legends">
+      <div id="legend-header">
+        <span>Legends</span>
+        <span class="legend-header-hint">drag to move</span>
+        <button id="legend-collapse-button" type="button" aria-label="Collapse legends" aria-expanded="true">&#8722;</button>
+      </div>
+      <div id="legend-content">
+        <div id="colourbars">
       <div class="colourbar-row" id="cb-row-cmb">
         <div class="colourbar-title" id="cb-cmb-title">CMB</div>
         <div class="colourbar-gradient" id="cb-cmb-gradient"></div>
@@ -130,19 +137,21 @@
         </div>
       </div>
 
-    </div>
+        </div>
 
-    <div id="line-legend">
-      <div class="legend-title">Magnetic field lines</div>
-      <div class="legend-row"><span class="legend-swatch yellow"></span><span>positive CMB seed polarity</span></div>
-      <div class="legend-row"><span class="legend-swatch blue"></span><span>negative CMB seed polarity</span></div>
-      <div class="legend-note">Exterior: potential/poloidal CMB-to-CMB arcs</div>
+        <div id="line-legend">
+          <div class="legend-title">Magnetic field lines</div>
+          <div class="legend-row"><span class="legend-swatch yellow"></span><span>positive CMB seed polarity</span></div>
+          <div class="legend-row"><span class="legend-swatch blue"></span><span>negative CMB seed polarity</span></div>
+          <div class="legend-note">Exterior: potential/poloidal CMB-to-CMB arcs</div>
+        </div>
+      </div>
     </div>
 
     <div id="export-panel">
       <div class="export-title">Export</div>
-      <button id="export-png-button" type="button">PNG white bg</button>
-      <button id="export-pdf-button" type="button">PDF white bg</button>
+      <button id="export-png-button" type="button">PNG + legends</button>
+      <button id="export-pdf-button" type="button">PDF + legends</button>
       <button id="export-video-button" type="button">Record 360°</button>
       <div id="export-message">Files are saved by the browser.</div>
     </div>

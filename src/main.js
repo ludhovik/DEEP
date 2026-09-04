@@ -24,6 +24,9 @@ const datasetUrlInputEl = document.getElementById("dataset-url-input");
 const openLocalDatasetButtonEl = document.getElementById("open-local-dataset");
 const openDemoDatasetButtonEl = document.getElementById("open-demo-dataset");
 const openUrlDatasetButtonEl = document.getElementById("open-url-dataset");
+const legendPanelEl = document.getElementById("legend-panel");
+const legendHeaderEl = document.getElementById("legend-header");
+const legendCollapseButtonEl = document.getElementById("legend-collapse-button");
 
 const displaySlots = ["cmb", "icb", "radial", "earth", "equator", "equator2", "meridian", "meridian2", "fieldlines"];
 const displayNames = {
@@ -218,6 +221,15 @@ const params = {
   lightAzimuthDeg: 304,
   lightElevationDeg: 48,
 
+  backgroundColor: "#050505",
+  customColourLow: "#283cb4",
+  customColourHigh: "#b42828",
+  legendVisible: true,
+  legendCollapsed: false,
+  legendPosition: "left-center",
+  legendX: 0.02,
+  legendY: 0.50,
+
   cmbOpacity: 0.82,
   icbOpacity: 0.72,
   radialOpacity: 0.90,
@@ -390,7 +402,10 @@ let sequenceFrameLoading = false;
 let sequencePngExportActive = false;
 let sequencePngCancelRequested = false;
 let deferredSequenceObjectsHidden = false;
+let datasetLoadInProgress = false;
+let datasetRequestSignal = null;
 const sequenceControllers = [];
+const legendControllers = [];
 
 const videoState = {
   active: false,
@@ -435,6 +450,159 @@ function setStatus(text) {
 
 function setExportMessage(text) {
   if (exportMessageEl) exportMessageEl.textContent = text;
+}
+
+async function runViewerTask(label, task) {
+  try {
+    return await task();
+  } catch (err) {
+    if (err?.name === "AbortError") return null;
+    console.error(`${label} failed`, err);
+    setStatus(`${label} failed: ${err?.message || err}`);
+    return null;
+  }
+}
+
+function viewerTaskCallback(label, task) {
+  return (...args) => {
+    void runViewerTask(label, () => task(...args));
+  };
+}
+
+const pendingViewerTaskTimers = new Set();
+
+function debouncedViewerTask(label, task, delayMs = 100) {
+  let timer = null;
+  return (...args) => {
+    if (timer) {
+      window.clearTimeout(timer);
+      pendingViewerTaskTimers.delete(timer);
+    }
+    timer = window.setTimeout(() => {
+      pendingViewerTaskTimers.delete(timer);
+      timer = null;
+      void runViewerTask(label, () => task(...args));
+    }, delayMs);
+    pendingViewerTaskTimers.add(timer);
+  };
+}
+
+function cancelPendingViewerTasks() {
+  for (const timer of pendingViewerTaskTimers) window.clearTimeout(timer);
+  pendingViewerTaskTimers.clear();
+  if (customColourRefreshTimer) {
+    window.clearTimeout(customColourRefreshTimer);
+    customColourRefreshTimer = null;
+  }
+}
+
+function updateBackgroundColor() {
+  const fallback = "#050505";
+  const requested = /^#[0-9a-f]{6}$/i.test(String(params.backgroundColor || ""))
+    ? params.backgroundColor
+    : fallback;
+  params.backgroundColor = requested;
+  scene.background.set(requested);
+  document.documentElement.style.backgroundColor = requested;
+  document.body.style.backgroundColor = requested;
+}
+
+function refreshLegendControllers() {
+  for (const controller of legendControllers) controller.updateDisplay();
+}
+
+function applyLegendLayout() {
+  if (!legendPanelEl) return;
+  legendPanelEl.style.display = params.legendVisible ? "block" : "none";
+  legendPanelEl.classList.toggle("collapsed", Boolean(params.legendCollapsed));
+  if (legendCollapseButtonEl) {
+    legendCollapseButtonEl.textContent = params.legendCollapsed ? "+" : "\u2212";
+    legendCollapseButtonEl.setAttribute("aria-expanded", String(!params.legendCollapsed));
+    legendCollapseButtonEl.setAttribute(
+      "aria-label",
+      params.legendCollapsed ? "Expand legends" : "Collapse legends"
+    );
+  }
+  if (!params.legendVisible) return;
+
+  legendPanelEl.style.transform = "none";
+  const margin = 18;
+  const rect = legendPanelEl.getBoundingClientRect();
+  const maxX = Math.max(margin, window.innerWidth - rect.width - margin);
+  const maxY = Math.max(margin, window.innerHeight - rect.height - margin);
+  let x = margin;
+  let y = Math.max(margin, 0.5 * (window.innerHeight - rect.height));
+
+  switch (params.legendPosition) {
+    case "right-center":
+      x = maxX;
+      break;
+    case "top-left":
+      y = margin;
+      break;
+    case "top-right":
+      x = maxX;
+      y = margin;
+      break;
+    case "bottom-left":
+      y = maxY;
+      break;
+    case "bottom-right":
+      x = maxX;
+      y = maxY;
+      break;
+    case "custom":
+      x = margin + clamp(Number(params.legendX), 0, 1) * Math.max(0, maxX - margin);
+      y = margin + clamp(Number(params.legendY), 0, 1) * Math.max(0, maxY - margin);
+      break;
+    default:
+      params.legendPosition = "left-center";
+  }
+
+  legendPanelEl.style.left = `${Math.round(clamp(x, margin, maxX))}px`;
+  legendPanelEl.style.top = `${Math.round(clamp(y, margin, maxY))}px`;
+}
+
+function bindLegendControls() {
+  legendCollapseButtonEl?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    params.legendCollapsed = !params.legendCollapsed;
+    applyLegendLayout();
+    refreshLegendControllers();
+  });
+
+  legendHeaderEl?.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || event.target === legendCollapseButtonEl || !legendPanelEl) return;
+    event.preventDefault();
+    const startRect = legendPanelEl.getBoundingClientRect();
+    const offsetX = event.clientX - startRect.left;
+    const offsetY = event.clientY - startRect.top;
+    legendHeaderEl.setPointerCapture?.(event.pointerId);
+
+    const move = (moveEvent) => {
+      const rect = legendPanelEl.getBoundingClientRect();
+      const margin = 6;
+      const maxX = Math.max(margin, window.innerWidth - rect.width - margin);
+      const maxY = Math.max(margin, window.innerHeight - rect.height - margin);
+      const x = clamp(moveEvent.clientX - offsetX, margin, maxX);
+      const y = clamp(moveEvent.clientY - offsetY, margin, maxY);
+      params.legendPosition = "custom";
+      params.legendX = maxX > margin ? (x - margin) / (maxX - margin) : 0;
+      params.legendY = maxY > margin ? (y - margin) / (maxY - margin) : 0;
+      legendPanelEl.style.left = `${Math.round(x)}px`;
+      legendPanelEl.style.top = `${Math.round(y)}px`;
+      legendPanelEl.style.transform = "none";
+    };
+    const finish = () => {
+      legendHeaderEl.removeEventListener("pointermove", move);
+      legendHeaderEl.removeEventListener("pointerup", finish);
+      legendHeaderEl.removeEventListener("pointercancel", finish);
+      refreshLegendControllers();
+    };
+    legendHeaderEl.addEventListener("pointermove", move);
+    legendHeaderEl.addEventListener("pointerup", finish);
+    legendHeaderEl.addEventListener("pointercancel", finish);
+  });
 }
 
 function refreshCameraParamControllers() {
@@ -500,6 +668,34 @@ function setColourbarForSlot(slot, fieldName, vmin, vmax) {
 function hideColourbarForSlot(slot) {
   const bar = colourbars[slot];
   if (bar) bar.row.style.display = "none";
+}
+
+function refreshColourbarGradients() {
+  for (const slot of displaySlots) {
+    const bar = colourbars[slot];
+    if (!bar?.gradient) continue;
+    const scheme = slot === "fieldlines"
+      ? params.lineColormap
+      : params[`${slot}Colormap`];
+    bar.gradient.style.background = colourbarCssGradient(scheme);
+  }
+}
+
+let customColourRefreshTimer = null;
+function scheduleCustomColourRefresh() {
+  refreshColourbarGradients();
+  if (customColourRefreshTimer) window.clearTimeout(customColourRefreshTimer);
+  customColourRefreshTimer = window.setTimeout(() => {
+    customColourRefreshTimer = null;
+    void runViewerTask("Custom colour update", async () => {
+      if (!metadata) return;
+      await rebuildAllMeshes({ visibleOnly: true, reuseGeometry: true, includeHeavy: false });
+      if (params.showFieldLines && params.lineColormap === CUSTOM_COLOURMAP) {
+        await loadFieldLines();
+      }
+      updateVisibility();
+    });
+  }, 120);
 }
 
 
@@ -1218,10 +1414,64 @@ function stripRepositoryDatasetPrefix(entries) {
   ]);
 }
 
-async function buildFigshareIndex(articleId) {
-  const response = await fetch(`https://deep-figshare-proxy.ludhovik-research.workers.dev/figshare/articles/${articleId}`);
-  if (!response.ok) throw new Error(`Figshare record ${articleId} returned HTTP ${response.status}.`);
-  const record = await response.json();
+const DATASET_FETCH_TIMEOUT_MS = 180000;
+const RESPONSE_CLEANUP = Symbol("deepResponseCleanup");
+const RESPONSE_ABORT_CONTROLLER = Symbol("deepResponseAbortController");
+
+function releaseDatasetResponse(response) {
+  response?.[RESPONSE_CLEANUP]?.();
+}
+
+async function readDatasetResponse(response, method) {
+  try {
+    return await response[method]();
+  } catch (err) {
+    const reason = response?.[RESPONSE_ABORT_CONTROLLER]?.signal?.reason;
+    if (reason?.name === "TimeoutError") throw reason;
+    throw err;
+  } finally {
+    releaseDatasetResponse(response);
+  }
+}
+
+async function fetchWithTimeout(resource, options = {}, timeoutMs = DATASET_FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const externalSignal = options.signal || null;
+  const abortFromExternal = () => controller.abort(externalSignal.reason);
+  if (externalSignal?.aborted) abortFromExternal();
+  else externalSignal?.addEventListener("abort", abortFromExternal, { once: true });
+
+  const timer = window.setTimeout(() => {
+    controller.abort(new DOMException(`Request timed out after ${Math.round(timeoutMs / 1000)} seconds.`, "TimeoutError"));
+  }, timeoutMs);
+
+  const cleanup = () => {
+    window.clearTimeout(timer);
+    externalSignal?.removeEventListener("abort", abortFromExternal);
+  };
+
+  try {
+    const response = await fetch(resource, { ...options, signal: controller.signal });
+    Object.defineProperty(response, RESPONSE_CLEANUP, { value: cleanup });
+    Object.defineProperty(response, RESPONSE_ABORT_CONTROLLER, { value: controller });
+    return response;
+  } catch (err) {
+    cleanup();
+    if (controller.signal.reason?.name === "TimeoutError") throw controller.signal.reason;
+    throw err;
+  }
+}
+
+async function buildFigshareIndex(articleId, options = {}) {
+  const response = await fetchWithTimeout(
+    `https://deep-figshare-proxy.ludhovik-research.workers.dev/figshare/articles/${articleId}`,
+    { signal: options.signal }
+  );
+  if (!response.ok) {
+    releaseDatasetResponse(response);
+    throw new Error(`Figshare record ${articleId} returned HTTP ${response.status}.`);
+  }
+  const record = await readDatasetResponse(response, "json");
   const folders = record.folder_structure || {};
   const entries = (record.files || []).map((file) => {
     const folder = normaliseRepositoryPath(folders[String(file.id)] || folders[file.id] || "");
@@ -1231,10 +1481,16 @@ async function buildFigshareIndex(articleId) {
   return new Map(stripRepositoryDatasetPrefix(entries));
 }
 
-async function buildZenodoIndex(recordId) {
-  const response = await fetch(`https://zenodo.org/api/records/${recordId}`);
-  if (!response.ok) throw new Error(`Zenodo record ${recordId} returned HTTP ${response.status}.`);
-  const record = await response.json();
+async function buildZenodoIndex(recordId, options = {}) {
+  const response = await fetchWithTimeout(
+    `https://zenodo.org/api/records/${recordId}`,
+    { signal: options.signal }
+  );
+  if (!response.ok) {
+    releaseDatasetResponse(response);
+    throw new Error(`Zenodo record ${recordId} returned HTTP ${response.status}.`);
+  }
+  const record = await readDatasetResponse(response, "json");
   const entries = (record.files || []).map((file) => [
     normaliseRepositoryPath(file.key),
     file.links?.content || file.links?.self,
@@ -1242,7 +1498,7 @@ async function buildZenodoIndex(recordId) {
   return new Map(stripRepositoryDatasetPrefix(entries));
 }
 
-async function fetchRemoteRepositoryResource(path) {
+async function fetchRemoteRepositoryResource(path, options = {}) {
   const match = String(path || "").match(/^(figshare|zenodo):([^/]+)(?:\/(.*))?$/i);
   if (!match) return null;
 
@@ -1254,8 +1510,8 @@ async function fetchRemoteRepositoryResource(path) {
   let indexPromise = remoteRepositoryIndexCache.get(cacheKey);
   if (!indexPromise) {
     indexPromise = provider === "figshare"
-      ? buildFigshareIndex(recordId)
-      : buildZenodoIndex(recordId);
+      ? buildFigshareIndex(recordId, options)
+      : buildZenodoIndex(recordId, options);
     remoteRepositoryIndexCache.set(cacheKey, indexPromise);
   }
 
@@ -1268,9 +1524,10 @@ async function fetchRemoteRepositoryResource(path) {
         statusText: "Not Found",
       });
     }
-    return await fetch(downloadUrl);
+    return await fetchWithTimeout(downloadUrl, { signal: options.signal });
   } catch (error) {
     remoteRepositoryIndexCache.delete(cacheKey);
+    if (error?.name === "AbortError" || error?.name === "TimeoutError") throw error;
     return new Response(error?.message || "Remote dataset lookup failed.", {
       status: 502,
       statusText: "Remote dataset lookup failed",
@@ -1278,19 +1535,20 @@ async function fetchRemoteRepositoryResource(path) {
   }
 }
 
-async function fetchDatasetResource(path) {
-  const repositoryResponse = await fetchRemoteRepositoryResource(path);
+async function fetchDatasetResource(path, options = {}) {
+  const signal = options.signal || datasetRequestSignal || undefined;
+  const repositoryResponse = await fetchRemoteRepositoryResource(path, { signal });
   if (repositoryResponse) return repositoryResponse;
 
   const localPath = parseLocalFilesystemPath(path);
   if (localPath) {
     const encodedPath = encodeLocalFilesystemPath(localPath);
     const endpoint = `/__localfs__/${encodedPath}`;
-    return await fetch(endpoint, { cache: "no-store" });
+    return await fetchWithTimeout(endpoint, { cache: "no-store", signal });
   }
 
   const folderPath = parseFolderSourcePath(path);
-  if (!folderPath) return await fetch(path);
+  if (!folderPath) return await fetchWithTimeout(path, { signal });
 
   const source = datasetFolderSources.get(folderPath.role);
   if (!source) {
@@ -1455,8 +1713,8 @@ function askForDatasetRoot(message = null) {
     "  /datasets/run_A",
     "",
     "Absolute path with npm run dev:",
-    "  C:\\Users\\wgdh881\\Downloads\\data_FLAYER_C19",
-    "  file:/work/project/data_FLAYER_C19",
+    "  C:\\simulation-data\\viewer_data",
+    "  /path/to/viewer_data",
     "",
     "You can also use Dataset > Select primary folder after startup."
   ].join("\n");
@@ -1488,7 +1746,14 @@ function dataUrl(path) {
 }
 
 function sequenceFrameBasePath(frame) {
-  return dataUrlForBase(datasetRootPath, normaliseSequenceFramePath(frame?.path || ""));
+  return sequenceFrameBasePathForRoot(datasetRootPath, frame);
+}
+
+function sequenceFrameBasePathForRoot(rootPath, frame) {
+  return dataUrlForBase(
+    rootPath,
+    normaliseSequenceFramePathForRoot(frame?.path || "", rootPath)
+  );
 }
 
 function formatBytes(bytes) {
@@ -1770,6 +2035,9 @@ function getFieldLineObjectCacheKey(basePath = dataBasePath) {
     stride: Math.max(1, Math.round(Number(params.lineStride))),
     colourMode: params.lineColourMode,
     colormap: params.lineColormap,
+    customColours: params.lineColormap === CUSTOM_COLOURMAP
+      ? [params.customColourLow, params.customColourHigh]
+      : null,
     scale: params.lineScale,
     transform: params.lineValueTransform,
     minimum: roundedCacheNumber(params.lineMin),
@@ -1949,9 +2217,10 @@ async function fetchJsonStrict(url, label) {
 
   const response = await fetchDatasetResource(url);
   if (!response.ok) {
+    releaseDatasetResponse(response);
     throw new Error(`${label} not found at ${url} (HTTP ${response.status}).`);
   }
-  const raw = await response.text();
+  const raw = await readDatasetResponse(response, "text");
   const trimmed = raw.trim();
   if (trimmed.startsWith("<!doctype") || trimmed.startsWith("<html") || trimmed.startsWith("<")) {
     throw new Error(
@@ -1968,7 +2237,7 @@ async function fetchJsonStrict(url, label) {
   }
 }
 
-function normaliseSequenceFramePath(path) {
+function normaliseSequenceFramePathForRoot(path, rootPath = datasetRootPath) {
   let p = String(path || "").trim().replace(/\\/g, "/");
   p = p.replace(/^\/+/, "");
   p = p.replace(/^public\//, "");
@@ -1976,7 +2245,7 @@ function normaliseSequenceFramePath(path) {
   // Accept sequence.json entries written either as relative paths
   // (frames/state03100) or mistakenly as dataset-prefixed paths
   // (data_run2/frames/state03100, public/data_run2/frames/state03100).
-  const rootNoSlash = normaliseDatasetRoot(datasetRootPath).replace(/^\/+/, "");
+  const rootNoSlash = normaliseDatasetRoot(rootPath).replace(/^\/+/, "");
   if (rootNoSlash && p.startsWith(`${rootNoSlash}/`)) {
     p = p.slice(rootNoSlash.length + 1);
   }
@@ -1986,17 +2255,36 @@ function normaliseSequenceFramePath(path) {
   return p;
 }
 
-async function loadSequenceIndex(silent = false) {
-  try {
-    sequenceIndex = await fetchJsonStrict(dataUrlForBase(datasetRootPath, "sequence.json"), "sequence.json");
+function normaliseSequenceFramePath(path) {
+  return normaliseSequenceFramePathForRoot(path, datasetRootPath);
+}
 
-    if (Array.isArray(sequenceIndex.frames)) {
-      sequenceIndex.frames = sequenceIndex.frames.map((frame) => ({
+async function fetchSequenceIndexForRoot(rootPath, optional = true) {
+  try {
+    const index = await fetchJsonStrict(
+      dataUrlForBase(rootPath, "sequence.json"),
+      "sequence.json"
+    );
+    if (Array.isArray(index.frames)) {
+      index.frames = index.frames.map((frame) => ({
         ...frame,
-        path: normaliseSequenceFramePath(frame.path),
-        metadata: normaliseSequenceFramePath(frame.metadata || `${frame.path}/metadata.json`),
+        path: normaliseSequenceFramePathForRoot(frame.path, rootPath),
+        metadata: normaliseSequenceFramePathForRoot(
+          frame.metadata || `${frame.path}/metadata.json`,
+          rootPath
+        ),
       }));
     }
+    return index;
+  } catch (err) {
+    if (!optional || err?.name === "AbortError" || err?.name === "TimeoutError") throw err;
+    return null;
+  }
+}
+
+async function loadSequenceIndex(silent = false) {
+  try {
+    sequenceIndex = await fetchSequenceIndexForRoot(datasetRootPath, false);
 
     const n = Array.isArray(sequenceIndex.frames) ? sequenceIndex.frames.length : 0;
     if (n > 0) {
@@ -2187,6 +2475,14 @@ async function refreshDeferredSequenceObjects() {
 async function loadFrameByIndex(index, options = {}) {
   if (sequenceFrameLoading) return false;
   sequenceFrameLoading = true;
+  const previous = {
+    dataBasePath,
+    metadata,
+    coords,
+    sequenceFrame: params.sequenceFrame,
+    fields: Object.fromEntries(DATASET_FIELD_PARAM_KEYS.map((key) => [key, params[key]])),
+  };
+  let committed = false;
 
   try {
     if (!sequenceIndex || !Array.isArray(sequenceIndex.frames) || sequenceIndex.frames.length === 0) {
@@ -2196,18 +2492,22 @@ async function loadFrameByIndex(index, options = {}) {
 
     const n = sequenceIndex.frames.length;
     const i = clamp(Math.round(index), 0, n - 1);
+    const frame = sequenceIndex.frames[i];
+    const candidateBasePath = sequenceFrameBasePath(frame);
+    const candidateMetadata = await loadMetadataForBase(candidateBasePath);
+    validateDatasetMetadata(candidateMetadata, `metadata.json for frame ${i}`);
+    const gridUnchanged = previous.metadata && samePlaybackGrid(previous.metadata, candidateMetadata);
+    const candidateCoords = gridUnchanged && coords.r && coords.theta && coords.phi
+      ? coords
+      : await loadCoordinatesForBase(candidateBasePath, candidateMetadata);
+    validateDatasetCoordinates(candidateCoords, candidateMetadata, `coordinates for frame ${i}`);
+
+    dataBasePath = candidateBasePath;
+    metadata = candidateMetadata;
+    coords = candidateCoords;
     params.sequenceFrame = i;
     refreshSequenceControllers();
-
-    const frame = sequenceIndex.frames[i];
-    dataBasePath = sequenceFrameBasePath(frame);
-
-    const previousMeta = metadata;
-    metadata = await loadMetadata();
-    const gridUnchanged = previousMeta && samePlaybackGrid(previousMeta, metadata);
-    if (!gridUnchanged || !coords.r || !coords.theta || !coords.phi) {
-      await loadCoordinates();
-    }
+    committed = true;
 
     // Keep the current selected fields when available; otherwise fall back safely.
     for (const key of ["cmbField", "earthField", "icbField", "radialField", "equatorField", "equator2Field", "meridianField", "meridian2Field"]) {
@@ -2248,6 +2548,25 @@ async function loadFrameByIndex(index, options = {}) {
     if (playbackUpdate) setDeferredSequenceObjectVisibility(true);
     setStatus(`Frame ${i + 1}/${n}: ${frame.label || frame.state_number || i}; cache=${formatBytes(totalCacheBytes())}`);
     return true;
+  } catch (err) {
+    console.error("Could not load sequence frame", err);
+    if (committed) {
+      dataBasePath = previous.dataBasePath;
+      metadata = previous.metadata;
+      coords = previous.coords;
+      params.sequenceFrame = previous.sequenceFrame;
+      for (const [key, value] of Object.entries(previous.fields)) params[key] = value;
+      try {
+        await rebuildAllMeshes({ visibleOnly: true, reuseGeometry: false, includeHeavy: true });
+        await loadFieldLines();
+        updateVisibility();
+      } catch (restoreError) {
+        console.error("Could not restore the preceding sequence frame", restoreError);
+      }
+    }
+    refreshSequenceControllers();
+    setStatus(`Could not load sequence frame: ${err?.message || err}`);
+    return false;
   } finally {
     sequenceFrameLoading = false;
   }
@@ -2265,7 +2584,12 @@ function scheduleNextSequenceFrame() {
     const next = sequenceFrameInPlaybackRange(current)
       ? sequenceFrameAtRangeOffset(1, current)
       : range.first;
-    await loadFrameByIndex(next, { playback: true, skipEarthUpdate: true });
+    const loaded = await loadFrameByIndex(next, { playback: true, skipEarthUpdate: true });
+    if (!loaded) {
+      pauseSequence(false);
+      setStatus("Sequence playback stopped because a frame could not be loaded.");
+      return;
+    }
     scheduleNextSequenceFrame();
   }, delayMs);
 }
@@ -2343,11 +2667,12 @@ async function loadCoordinatesForBase(basePath, meta) {
 
   const response = await fetchDatasetResource(url);
   if (!response.ok) {
+    releaseDatasetResponse(response);
     console.warn(`Could not load ${url}; falling back to uniform coordinates.`);
     return empty;
   }
 
-  const raw = await response.json();
+  const raw = await readDatasetResponse(response, "json");
   const parsed = {
     r: Array.isArray(raw.r) ? raw.r : null,
     theta: Array.isArray(raw.theta) ? raw.theta : null,
@@ -2422,7 +2747,7 @@ async function resolveDatasetBasePath(rootPath) {
       throw new Error(`${root}/sequence.json exists but contains no frames.`);
     }
     const frame = seq.frames[0];
-    return dataUrlForBase(root, normaliseSequenceFramePath(frame.path));
+    return dataUrlForBase(root, normaliseSequenceFramePathForRoot(frame.path, root));
   }
 }
 
@@ -2483,14 +2808,23 @@ async function loadFloat32ForBase(basePath, filename, expectedLength) {
 
   const url = dataUrlForBase(cleanBase, filename);
   const response = await fetchDatasetResource(url);
-  if (!response.ok) throw new Error(`Could not load ${url}`);
+  if (!response.ok) {
+    releaseDatasetResponse(response);
+    throw new Error(`Could not load ${url} (HTTP ${response.status}).`);
+  }
 
-  const buffer = await response.arrayBuffer();
+  const buffer = await readDatasetResponse(response, "arrayBuffer");
+  if (buffer.byteLength % Float32Array.BYTES_PER_ELEMENT !== 0) {
+    throw new Error(
+      `${filename} has ${buffer.byteLength} bytes, which is not a valid float32 array length.`
+    );
+  }
   const arr = new Float32Array(buffer);
 
   if (arr.length !== expectedLength) {
-    console.warn(
-      `Unexpected array length for ${filename}: got ${arr.length}, expected ${expectedLength}`
+    throw new Error(
+      `Unexpected array length for ${filename}: got ${arr.length}, expected ${expectedLength}. `
+      + "The file may be incomplete or its metadata dimensions may be wrong."
     );
   }
 
@@ -4532,7 +4866,25 @@ const colourStops = {
   ]
 };
 
-const colourMapNames = Object.keys(colourStops);
+const CUSTOM_COLOURMAP = "custom-two-colour";
+const colourMapNames = [...Object.keys(colourStops), CUSTOM_COLOURMAP];
+
+function cssHexToRgb(hex, fallback) {
+  const match = String(hex || "").trim().match(/^#([0-9a-f]{6})$/i);
+  if (!match) return fallback;
+  const value = Number.parseInt(match[1], 16);
+  return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
+}
+
+function getColourStops(scheme = "blue-white-red") {
+  if (scheme === CUSTOM_COLOURMAP) {
+    return [
+      [0.0, cssHexToRgb(params.customColourLow, [40, 60, 180])],
+      [1.0, cssHexToRgb(params.customColourHigh, [180, 40, 40])],
+    ];
+  }
+  return colourStops[scheme] || colourStops["blue-white-red"];
+}
 
 function interpolateStops(t, stops) {
   const x = clamp(t, 0.0, 1.0);
@@ -4553,13 +4905,13 @@ function interpolateStops(t, stops) {
 
 function colourMap(value, vmin, vmax, scheme = "blue-white-red") {
   const t = clamp((value - vmin) / (vmax - vmin || 1.0), 0.0, 1.0);
-  const stops = colourStops[scheme] || colourStops["blue-white-red"];
+  const stops = getColourStops(scheme);
   const rgb = interpolateStops(t, stops);
   return new THREE.Color(rgb[0] / 255.0, rgb[1] / 255.0, rgb[2] / 255.0);
 }
 
 function colourbarCssGradient(scheme = "blue-white-red") {
-  const stops = colourStops[scheme] || colourStops["blue-white-red"];
+  const stops = getColourStops(scheme);
   const parts = stops.map(([t, rgb]) => `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]}) ${100 * t}%`);
   return `linear-gradient(to right, ${parts.join(", ")})`;
 }
@@ -5532,6 +5884,7 @@ function updateVisibility() {
       && params.earthDisplayMode === "texture" ? "block" : "none";
   }
   updateAxesOverlay();
+  applyLegendLayout();
 }
 
 function updateOpacities() {
@@ -5563,11 +5916,12 @@ async function fetchFieldLineFile(filename) {
 
   const response = await fetchDatasetResource(dataUrl(filename));
   if (!response.ok) {
+    releaseDatasetResponse(response);
     console.warn(`Could not load field lines: ${filename}`);
     return [];
   }
 
-  const raw = await response.text();
+  const raw = await readDatasetResponse(response, "text");
   const lines = JSON.parse(raw);
   const bytes = new TextEncoder().encode(raw).byteLength;
   fieldLineDataCache.set(cacheKey, lines);
@@ -5719,9 +6073,9 @@ async function loadFieldLines() {
   setStatusSummary();
 }
 
-function onFieldLineVisibilityChanged() {
+async function onFieldLineVisibilityChanged() {
   if (params.showFieldLines) {
-    loadFieldLines();
+    await loadFieldLines();
   } else {
     detachActiveFieldLineGroups();
     hideFieldLineColourbar();
@@ -5807,36 +6161,58 @@ function applyDefaultFields() {
 
 function addDisplayControls(gui, slot, label, fieldParam, showParam, opacityParam, rebuildFn, availableFields) {
   const folder = gui.addFolder(label);
+  const rebuild = debouncedViewerTask(`${label} update`, rebuildFn);
 
-  folder.add(params, showParam).name("Show").onChange(async () => {
+  folder.add(params, showParam).name("Show").onChange(viewerTaskCallback(`${label} visibility`, async () => {
     if (params[showParam]) await rebuildFn({ reuseGeometry: true });
     updateVisibility();
     if (slot === "meridian" || slot === "meridian2") {
       if (params.showCMB) await rebuildCMB({ reuseGeometry: false });
       if (params.showIsosurfaces && !params.sequencePlaying) await rebuildIsosurfaces();
     }
-  });
-  folder.add(params, fieldParam, availableFields).name("Field").onChange(rebuildFn);
-  folder.add(params, `${slot}Scale`, ["symmetric", "minmax", "manual"]).name("Scale").onChange(rebuildFn);
-  folder.add(params, `${slot}Colormap`, colourMapNames).name("Colour map").onChange(rebuildFn);
-  folder.add(params, `${slot}Min`).name("Manual min").onChange(rebuildFn);
-  folder.add(params, `${slot}Max`).name("Manual max").onChange(rebuildFn);
+  }));
+  folder.add(params, fieldParam, availableFields).name("Field").onChange(rebuild);
+  folder.add(params, `${slot}Scale`, ["symmetric", "minmax", "manual"]).name("Scale").onChange(rebuild);
+  folder.add(params, `${slot}Colormap`, colourMapNames).name("Colour map").onChange(rebuild);
+  folder.add(params, `${slot}Min`).name("Manual min").onFinishChange(rebuild);
+  folder.add(params, `${slot}Max`).name("Manual max").onFinishChange(rebuild);
   folder.add(params, opacityParam, 0.0, 1.0, 0.01).name("Opacity").onChange(updateOpacities);
 
   return folder;
 }
 
 
-const VIEW_STATE_PREFIX = "DTV1:";
+const VIEW_STATE_PREFIX = "DTV2:";
+const LEGACY_VIEW_STATE_PREFIX = "DTV1:";
+const VIEW_STATE_EXCLUDED_PARAMS = new Set([
+  "datasetPath",
+  "secondaryDatasetPath",
+  "secondaryDatasetLabel",
+  "sequenceFrame",
+  "sequencePlaybackFirst",
+  "sequencePlaybackLast",
+  "sequencePlaying",
+  "sequenceMaxCachedFrames",
+  "sequenceCacheLimitMB",
+  "sequencePngFirst",
+  "sequencePngLast",
+  "sequencePngStep",
+  "sequencePngWidthPx",
+  "sequencePngRefreshHeavy",
+  "sequencePngBackgroundExport",
+]);
 
 function getAvailableColormapNames() {
-  return Object.keys(colourStops || {});
+  return colourMapNames;
 }
 
 function collectViewState() {
-  const snapshot = { version: 1, params: {} };
+  syncCameraParamsFromCamera(false);
+  const snapshot = { version: 2, scope: "view-only", params: {} };
   for (const [key, value] of Object.entries(params)) {
-    if (typeof value !== "function") snapshot.params[key] = value;
+    if (typeof value !== "function" && !VIEW_STATE_EXCLUDED_PARAMS.has(key)) {
+      snapshot.params[key] = value;
+    }
   }
   return snapshot;
 }
@@ -5849,7 +6225,8 @@ function encodeViewState(snapshot) {
 
 function decodeViewState(code) {
   const raw = String(code || "").trim();
-  const payload = raw.startsWith(VIEW_STATE_PREFIX) ? raw.slice(VIEW_STATE_PREFIX.length) : raw;
+  const prefix = [VIEW_STATE_PREFIX, LEGACY_VIEW_STATE_PREFIX].find((item) => raw.startsWith(item));
+  const payload = prefix ? raw.slice(prefix.length) : raw;
   const json = decodeURIComponent(escape(atob(payload)));
   return JSON.parse(json);
 }
@@ -5862,30 +6239,32 @@ function validFieldForState(key, value) {
 }
 
 function applySnapshotParam(key, value) {
-  if (!(key in params)) return;
-  if (typeof params[key] === "function") return;
-  if (key.endsWith("Colormap") && !getAvailableColormapNames().includes(value)) return;
-  if (key.endsWith("Scale") && !["symmetric", "minmax", "manual"].includes(value)) return;
-  if (!validFieldForState(key, value)) return;
-  if (key === "fieldLineDisplay" && !getAvailableFieldLineModes().includes(value)) return;
-  if (key === "earthDisplayMode" && !["texture", "magnetic"].includes(value)) return;
+  if (!(key in params) || VIEW_STATE_EXCLUDED_PARAMS.has(key)) return false;
+  if (typeof params[key] === "function") return false;
+  if (key.endsWith("Colormap") && !getAvailableColormapNames().includes(value)) return false;
+  if (key.endsWith("Scale") && !["symmetric", "minmax", "manual"].includes(value)) return false;
+  if (!validFieldForState(key, value)) return false;
+  if (key === "fieldLineDisplay" && !getAvailableFieldLineModes().includes(value)) return false;
+  if (key === "earthDisplayMode" && !["texture", "magnetic"].includes(value)) return false;
+  if (key === "legendPosition" && ![
+    "left-center", "right-center", "top-left", "top-right", "bottom-left", "bottom-right", "custom"
+  ].includes(value)) return false;
   params[key] = value;
+  return true;
 }
 
 async function applyViewState(snapshot) {
+  cancelPendingViewerTasks();
   const snap = snapshot?.params ? snapshot : { params: snapshot || {} };
-  const requestedDataset = snap.params?.datasetPath ? normaliseDatasetRoot(snap.params.datasetPath) : null;
-  if (requestedDataset && requestedDataset !== datasetRootPath) {
-    params.datasetPath = requestedDataset;
-    await loadDatasetFromParams();
-  }
-
+  const skippedFields = [];
   for (const [key, value] of Object.entries(snap.params || {})) {
-    if (key === "datasetPath") continue;
-    applySnapshotParam(key, value);
+    const applied = applySnapshotParam(key, value);
+    if (!applied && key.endsWith("Field")) skippedFields.push(String(value));
   }
   updateLighting();
+  updateBackgroundColor();
   applyCameraViewFromParams();
+  applyLegendLayout();
   buildGui();
   await rebuildAllMeshes();
   await loadFieldLines();
@@ -5893,7 +6272,12 @@ async function applyViewState(snapshot) {
   updateFieldLineVisuals();
   updateOpacities();
   updateVisibility();
-  setStatus("View state loaded.");
+  applyLegendLayout();
+  setStatus(
+    skippedFields.length > 0
+      ? `View state loaded; unavailable fields skipped: ${[...new Set(skippedFields)].join(", ")}.`
+      : "View state loaded without changing the current dataset."
+  );
 }
 
 async function copyViewStateCode() {
@@ -5930,44 +6314,193 @@ async function saveViewStateCode() {
   await saveBlob(blob, `dynamo-view-state-${Date.now()}.txt`, "view-state");
 }
 
+const DATASET_FIELD_PARAM_KEYS = [
+  "cmbField",
+  "earthField",
+  "icbField",
+  "radialField",
+  "equatorField",
+  "equator2Field",
+  "meridianField",
+  "meridian2Field",
+  "isoField",
+];
+
+function setDatasetLoadingState(loading) {
+  datasetLoadInProgress = Boolean(loading);
+  for (const element of [
+    openLocalDatasetButtonEl,
+    openDemoDatasetButtonEl,
+    openUrlDatasetButtonEl,
+    datasetUrlInputEl,
+  ]) {
+    if (element) element.disabled = datasetLoadInProgress;
+  }
+  document.body.classList.toggle("viewer-busy", datasetLoadInProgress);
+  if (controls && !videoState.active && !sequencePngExportActive) {
+    controls.enabled = !datasetLoadInProgress;
+  }
+}
+
+function validateDatasetMetadata(meta, label) {
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) {
+    throw new Error(`${label} is not a JSON object.`);
+  }
+  for (const key of ["nr", "ntheta", "nphi"]) {
+    const value = Number(meta[key]);
+    if (!Number.isSafeInteger(value) || value < 2) {
+      throw new Error(`${label} has an invalid ${key} value: ${meta[key]}.`);
+    }
+  }
+  const fields = Object.entries(meta.fields || {}).filter(
+    ([name, filename]) => Boolean(name) && typeof filename === "string" && filename.trim()
+  );
+  if (fields.length === 0) {
+    throw new Error(`${label} contains no usable volume fields.`);
+  }
+  return fields;
+}
+
+function validateDatasetCoordinates(candidateCoords, meta, label) {
+  const expected = { r: Number(meta.nr), theta: Number(meta.ntheta), phi: Number(meta.nphi) };
+  for (const [axis, length] of Object.entries(expected)) {
+    const values = candidateCoords?.[axis];
+    if (values && values.length !== length) {
+      throw new Error(
+        `${label} has ${values.length} ${axis} coordinates but metadata expects ${length}.`
+      );
+    }
+  }
+}
+
+function captureDatasetState() {
+  return {
+    datasetRootPath,
+    dataBasePath,
+    metadata,
+    coords,
+    sequenceIndex,
+    secondaryDataset,
+    sequenceFrame: params.sequenceFrame,
+    fields: Object.fromEntries(DATASET_FIELD_PARAM_KEYS.map((key) => [key, params[key]])),
+  };
+}
+
+function restoreDatasetState(state) {
+  datasetRootPath = state.datasetRootPath;
+  dataBasePath = state.dataBasePath;
+  metadata = state.metadata;
+  coords = state.coords;
+  sequenceIndex = state.sequenceIndex;
+  secondaryDataset = state.secondaryDataset;
+  params.datasetPath = state.datasetRootPath;
+  params.sequenceFrame = state.sequenceFrame;
+  for (const [key, value] of Object.entries(state.fields)) params[key] = value;
+}
+
 
 async function loadDatasetFromParams() {
+  if (datasetLoadInProgress) {
+    setStatus("A dataset is already loading. Please wait for it to finish or time out.");
+    return false;
+  }
+
+  const requestedRoot = normaliseDatasetRoot(params.datasetPath);
+  const previous = captureDatasetState();
+  const controller = new AbortController();
+  let committed = false;
+  const loadStartedAt = performance.now();
+  setDatasetLoadingState(true);
+  datasetRequestSignal = controller.signal;
+  const progressTimer = window.setInterval(() => {
+    const elapsed = Math.round((performance.now() - loadStartedAt) / 1000);
+    const current = String(statusEl?.textContent || "Loading dataset").replace(/ \[\d+ s\]$/, "");
+    setStatus(`${current} [${elapsed} s]`);
+  }, 5000);
+
   try {
-    pauseSequence();
-    datasetRootPath = rememberDatasetRoot(params.datasetPath);
-    params.datasetPath = datasetRootPath;
-    dataBasePath = datasetRootPath;
-    sequenceIndex = null;
+    cancelPendingViewerTasks();
+    pauseSequence(false);
+    setStatus(`Checking dataset ${requestedRoot}...`);
+
+    const candidateSequence = await fetchSequenceIndexForRoot(requestedRoot, true);
+    const candidateBasePath = candidateSequence?.frames?.length > 0
+      ? sequenceFrameBasePathForRoot(requestedRoot, candidateSequence.frames[0])
+      : requestedRoot;
+    const candidateMetadata = await loadMetadataForBase(candidateBasePath);
+    const candidateFields = validateDatasetMetadata(
+      candidateMetadata,
+      `metadata.json at ${candidateBasePath}`
+    );
+    const candidateCoords = await loadCoordinatesForBase(candidateBasePath, candidateMetadata);
+    validateDatasetCoordinates(candidateCoords, candidateMetadata, "coordinates.json");
+
+    // Read one complete field before replacing the working scene. This catches
+    // truncated downloads and incorrect dimensions while the old view is intact.
+    const [, firstFieldFile] = candidateFields[0];
+    await loadFloat32ForBase(
+      candidateBasePath,
+      firstFieldFile,
+      Number(candidateMetadata.nr) * Number(candidateMetadata.ntheta) * Number(candidateMetadata.nphi)
+    );
+
+    datasetRootPath = requestedRoot;
+    dataBasePath = candidateBasePath;
+    sequenceIndex = candidateSequence;
+    metadata = candidateMetadata;
+    coords = candidateCoords;
     secondaryDataset = null;
+    params.datasetPath = requestedRoot;
     params.sequenceFrame = 0;
-    clearLoadedDataCaches(false);
-
-    setStatus(`Loading dataset ${datasetRootPath}...`);
-    await loadSequenceIndex(true);
-
     if (sequenceIndex?.frames?.length > 0) {
-      const frame = sequenceIndex.frames[0];
-      dataBasePath = sequenceFrameBasePath(frame);
+      params.sequencePlaybackFirst = 0;
+      params.sequencePlaybackLast = sequenceIndex.frames.length - 1;
+      params.sequencePngFirst = 0;
+      params.sequencePngLast = sequenceIndex.frames.length - 1;
     }
-
-    metadata = await loadMetadata();
-    await loadCoordinates();
+    disposeHeavyPlaybackCaches();
+    committed = true;
 
     applyDefaultFields();
     buildGui();
     updateLighting();
+    updateBackgroundColor();
 
     await rebuildAllMeshes();
     await loadFieldLines();
-    await updateEarthSurface();
     updateVisibility();
+    rememberDatasetRoot(requestedRoot);
     setStatusSummary(`dataset:${datasetRootPath}`);
     hideDatasetLauncher();
     return true;
   } catch (err) {
     console.error(err);
-    setStatus(`Could not load dataset ${params.datasetPath}: ${err.message}`);
+    if (committed) {
+      restoreDatasetState(previous);
+      disposeHeavyPlaybackCaches();
+      if (metadata) {
+        try {
+          buildGui();
+          await rebuildAllMeshes();
+          await loadFieldLines();
+          updateVisibility();
+        } catch (restoreError) {
+          console.error("Could not restore the previous dataset view", restoreError);
+        }
+      }
+    } else {
+      params.datasetPath = previous.datasetRootPath;
+    }
+    const reason = err?.name === "TimeoutError"
+      ? `a network request exceeded ${Math.round(DATASET_FETCH_TIMEOUT_MS / 1000)} seconds`
+      : (err?.message || String(err));
+    setStatus(`Could not load dataset ${requestedRoot}: ${reason}.`);
     return false;
+  } finally {
+    window.clearInterval(progressTimer);
+    datasetRequestSignal = null;
+    controller.abort();
+    setDatasetLoadingState(false);
   }
 }
 
@@ -6005,6 +6538,7 @@ function buildGui() {
   }
   sequenceControllers.length = 0;
   cameraParamControllers.length = 0;
+  legendControllers.length = 0;
   const gui = new GUI({ title: "Controls" });
   gui.domElement.classList.add("main-controls-gui");
   guiRoot = gui;
@@ -6029,7 +6563,11 @@ function buildGui() {
   sequenceFolder.add(params, "reloadSequence").name("Reload sequence.json");
   const sequenceLength = Math.max(1, sequenceIndex?.frames?.length || 1);
   normaliseSequencePlaybackRange();
-  sequenceControllers.push(sequenceFolder.add(params, "sequenceFrame", 0, sequenceLength - 1, 1).name("Frame").onChange(loadFrameByIndex));
+  sequenceControllers.push(
+    sequenceFolder.add(params, "sequenceFrame", 0, sequenceLength - 1, 1)
+      .name("Frame")
+      .onFinishChange(viewerTaskCallback("Sequence frame load", loadFrameByIndex))
+  );
   sequenceControllers.push(
     sequenceFolder.add(params, "sequencePlaybackFirst", 0, sequenceLength - 1, 1)
       .name("First played frame")
@@ -6040,7 +6578,9 @@ function buildGui() {
       .name("Last played frame")
       .onChange(() => { normaliseSequencePlaybackRange("last"); refreshSequenceControllers(); })
   );
-  sequenceFolder.add(params, "sequenceFps", 0.5, 30, 0.5).name("FPS").onChange(() => { if (sequenceTimer) playSequence(); });
+  sequenceFolder.add(params, "sequenceFps", 0.5, 30, 0.5).name("FPS").onChange(() => {
+    if (sequenceTimer) void runViewerTask("Sequence speed update", () => playSequence());
+  });
   params.sequenceMaxCachedFrames = clamp(
     Math.round(Number(params.sequenceMaxCachedFrames) || 10),
     1,
@@ -6073,36 +6613,74 @@ function buildGui() {
   radialFolder.add(params, "radialSurfaceRadiusRo", 0.0, 1.0, 0.001).name("Radius r / r_o").onFinishChange(() => rebuildRadialSurface({ reuseGeometry: false }));
   const eqFolder = addDisplayControls(gui, "equator", "Equatorial slice 1", "equatorField", "showEquator", "equatorOpacity", rebuildEquator, volumeFields);
   const eq2Folder = addDisplayControls(gui, "equator2", "Equatorial slice 2", "equator2Field", "showEquator2", "equator2Opacity", rebuildEquator2, volumeFields);
-  eq2Folder.add(params, "equator2Z", -0.95, 0.95, 0.01).name("z / r_o").onChange(rebuildEquator2);
+  eq2Folder.add(params, "equator2Z", -0.95, 0.95, 0.01).name("z / r_o")
+    .onFinishChange(viewerTaskCallback("Equatorial slice position", rebuildEquator2));
   const merFolder = addDisplayControls(gui, "meridian", "Meridional slice 1", "meridianField", "showMeridian", "meridianOpacity", rebuildMeridian, volumeFields);
-  merFolder.add(params, "meridianPhiDeg", 0, 360, 1).name("Longitude phi").onChange(() => { rebuildMeridian(); rebuildCMB(); rebuildIsosurfaces(); });
+  const rebuildMeridianView = async () => {
+    await rebuildMeridian();
+    await rebuildCMB();
+    await rebuildIsosurfaces();
+  };
+  merFolder.add(params, "meridianPhiDeg", 0, 360, 1).name("Longitude phi")
+    .onFinishChange(viewerTaskCallback("Meridian 1 position", rebuildMeridianView));
 
   const mer2Folder = addDisplayControls(gui, "meridian2", "Meridional slice 2", "meridian2Field", "showMeridian2", "meridian2Opacity", rebuildMeridian2, volumeFields);
-  mer2Folder.add(params, "meridian2PhiDeg", 0, 360, 1).name("Longitude phi").onChange(() => { rebuildMeridian2(); rebuildCMB(); rebuildIsosurfaces(); });
+  const rebuildMeridian2View = async () => {
+    await rebuildMeridian2();
+    await rebuildCMB();
+    await rebuildIsosurfaces();
+  };
+  const rebuildCmbAndIso = async () => {
+    await rebuildCMB();
+    await rebuildIsosurfaces();
+  };
+  mer2Folder.add(params, "meridian2PhiDeg", 0, 360, 1).name("Longitude phi")
+    .onFinishChange(viewerTaskCallback("Meridian 2 position", rebuildMeridian2View));
 
-  merFolder.add(params, "cmbClipWithMeridian").name("Clip CMB with meridians").onChange(() => { rebuildCMB(); rebuildIsosurfaces(); });
+  merFolder.add(params, "cmbClipWithMeridian").name("Clip CMB with meridians")
+    .onChange(viewerTaskCallback("CMB clipping", rebuildCmbAndIso));
   merFolder.add(params, "cmbClipMode", {
     None: "none",
     "Rear half": "rear-half",
     "Between meridional planes (behind)": "between-meridians-behind",
     "Selected 8 quarters": "selected-eight-quarters"
-  }).name("CMB clip mode").onChange(() => { rebuildCMB(); rebuildIsosurfaces(); });
-  merFolder.add(params, "cmbRearSide", { Rear: "positive", Front: "negative" }).name("CMB side").onChange(() => { rebuildCMB(); rebuildIsosurfaces(); });
+  }).name("CMB clip mode").onChange(viewerTaskCallback("CMB clip mode", rebuildCmbAndIso));
+  merFolder.add(params, "cmbRearSide", { Rear: "positive", Front: "negative" }).name("CMB side")
+    .onChange(viewerTaskCallback("CMB clip side", rebuildCmbAndIso));
   const quarterFolder = merFolder.addFolder("8-quarter selection");
-  quarterFolder.add(params, "quarterN1").name("North Q1").onChange(() => { rebuildCMB(); });
-  quarterFolder.add(params, "quarterN2").name("North Q2").onChange(() => { rebuildCMB(); });
-  quarterFolder.add(params, "quarterN3").name("North Q3").onChange(() => { rebuildCMB(); });
-  quarterFolder.add(params, "quarterN4").name("North Q4").onChange(() => { rebuildCMB(); });
-  quarterFolder.add(params, "quarterS1").name("South Q1").onChange(() => { rebuildCMB(); });
-  quarterFolder.add(params, "quarterS2").name("South Q2").onChange(() => { rebuildCMB(); });
-  quarterFolder.add(params, "quarterS3").name("South Q3").onChange(() => { rebuildCMB(); });
-  quarterFolder.add(params, "quarterS4").name("South Q4").onChange(() => { rebuildCMB(); });
+  const rebuildQuarterMask = debouncedViewerTask("CMB quarter mask", rebuildCMB);
+  quarterFolder.add(params, "quarterN1").name("North Q1").onChange(rebuildQuarterMask);
+  quarterFolder.add(params, "quarterN2").name("North Q2").onChange(rebuildQuarterMask);
+  quarterFolder.add(params, "quarterN3").name("North Q3").onChange(rebuildQuarterMask);
+  quarterFolder.add(params, "quarterN4").name("North Q4").onChange(rebuildQuarterMask);
+  quarterFolder.add(params, "quarterS1").name("South Q1").onChange(rebuildQuarterMask);
+  quarterFolder.add(params, "quarterS2").name("South Q2").onChange(rebuildQuarterMask);
+  quarterFolder.add(params, "quarterS3").name("South Q3").onChange(rebuildQuarterMask);
+  quarterFolder.add(params, "quarterS4").name("South Q4").onChange(rebuildQuarterMask);
 
   const lighting = gui.addFolder("Lighting");
   lighting.add(params, "ambientIntensity", 0.0, 2.0, 0.01).name("Ambient").onChange(updateLighting);
   lighting.add(params, "directionalIntensity", 0.0, 4.0, 0.01).name("Directional").onChange(updateLighting);
   lighting.add(params, "lightAzimuthDeg", 0, 360, 1).name("Light azimuth").onChange(updateLighting);
   lighting.add(params, "lightElevationDeg", -89, 89, 1).name("Light elevation").onChange(updateLighting);
+
+  const appearance = gui.addFolder("Appearance and legends");
+  appearance.addColor(params, "backgroundColor").name("Background").onChange(updateBackgroundColor);
+  appearance.addColor(params, "customColourLow").name("Custom low colour").onChange(scheduleCustomColourRefresh);
+  appearance.addColor(params, "customColourHigh").name("Custom high colour").onChange(scheduleCustomColourRefresh);
+  legendControllers.push(
+    appearance.add(params, "legendVisible").name("Show legends").onChange(applyLegendLayout),
+    appearance.add(params, "legendCollapsed").name("Collapse legends").onChange(applyLegendLayout),
+    appearance.add(params, "legendPosition", {
+      "Left centre": "left-center",
+      "Right centre": "right-center",
+      "Top left": "top-left",
+      "Top right": "top-right",
+      "Bottom left": "bottom-left",
+      "Bottom right": "bottom-right",
+      "Dragged position": "custom",
+    }).name("Legend position").onChange(applyLegendLayout)
+  );
 
   const exportFolder = gui.addFolder("Export");
   exportFolder.add(params, "exportWidthPx", 800, 6000, 100).name("PNG/PDF width px");
@@ -6135,20 +6713,22 @@ function buildGui() {
   const lineFolder = gui.addFolder("Magnetic field lines");
   const lineModes = getAvailableFieldLineModes();
   if (lineModes.length > 0) {
+    const refreshFieldLines = debouncedViewerTask("Magnetic field-line update", loadFieldLines);
     if (!lineModes.includes(params.fieldLineDisplay)) params.fieldLineDisplay = lineModes[0];
-    lineFolder.add(params, "showFieldLines").name("Show").onChange(onFieldLineVisibilityChanged);
+    lineFolder.add(params, "showFieldLines").name("Show")
+      .onChange(viewerTaskCallback("Magnetic field-line visibility", onFieldLineVisibilityChanged));
     const lineModeOptions = {};
     if (lineModes.includes("shell")) lineModeOptions["Shell/internal"] = "shell";
     if (lineModes.includes("exterior")) lineModeOptions["Exterior potential/poloidal"] = "exterior";
     if (lineModes.includes("both")) lineModeOptions["Both"] = "both";
-    lineFolder.add(params, "fieldLineDisplay", lineModeOptions).name("Line type").onChange(loadFieldLines);
-    lineFolder.add(params, "lineStride", 1, 10, 1).name("Line stride").onChange(loadFieldLines);
-    lineFolder.add(params, "lineColourMode", { Strength: "strength", Polarity: "polarity" }).name("Colour by").onChange(loadFieldLines);
-    lineFolder.add(params, "lineColormap", colourMapNames).name("Colour map").onChange(loadFieldLines);
-    lineFolder.add(params, "lineValueTransform", { Linear: "linear", "log10(|B|)": "log10" }).name("Value scale").onChange(loadFieldLines);
-    lineFolder.add(params, "lineScale", ["minmax", "manual"]).name("Range").onChange(loadFieldLines);
-    lineFolder.add(params, "lineMin").name("Manual min").onChange(loadFieldLines);
-    lineFolder.add(params, "lineMax").name("Manual max").onChange(loadFieldLines);
+    lineFolder.add(params, "fieldLineDisplay", lineModeOptions).name("Line type").onChange(refreshFieldLines);
+    lineFolder.add(params, "lineStride", 1, 10, 1).name("Line stride").onFinishChange(refreshFieldLines);
+    lineFolder.add(params, "lineColourMode", { Strength: "strength", Polarity: "polarity" }).name("Colour by").onChange(refreshFieldLines);
+    lineFolder.add(params, "lineColormap", colourMapNames).name("Colour map").onChange(refreshFieldLines);
+    lineFolder.add(params, "lineValueTransform", { Linear: "linear", "log10(|B|)": "log10" }).name("Value scale").onChange(refreshFieldLines);
+    lineFolder.add(params, "lineScale", ["minmax", "manual"]).name("Range").onChange(refreshFieldLines);
+    lineFolder.add(params, "lineMin").name("Manual min").onFinishChange(refreshFieldLines);
+    lineFolder.add(params, "lineMax").name("Manual max").onFinishChange(refreshFieldLines);
     lineFolder.add(params, "lineWidthPx", 1, 12, 0.25).name("Thickness px").onChange(updateFieldLineVisuals);
     lineFolder.add(params, "lineOpacity", 0.05, 1.0, 0.01).name("Opacity").onChange(updateFieldLineVisuals);
   } else {
@@ -6156,22 +6736,25 @@ function buildGui() {
   }
 
   const isoFolder = gui.addFolder("Isosurfaces");
+  const refreshIsosurfaces = debouncedViewerTask("Isosurface update", rebuildIsosurfaces);
   if (!volumeFields.includes(params.isoField) && volumeFields.length > 0) params.isoField = volumeFields[0];
-  isoFolder.add(params, "showIsosurfaces").name("Show").onChange(rebuildIsosurfaces);
-  isoFolder.add(params, "isoField", volumeFields).name("Field").onChange(rebuildIsosurfaces);
-  isoFolder.add(params, "isoResolution", 16, 80, 2).name("Resolution").onChange(rebuildIsosurfaces);
-  isoFolder.add(params, "isoClipWithMeridian").name("Clip with meridians").onChange(rebuildIsosurfaces);
-  isoFolder.add(params, "isoClipOffsetMeridian1", -1.0, 1.0, 0.01).name("Clip offset M1").onChange(rebuildIsosurfaces);
-  isoFolder.add(params, "isoClipOffsetMeridian2", -1.0, 1.0, 0.01).name("Clip offset M2").onChange(rebuildIsosurfaces);
-  isoFolder.add(params, "showIsoPositive").name("Show positive").onChange(rebuildIsosurfaces);
-  isoFolder.add(params, "isoPositiveValue").name("Positive value").onChange(rebuildIsosurfaces);
+  isoFolder.add(params, "showIsosurfaces").name("Show").onChange(refreshIsosurfaces);
+  isoFolder.add(params, "isoField", volumeFields).name("Field").onChange(refreshIsosurfaces);
+  isoFolder.add(params, "isoResolution", 16, 80, 2).name("Resolution").onFinishChange(refreshIsosurfaces);
+  isoFolder.add(params, "isoClipWithMeridian").name("Clip with meridians").onChange(refreshIsosurfaces);
+  isoFolder.add(params, "isoClipOffsetMeridian1", -1.0, 1.0, 0.01).name("Clip offset M1").onFinishChange(refreshIsosurfaces);
+  isoFolder.add(params, "isoClipOffsetMeridian2", -1.0, 1.0, 0.01).name("Clip offset M2").onFinishChange(refreshIsosurfaces);
+  isoFolder.add(params, "showIsoPositive").name("Show positive").onChange(refreshIsosurfaces);
+  isoFolder.add(params, "isoPositiveValue").name("Positive value").onFinishChange(refreshIsosurfaces);
   isoFolder.addColor(params, "isoPositiveColor").name("Positive color").onChange(() => { if (isoPositiveMesh) isoPositiveMesh.material.color.set(params.isoPositiveColor); });
-  isoFolder.add(params, "showIsoNegative").name("Show negative").onChange(rebuildIsosurfaces);
-  isoFolder.add(params, "isoNegativeValue").name("Negative value").onChange(rebuildIsosurfaces);
+  isoFolder.add(params, "showIsoNegative").name("Show negative").onChange(refreshIsosurfaces);
+  isoFolder.add(params, "isoNegativeValue").name("Negative value").onFinishChange(refreshIsosurfaces);
   isoFolder.addColor(params, "isoNegativeColor").name("Negative color").onChange(() => { if (isoNegativeMesh) isoNegativeMesh.material.color.set(params.isoNegativeColor); });
   isoFolder.add(params, "isoOpacity", 0.05, 1.0, 0.01).name("Opacity").onChange(updateOpacities);
 
   const earthFolder = gui.addFolder("Earth surface");
+  const rebuildEarth = debouncedViewerTask("Earth surface update", () => updateEarthSurface({ reuseGeometry: false }));
+  const recolourEarth = debouncedViewerTask("Earth surface colour update", () => updateEarthSurface({ reuseGeometry: true }));
   const earthFields = getEarthFieldNames();
   const earthModes = { "Earth image": "texture" };
   if (earthFields.length > 0) earthModes["Magnetic B_r"] = "magnetic";
@@ -6181,19 +6764,20 @@ function buildGui() {
   if (earthFields.length > 0 && !earthFields.includes(params.earthField)) {
     params.earthField = chooseField(["Br_Earth_lmax13"], earthFields);
   }
-  earthFolder.add(params, "showEarthSurface").name("Show").onChange(updateEarthSurface);
-  earthFolder.add(params, "earthDisplayMode", earthModes).name("Display").onChange(() => updateEarthSurface({ reuseGeometry: false }));
+  earthFolder.add(params, "showEarthSurface").name("Show").onChange(rebuildEarth);
+  earthFolder.add(params, "earthDisplayMode", earthModes).name("Display").onChange(rebuildEarth);
   if (earthFields.length > 0) {
-    earthFolder.add(params, "earthField", earthFields).name("Magnetic field").onChange(() => updateEarthSurface({ reuseGeometry: false }));
-    earthFolder.add(params, "earthScale", ["symmetric", "minmax", "manual"]).name("Scale").onChange(() => updateEarthSurface({ reuseGeometry: true }));
-    earthFolder.add(params, "earthColormap", colourMapNames).name("Colour map").onChange(() => updateEarthSurface({ reuseGeometry: true }));
-    earthFolder.add(params, "earthMin").name("Manual min").onChange(() => updateEarthSurface({ reuseGeometry: true }));
-    earthFolder.add(params, "earthMax").name("Manual max").onChange(() => updateEarthSurface({ reuseGeometry: true }));
+    earthFolder.add(params, "earthField", earthFields).name("Magnetic field").onChange(rebuildEarth);
+    earthFolder.add(params, "earthScale", ["symmetric", "minmax", "manual"]).name("Scale").onChange(recolourEarth);
+    earthFolder.add(params, "earthColormap", colourMapNames).name("Colour map").onChange(recolourEarth);
+    earthFolder.add(params, "earthMin").name("Manual min").onFinishChange(recolourEarth);
+    earthFolder.add(params, "earthMax").name("Manual max").onFinishChange(recolourEarth);
   }
-  earthFolder.add(params, "earthLongitudeDeg", -180, 180, 1).name("Texture longitude").onChange(() => updateEarthSurface({ reuseGeometry: false }));
-  earthFolder.add(params, "earthRadiusScale", 1.0, 2.5, 0.01).name("Texture radius / core").onChange(() => updateEarthSurface({ reuseGeometry: false }));
+  earthFolder.add(params, "earthLongitudeDeg", -180, 180, 1).name("Texture longitude").onFinishChange(rebuildEarth);
+  earthFolder.add(params, "earthRadiusScale", 1.0, 2.5, 0.01).name("Texture radius / core").onFinishChange(rebuildEarth);
   earthFolder.add(params, "earthOpacity", 0.05, 1.0, 0.01).name("Opacity").onChange(updateOpacities);
-  earthFolder.add(params, "showSliceGapFiller").name("Slice gap filler").onChange(rebuildGapFillers);
+  earthFolder.add(params, "showSliceGapFiller").name("Slice gap filler")
+    .onChange(viewerTaskCallback("Slice gap filler", rebuildGapFillers));
   earthFolder.add(params, "sliceGapFillerOpacity", 0.0, 1.0, 0.01).name("Filler opacity").onChange(updateOpacities);
 
   const other = gui.addFolder("Other visualisation");
@@ -6212,6 +6796,7 @@ function buildGui() {
     mer2Folder,
     quarterFolder,
     lighting,
+    appearance,
     exportFolder,
     pngSequenceFolder,
     lineFolder,
@@ -6273,16 +6858,6 @@ async function saveBlob(blob, filename, description = "file") {
 }
 
 
-function withTemporaryWhiteBackground(renderCallback) {
-  const previousBackground = scene.background;
-  scene.background = new THREE.Color(0xffffff);
-  renderer.render(scene, camera);
-  const result = renderCallback();
-  scene.background = previousBackground;
-  renderer.render(scene, camera);
-  return result;
-}
-
 function drawRoundedRectPath(ctx, x, y, w, h, r) {
   const rr = Math.min(r, 0.5 * w, 0.5 * h);
   ctx.beginPath();
@@ -6299,7 +6874,7 @@ function drawRoundedRectPath(ctx, x, y, w, h, r) {
 }
 
 function drawColourbarGradient(ctx, x, y, w, h, scheme) {
-  const stops = colourStops[scheme] || colourStops["blue-white-red"];
+  const stops = getColourStops(scheme);
   const gradient = ctx.createLinearGradient(x, y, x + w, y);
   for (const [t, rgb] of stops) {
     gradient.addColorStop(t, `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`);
@@ -6314,6 +6889,7 @@ function drawColourbarGradient(ctx, x, y, w, h, scheme) {
 
 
 function getVisibleColourbarSlots() {
+  if (!params.legendVisible || params.legendCollapsed) return [];
   return displaySlots.filter((slot) => {
     const bar = colourbars[slot];
     return bar?.row && bar.row.style.display !== "none";
@@ -6328,10 +6904,26 @@ function drawExportColourbars(ctx, width, height) {
   const panelWidth = 330 * scale;
   const panelHeight = 58 * scale;
   const gap = 8 * scale;
-  const x = 18 * scale;
   const totalHeight = slots.length * panelHeight + (slots.length - 1) * gap;
+  const margin = 18 * scale;
+  const maxX = Math.max(margin, width - panelWidth - margin);
+  const maxY = Math.max(margin, height - totalHeight - margin);
+  let x = margin;
   let y = 0.5 * (height - totalHeight);
-  y = clamp(y, 18 * scale, Math.max(18 * scale, height - totalHeight - 18 * scale));
+  switch (params.legendPosition) {
+    case "right-center": x = maxX; break;
+    case "top-left": y = margin; break;
+    case "top-right": x = maxX; y = margin; break;
+    case "bottom-left": y = maxY; break;
+    case "bottom-right": x = maxX; y = maxY; break;
+    case "custom":
+      x = margin + clamp(Number(params.legendX), 0, 1) * Math.max(0, maxX - margin);
+      y = margin + clamp(Number(params.legendY), 0, 1) * Math.max(0, maxY - margin);
+      break;
+    default: break;
+  }
+  x = clamp(x, margin, maxX);
+  y = clamp(y, margin, maxY);
 
   ctx.save();
   for (const slot of slots) {
@@ -6392,14 +6984,17 @@ function makeCompositeExportCanvas(widthPx = null) {
     needResize = true;
   }
 
-  scene.background = new THREE.Color(0xffffff);
+  const exportBackground = /^#[0-9a-f]{6}$/i.test(String(params.backgroundColor || ""))
+    ? params.backgroundColor
+    : "#050505";
+  scene.background = new THREE.Color(exportBackground);
   renderer.render(scene, camera);
 
   const canvas = document.createElement("canvas");
   canvas.width = renderer.domElement.width;
   canvas.height = renderer.domElement.height;
   const ctx = canvas.getContext("2d");
-  ctx.fillStyle = "white";
+  ctx.fillStyle = exportBackground;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(renderer.domElement, 0, 0, canvas.width, canvas.height);
   drawExportColourbars(ctx, canvas.width, canvas.height);
@@ -7751,20 +8346,31 @@ function bindExportPanelButtons() {
 
 function animate(now = performance.now()) {
   requestAnimationFrame(animate);
-  if (videoState.active && !videoState.offline) {
-    updateVideoRecordingFrame(now);
-  } else if (!videoState.active) {
-    controls.update();
+  try {
+    if (videoState.active && !videoState.offline) {
+      updateVideoRecordingFrame(now);
+    } else if (!videoState.active) {
+      controls.update();
+    }
+    renderer.render(scene, camera);
+    updateAxesOverlay();
+  } catch (err) {
+    console.error("Render loop error", err);
+    if (!animate.lastErrorAt || now - animate.lastErrorAt > 3000) {
+      setStatus(`Rendering recovered from an error: ${err?.message || err}`);
+      animate.lastErrorAt = now;
+    }
   }
-  renderer.render(scene, camera);
-  updateAxesOverlay();
 }
 
 async function init() {
   syncCameraParamsFromCamera(false);
   bindExportPanelButtons();
   bindDatasetLauncher();
+  bindLegendControls();
   updateLighting();
+  updateBackgroundColor();
+  applyLegendLayout();
   animate();
 
   const queryPath = getDatasetPathFromQuery();
@@ -7782,6 +8388,28 @@ async function init() {
 
 window.addEventListener("keydown", handleViewerKeyboardShortcut);
 
+window.addEventListener("unhandledrejection", (event) => {
+  const reason = event.reason;
+  if (reason?.name === "AbortError") return;
+  console.error("Unhandled viewer task", reason);
+  setStatus(`A viewer task failed safely: ${reason?.message || reason || "unknown error"}`);
+});
+
+renderer.domElement.addEventListener("webglcontextlost", (event) => {
+  event.preventDefault();
+  setStatus("WebGL context was lost. Waiting for the browser to restore it...");
+});
+
+renderer.domElement.addEventListener("webglcontextrestored", () => {
+  void runViewerTask("WebGL recovery", async () => {
+    if (!metadata) return;
+    await rebuildAllMeshes({ visibleOnly: true, reuseGeometry: false, includeHeavy: true });
+    await loadFieldLines();
+    updateVisibility();
+    setStatus("WebGL context restored.");
+  });
+});
+
 window.addEventListener("resize", () => {
   if (videoState.active || sequencePngExportActive) return;
   camera.aspect = window.innerWidth / window.innerHeight;
@@ -7793,6 +8421,7 @@ window.addEventListener("resize", () => {
   updateFieldLineVisuals();
   syncCameraParamsFromCamera(true);
   updateAxesOverlay();
+  applyLegendLayout();
 });
 
 init();
