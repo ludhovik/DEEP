@@ -1219,7 +1219,7 @@ function stripRepositoryDatasetPrefix(entries) {
 }
 
 async function buildFigshareIndex(articleId) {
-  const response = await fetch(`https://api.figshare.com/v2/articles/${articleId}`);
+  const response = await fetch(`https://deep-figshare-proxy.ludhovik-research.workers.dev/figshare/articles/${articleId}`);
   if (!response.ok) throw new Error(`Figshare record ${articleId} returned HTTP ${response.status}.`);
   const record = await response.json();
   const folders = record.folder_structure || {};
