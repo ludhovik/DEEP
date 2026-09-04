@@ -1,0 +1,5 @@
+numpy
+scipy
+matplotlib
+# The MagIC Python readers are distributed with MagIC itself rather than PyPI.
+# Set MAGIC_HOME or pass --magic-python-dir /path/to/magic/python.

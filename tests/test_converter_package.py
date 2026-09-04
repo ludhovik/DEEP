@@ -6,14 +6,19 @@ import importlib.util
 import math
 import pathlib
 import sys
+import tempfile
 import types
 import unittest
+from unittest import mock
 
 import numpy as np
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 LEEDS_PATH = ROOT / "tools" / "convert_state_to_viewer.py"
 XSHELLS_PATH = ROOT / "tools" / "convert_xshells_to_viewer.py"
+MAGIC_PATH = ROOT / "tools" / "convert_magic_to_viewer.py"
 MODULES_PATH = ROOT / "modules.py"
 
 
@@ -54,7 +59,9 @@ class ConverterPackageTests(unittest.TestCase):
         # modules.py imports shtns at module import time. The curl and geometry
         # tests do not need spectral transforms, so a minimal stub is sufficient.
         sys.modules.setdefault("shtns", types.ModuleType("shtns"))
+        sys.modules.setdefault("h5py", types.ModuleType("h5py"))
         cls.modules = load_module("converter_modules_test", MODULES_PATH)
+        cls.magic = load_module("converter_magic_test", MAGIC_PATH)
 
     def geometry(self, r, up, ut, bp, bt, **kwargs):
         defaults = dict(
@@ -161,6 +168,7 @@ class ConverterPackageTests(unittest.TestCase):
     def test_common_output_contract(self):
         leeds_names = literal_output_names(LEEDS_PATH)
         xshells_names = literal_output_names(XSHELLS_PATH)
+        magic_names = literal_output_names(MAGIC_PATH)
         required = {
             "ur", "ut", "up", "us", "uz", "Uabs", "helicity",
             "Br", "Bt", "Bp", "Babs",
@@ -172,15 +180,84 @@ class ConverterPackageTests(unittest.TestCase):
         }
         self.assertTrue(required <= leeds_names, sorted(required - leeds_names))
         self.assertTrue(required <= xshells_names, sorted(required - xshells_names))
+        self.assertTrue(required <= magic_names, sorted(required - magic_names))
 
     def test_cli_flags_present_in_both(self):
-        for path in (LEEDS_PATH, XSHELLS_PATH):
+        for path in (LEEDS_PATH, XSHELLS_PATH, MAGIC_PATH):
             text = path.read_text(encoding="utf-8")
             self.assertIn('"--emf"', text)
             self.assertIn('"--induction"', text)
             self.assertIn('"--geometry"', text)
             self.assertIn('"--fluid-inner-radius"', text)
             self.assertIn('"dynamo-three-viewer-v2-common"', text)
+
+    def test_magic_layout_unfolds_symmetry_and_reverses_radius(self):
+        graph = types.SimpleNamespace(
+            radius=np.array([1.0, 0.7, 0.35]),
+            colatitude=np.array([2.5, 1.5, 0.5]),
+            minc=2,
+        )
+        base = np.arange(4 * 3 * 3, dtype=np.float64).reshape(4, 3, 3)
+        graph.vr = base
+        graph.vtheta = base + 100.0
+        graph.vphi = base + 200.0
+        adapted = self.magic.adapt_graph(graph)
+        self.assertTrue(np.allclose(adapted["r_shell"], [0.35, 0.7, 1.0]))
+        self.assertTrue(np.allclose(adapted["theta"], [0.5, 1.5, 2.5]))
+        self.assertEqual(adapted["fields"]["ur"].shape, (3, 3, 8))
+        self.assertTrue(np.array_equal(
+            adapted["fields"]["ur"][:, :, :4],
+            adapted["fields"]["ur"][:, :, 4:],
+        ))
+        self.assertEqual(adapted["fields"]["ur"][0, 0, 0], base[0, 2, 2])
+
+    def test_magic_surface_transform_recovers_low_degree_field(self):
+        theta = np.arccos(np.polynomial.legendre.leggauss(24)[0][::-1])
+        phi = np.linspace(0.0, 2.0 * math.pi, 48, endpoint=False)
+        field = 0.7 * np.cos(theta)[:, None] + 0.2 * np.sin(theta)[:, None] * np.cos(phi)[None, :]
+        recovered = self.magic.truncated_surface(field, theta, phi, 1)
+        self.assertLess(float(np.max(np.abs(recovered - field))), 2.0e-12)
+
+    def test_magic_end_to_end_binary_contract(self):
+        nr, ntheta, nphi = 5, 8, 12
+        radius = np.linspace(1.0, 0.35, nr)
+        theta = np.arccos(np.polynomial.legendre.leggauss(ntheta)[0][::-1])
+        phi = np.linspace(0.0, 2.0 * math.pi, nphi, endpoint=False)
+        P, T, R = np.meshgrid(phi, theta, radius, indexing="ij")
+        graph = types.SimpleNamespace(
+            radius=radius,
+            colatitude=theta,
+            minc=1,
+            vr=R * np.sin(T) * np.cos(P),
+            vtheta=R * np.cos(T) * np.cos(P),
+            vphi=R * np.sin(P),
+            entropy=R * np.cos(T),
+            xi=0.1 * R * np.sin(T) * np.sin(P),
+            Br=2.0 * R * np.cos(T),
+            Btheta=R * np.sin(T),
+            Bphi=0.1 * R * np.sin(P),
+            time=1.25,
+            ek=1.0e-4,
+            pr=1.0,
+            sc=1.0,
+            ra=1.0e6,
+            raxi=0.0,
+            prmag=2.0,
+            radratio=0.35,
+        )
+        args = self.magic.build_arg_parser().parse_args([
+            "--graph", "G_1.test", "--skip-field-lines", "--no-earth-br",
+            "--no-gradients", "--no-m0-fields",
+        ])
+        with tempfile.TemporaryDirectory() as folder:
+            output = pathlib.Path(folder)
+            with mock.patch.object(self.magic, "load_graph", return_value=graph):
+                metadata = self.magic.convert_graph(pathlib.Path("G_1.test"), output, args)
+            expected_size = metadata["nr"] * metadata["ntheta"] * metadata["nphi"] * 4
+            self.assertEqual(metadata["viewer_field_contract"], "dynamo-three-viewer-v2-common")
+            self.assertIn("Comp", metadata["fields"])
+            for filename in metadata["fields"].values():
+                self.assertEqual((output / filename).stat().st_size, expected_size)
 
 
 if __name__ == "__main__":

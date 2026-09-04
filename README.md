@@ -1,7 +1,7 @@
 # Dynamo Three.js Viewer
 
 > **Integrated release 0.3.0.** This package includes the complete viewer and the
-> aligned Leeds/XSHELLS converter package v3.0.0. Both converters support the
+> aligned Leeds/XSHELLS/MagIC converter package. All three converters support the
 > common field contract, optional `--emf` and `--induction`, and explicit physical
 > geometry metadata for full spheres, ordinary shells, and shells with conducting
 > inner cores. See `V3_RELEASE_NOTES.md` and `CONVERTER_VALIDATION.md`.
@@ -10,13 +10,16 @@
 Local Three.js/Vite viewer for spherical-dynamo output from:
 
 - the Leeds Spherical Dynamo code;
-- XSHELLS through `pyxshells`.
+- XSHELLS through `pyxshells`;
+- MagIC graphic snapshots through the official `MagicGraph` reader.
 
 The package contains:
 
 - `tools/convert_state_to_viewer.py` — Leeds state-file converter;
 - `modules.py` — bundled Leeds shell and regular full-sphere SHTns transforms;
 - `tools/convert_xshells_to_viewer.py` — XSHELLS field converter;
+- `tools/convert_magic_to_viewer.py` — MagIC `G_#.TAG` converter;
+- `MAGIC_CONVERTER.md` — MagIC installation, usage, dataset, and validation guide;
 - `src/main.js` — browser viewer;
 - `public/data/` — default browser-readable dataset folder;
 - sample data that can be used to test the viewer immediately.
@@ -44,6 +47,7 @@ playback, PNG/PDF/video export, and saved view-state codes.
 6. [Prepare the Python converter environment](#6-prepare-the-python-converter-environment)
 7. [Leeds converter examples](#7-leeds-converter-examples)
 8. [XSHELLS converter examples](#8-xshells-converter-examples)
+   - [MagIC converter quick start](#magic-converter-quick-start)
 9. [Keyboard shortcuts](#9-keyboard-shortcuts)
 10. [Load datasets in the viewer](#10-load-datasets-in-the-viewer)
 11. [Main viewer displays](#11-main-viewer-displays)
@@ -418,6 +422,21 @@ python -c 'import numpy, pyxshells, shtns; print("NumPy/pyxshells/SHTns OK")'
 SHTns may need to be installed separately according to the Python/HPC
 environment in use.
 
+## 6.3 MagIC converter requirements
+
+Install the normal Python dependencies, then use the official Python readers
+distributed with MagIC:
+
+```bash
+python -m pip install -r requirements-magic.txt
+git clone https://github.com/magic-sph/magic.git ../magic
+python -c 'import sys; sys.path.insert(0, "../magic/python"); from magic import MagicGraph; print("MagicGraph OK")'
+```
+
+The converter can locate that reader with `--magic-python-dir ../magic/python`.
+It uses the pure-Python MagIC reader by default, so compiling MagIC's optional
+Python/Fortran extensions is not required.
+
 ---
 
 # 7. Leeds converter examples
@@ -788,6 +807,50 @@ Start the viewer and enter:
 
 The current XSHELLS converter processes one snapshot per command. To compare or
 retain several snapshots, write each one to a different folder under `public/`.
+
+## MagIC converter quick start
+
+Convert one standard MagIC graphic snapshot:
+
+```bash
+python tools/convert_magic_to_viewer.py \
+  --graph "/path/to/run/G_17.my_tag" \
+  --magic-python-dir "../magic/python" \
+  --out public/data_magic \
+  --cmb-br-ltrunc 13 \
+  --field-line-mode both
+```
+
+Or discover a snapshot by run folder, number, and tag:
+
+```bash
+python tools/convert_magic_to_viewer.py \
+  --folder "/path/to/run" \
+  --ivar 17 \
+  --tag my_tag \
+  --magic-python-dir "../magic/python" \
+  --out public/data_magic
+```
+
+Convert a sequence of `G_<number>.TAG` snapshots:
+
+```bash
+python tools/convert_magic_to_viewer.py \
+  --folder "/path/to/run" \
+  --tag my_tag \
+  --sequence-first 1 \
+  --sequence-last 20 \
+  --sequence-step 1 \
+  --sequence-clear \
+  --magic-python-dir "../magic/python" \
+  --out public/data_magic
+```
+
+MagIC arrays are automatically reordered from `(phi sector, theta, radius)` to
+the viewer's `(radius, theta, full phi)` layout. Azimuthal `minc` symmetry is
+unfolded, radius is made increasing, and inner-core magnetic samples are merged
+with shell fields. See `MAGIC_CONVERTER.md` for the full feature and validation
+reference.
 
 ---
 
