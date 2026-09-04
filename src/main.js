@@ -1089,9 +1089,28 @@ async function updateEarthSurface(options = {}) {
 }
 
 
+function normaliseExternalDatasetReference(path) {
+  const raw = String(path || "").trim();
+  if (/^(figshare|zenodo):[^/]+$/i.test(raw)) return raw.toLowerCase();
+
+  const figshare = raw.match(
+    /(?:api\.figshare\.com\/v2\/articles\/|figshare\.com\/(?:ndownloader\/articles\/|articles\/(?:[^/]+\/)?))(\d+)/i
+  ) || raw.match(/10\.6084\/m9\.figshare\.(\d+)/i);
+  if (figshare) return `figshare:${figshare[1]}`;
+
+  const zenodo = raw.match(/zenodo\.org\/(?:api\/)?records\/(\d+)/i)
+    || raw.match(/10\.5281\/zenodo\.(\d+)/i);
+  if (zenodo) return `zenodo:${zenodo[1]}`;
+
+  return raw;
+}
+
 function normaliseDatasetRoot(path) {
   let raw = String(path || DEFAULT_DATASET_ROOT).trim();
   if (!raw) return DEFAULT_DATASET_ROOT;
+  raw = normaliseExternalDatasetReference(raw);
+
+  if (/^(figshare|zenodo):[^/]+$/i.test(raw)) return raw.toLowerCase();
 
   if (/^fsdir:[^/]+(?:\/.*)?$/i.test(raw)) {
     return raw.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -1175,7 +1194,94 @@ async function fileFromDirectoryHandle(directoryHandle, relativePath) {
   return await fileHandle.getFile();
 }
 
+const remoteRepositoryIndexCache = new Map();
+
+function normaliseRepositoryPath(path) {
+  return String(path || "")
+    .replace(/\\/g, "/")
+    .replace(/^\/+|\/+$/g, "")
+    .replace(/\/+/g, "/");
+}
+
+function stripRepositoryDatasetPrefix(entries) {
+  const marker = entries.find(([entryPath]) => entryPath === "sequence.json")
+    || entries.find(([entryPath]) => entryPath.endsWith("/sequence.json"))
+    || entries.find(([entryPath]) => entryPath === "metadata.json")
+    || entries.find(([entryPath]) => entryPath.endsWith("/metadata.json"));
+  if (!marker) return entries;
+  const slash = marker[0].lastIndexOf("/");
+  if (slash < 0) return entries;
+  const prefix = marker[0].slice(0, slash + 1);
+  return entries.map(([entryPath, url]) => [
+    entryPath.startsWith(prefix) ? entryPath.slice(prefix.length) : entryPath,
+    url,
+  ]);
+}
+
+async function buildFigshareIndex(articleId) {
+  const response = await fetch(`https://api.figshare.com/v2/articles/${articleId}`);
+  if (!response.ok) throw new Error(`Figshare record ${articleId} returned HTTP ${response.status}.`);
+  const record = await response.json();
+  const folders = record.folder_structure || {};
+  const entries = (record.files || []).map((file) => {
+    const folder = normaliseRepositoryPath(folders[String(file.id)] || folders[file.id] || "");
+    const entryPath = normaliseRepositoryPath(folder ? `${folder}/${file.name}` : file.name);
+    return [entryPath, file.download_url];
+  });
+  return new Map(stripRepositoryDatasetPrefix(entries));
+}
+
+async function buildZenodoIndex(recordId) {
+  const response = await fetch(`https://zenodo.org/api/records/${recordId}`);
+  if (!response.ok) throw new Error(`Zenodo record ${recordId} returned HTTP ${response.status}.`);
+  const record = await response.json();
+  const entries = (record.files || []).map((file) => [
+    normaliseRepositoryPath(file.key),
+    file.links?.content || file.links?.self,
+  ]).filter(([, url]) => Boolean(url));
+  return new Map(stripRepositoryDatasetPrefix(entries));
+}
+
+async function fetchRemoteRepositoryResource(path) {
+  const match = String(path || "").match(/^(figshare|zenodo):([^/]+)(?:\/(.*))?$/i);
+  if (!match) return null;
+
+  const provider = match[1].toLowerCase();
+  const recordId = match[2];
+  const relativePath = normaliseRepositoryPath(match[3]);
+  const cacheKey = `${provider}:${recordId}`;
+
+  let indexPromise = remoteRepositoryIndexCache.get(cacheKey);
+  if (!indexPromise) {
+    indexPromise = provider === "figshare"
+      ? buildFigshareIndex(recordId)
+      : buildZenodoIndex(recordId);
+    remoteRepositoryIndexCache.set(cacheKey, indexPromise);
+  }
+
+  try {
+    const index = await indexPromise;
+    const downloadUrl = index.get(relativePath);
+    if (!downloadUrl) {
+      return new Response(`${relativePath} is not present in ${provider} record ${recordId}.`, {
+        status: 404,
+        statusText: "Not Found",
+      });
+    }
+    return await fetch(downloadUrl);
+  } catch (error) {
+    remoteRepositoryIndexCache.delete(cacheKey);
+    return new Response(error?.message || "Remote dataset lookup failed.", {
+      status: 502,
+      statusText: "Remote dataset lookup failed",
+    });
+  }
+}
+
 async function fetchDatasetResource(path) {
+  const repositoryResponse = await fetchRemoteRepositoryResource(path);
+  if (repositoryResponse) return repositoryResponse;
+
   const localPath = parseLocalFilesystemPath(path);
   if (localPath) {
     const encodedPath = encodeLocalFilesystemPath(localPath);
@@ -1303,10 +1409,18 @@ async function loadBundledDemoDataset() {
 async function loadRemoteDatasetFromLauncher() {
   const requested = String(datasetUrlInputEl?.value || "").trim();
   if (!requested) { setDatasetLauncherStatus("Enter a converted dataset URL.", true); return; }
-  params.datasetPath = requested;
+  params.datasetPath = normaliseExternalDatasetReference(requested);
   setDatasetLauncherStatus(`Loading ${requested}…`);
   const ok = await loadDatasetFromParams();
-  if (!ok) setDatasetLauncherStatus("Could not load this URL. Check metadata.json and CORS settings.", true);
+  if (!ok) {
+    const cloudFolder = /(?:drive\.google\.com\/drive\/folders|dropbox\.com\/scl\/fo|1drv\.ms\/f\/|onedrive\.live\.com)/i.test(requested);
+    setDatasetLauncherStatus(
+      cloudFolder
+        ? "This shared cloud folder cannot expose its file list directly to the browser. Use Figshare, Zenodo, a CORS-enabled web folder, or select a local folder."
+        : "Could not load this URL. Check the record, metadata.json, file names, and CORS settings.",
+      true
+    );
+  }
 }
 
 function bindDatasetLauncher() {
