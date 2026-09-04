@@ -1091,7 +1091,7 @@ async function updateEarthSurface(options = {}) {
 
 function normaliseExternalDatasetReference(path) {
   const raw = String(path || "").trim();
-  if (/^(figshare|zenodo):[^/]+$/i.test(raw)) return raw.toLowerCase();
+  if (/^(figshare|zenodo):[^/]+(?:\/.*)?$/i.test(raw)) return raw;
 
   const figshare = raw.match(
     /(?:api\.figshare\.com\/v2\/articles\/|figshare\.com\/(?:ndownloader\/articles\/|articles\/(?:[^/]+\/)*))(\d+)/i
@@ -1110,7 +1110,7 @@ function normaliseDatasetRoot(path) {
   if (!raw) return DEFAULT_DATASET_ROOT;
   raw = normaliseExternalDatasetReference(raw);
 
-  if (/^(figshare|zenodo):[^/]+$/i.test(raw)) return raw.toLowerCase();
+  if (/^(figshare|zenodo):[^/]+(?:\/.*)?$/i.test(raw)) return raw;
 
   if (/^fsdir:[^/]+(?:\/.*)?$/i.test(raw)) {
     return raw.replace(/\\/g, "/").replace(/\/+$/, "");
