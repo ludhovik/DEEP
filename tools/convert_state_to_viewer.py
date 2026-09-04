@@ -53,6 +53,7 @@ EARTH_RADIUS_KM = 6371.0
 CMB_RADIUS_KM = 3480.0
 DEFAULT_EARTH_RADIUS_SCALE = EARTH_RADIUS_KM / CMB_RADIUS_KM
 DEFAULT_EARTH_BR_LMAX = 13
+CONVERTER_PACKAGE_VERSION = "3.0.0"
 
 
 # -----------------------------------------------------------------------------
@@ -255,6 +256,250 @@ def full_sphere_center_mask(r: np.ndarray, tolerance: float) -> np.ndarray:
     rr = np.asarray(r, dtype=np.float64)
     scale = max(1.0, float(np.nanmax(np.abs(rr))))
     return np.abs(rr) <= float(tolerance) * scale
+
+
+def spectral_radial_absmax(*coefficients: np.ndarray | None) -> np.ndarray:
+    """Return the maximum spectral amplitude at each radial grid point."""
+    profiles: list[np.ndarray] = []
+    nr: int | None = None
+    for coeff in coefficients:
+        if coeff is None:
+            continue
+        arr = np.asarray(coeff)
+        if arr.ndim < 1:
+            continue
+        if nr is None:
+            nr = int(arr.shape[-1])
+        elif int(arr.shape[-1]) != nr:
+            raise ValueError(
+                "Spectral fields used for geometry detection have different radial sizes."
+            )
+        axes = tuple(range(arr.ndim - 1))
+        profiles.append(np.nanmax(np.abs(arr), axis=axes))
+
+    if nr is None:
+        return np.zeros(0, dtype=np.float64)
+    if not profiles:
+        return np.zeros(nr, dtype=np.float64)
+    return np.maximum.reduce([np.asarray(p, dtype=np.float64) for p in profiles])
+
+
+def first_sustained_active_index(
+    profile: np.ndarray,
+    threshold: float,
+    minimum_run: int = 2,
+) -> int | None:
+    """Find the first radius followed by a sustained non-zero radial region."""
+    values = np.asarray(profile, dtype=np.float64)
+    active = np.isfinite(values) & (values > float(threshold))
+    run = max(1, int(minimum_run))
+    if values.size < run:
+        return int(np.flatnonzero(active)[0]) if np.any(active) else None
+    for index in range(0, values.size - run + 1):
+        if np.all(active[index:index + run]):
+            return int(index)
+    hits = np.flatnonzero(active)
+    return int(hits[0]) if hits.size else None
+
+
+def infer_leeds_geometry(
+    r: np.ndarray,
+    uP: np.ndarray | None,
+    uT: np.ndarray | None,
+    BP: np.ndarray | None,
+    BT: np.ndarray | None,
+    *,
+    center_tolerance: float,
+    magnetic_tolerance: float,
+    flow_zero_relative_tolerance: float,
+    flow_zero_absolute_tolerance: float,
+    minimum_inner_core_points: int,
+    minimum_inner_core_radius_fraction: float,
+    requested_geometry: str = "auto",
+    fluid_inner_radius: float | None = None,
+) -> dict[str, Any]:
+    """Separate radial transform geometry from the physical fluid domain.
+
+    A Leeds state can include ``r=0`` either because the fluid occupies a full
+    sphere or because the magnetic field is continued through a conducting solid
+    inner core.  The regular full-radius transform is selected from the radial
+    grid, while the physical fluid geometry is inferred independently from a
+    leading zero-velocity interval and magnetic field inside that interval.
+    """
+    rr = np.asarray(r, dtype=np.float64)
+    if rr.ndim != 1 or rr.size < 2:
+        raise ValueError("The Leeds radial grid must be one-dimensional with at least two points.")
+    if not np.all(np.diff(rr) > 0.0):
+        raise ValueError("The Leeds radial grid must increase strictly.")
+
+    if requested_geometry not in {"auto", "full-sphere", "shell", "conducting-inner-core"}:
+        raise ValueError(f"Unsupported geometry mode {requested_geometry!r}.")
+
+    center_mask = full_sphere_center_mask(rr, center_tolerance)
+    grid_includes_center = bool(np.any(center_mask))
+    transform_fullsphere = grid_includes_center
+
+    velocity_profile = spectral_radial_absmax(uP, uT)
+    magnetic_profile = spectral_radial_absmax(BP, BT)
+    velocity_scale = float(np.nanmax(velocity_profile)) if velocity_profile.size else 0.0
+    magnetic_scale = float(np.nanmax(magnetic_profile)) if magnetic_profile.size else 0.0
+    flow_threshold = max(
+        float(flow_zero_absolute_tolerance),
+        float(flow_zero_relative_tolerance) * max(velocity_scale, 0.0),
+    )
+    magnetic_present = bool(magnetic_scale > float(magnetic_tolerance))
+
+    if requested_geometry == "full-sphere" and not grid_includes_center:
+        raise ValueError(
+            "--geometry full-sphere was requested, but the radial grid does not include r=0."
+        )
+
+    explicit_boundary = fluid_inner_radius is not None
+    if explicit_boundary:
+        target = float(fluid_inner_radius)
+        if target < rr[0] - 1.0e-12 or target > rr[-1] + 1.0e-12:
+            raise ValueError(
+                f"--fluid-inner-radius={target} lies outside [{rr[0]}, {rr[-1]}]."
+            )
+        fluid_inner_index = int(np.argmin(np.abs(rr - target)))
+        inferred_from = "explicit_fluid_inner_radius"
+        first_active_index = None
+    elif not grid_includes_center:
+        # A shell-only radial grid starts directly at the ICB.
+        fluid_inner_index = 0
+        first_active_index = 0
+        inferred_from = "radial_grid_starts_at_fluid_inner_boundary"
+    else:
+        first_active_index = first_sustained_active_index(
+            velocity_profile,
+            flow_threshold,
+            minimum_run=2,
+        )
+        leading_zero_count = int(first_active_index) if first_active_index is not None else rr.size
+
+        # For a no-slip ICB the boundary point itself has zero velocity.  Place
+        # the fluid boundary at the last leading zero point, rather than at the
+        # first non-zero point outside it.
+        candidate_index = max(0, int(first_active_index) - 1) if first_active_index is not None else 0
+        candidate_radius_fraction = float(rr[candidate_index] / rr[-1]) if rr[-1] != 0.0 else 0.0
+        resolved_inner_region = bool(
+            first_active_index is not None
+            and leading_zero_count >= max(2, int(minimum_inner_core_points))
+            and candidate_index > 0
+            and candidate_radius_fraction >= float(minimum_inner_core_radius_fraction)
+        )
+        if resolved_inner_region:
+            fluid_inner_index = candidate_index
+            inferred_from = "leading_zero_velocity_region"
+        else:
+            fluid_inner_index = 0
+            inferred_from = (
+                "velocity_zero_everywhere_geometry_unresolved"
+                if first_active_index is None
+                else "no_resolved_zero_velocity_inner_region"
+            )
+
+    if not grid_includes_center:
+        physical_geometry = "spherical_shell"
+        has_inner_core = True
+        r_icb = float(rr[0])
+    elif requested_geometry == "full-sphere":
+        physical_geometry = "full_fluid_sphere"
+        fluid_inner_index = 0
+        has_inner_core = False
+        r_icb = float(rr[0])
+        inferred_from = "forced_full_sphere"
+    elif requested_geometry in {"shell", "conducting-inner-core"}:
+        if fluid_inner_index <= 0:
+            raise ValueError(
+                f"--geometry {requested_geometry} requires a detectable zero-flow inner region "
+                "or an explicit --fluid-inner-radius."
+            )
+        physical_geometry = "spherical_shell"
+        has_inner_core = True
+        r_icb = float(rr[fluid_inner_index])
+        inferred_from = f"forced_{requested_geometry.replace('-', '_')}"
+    elif fluid_inner_index > 0:
+        physical_geometry = "spherical_shell"
+        has_inner_core = True
+        r_icb = float(rr[fluid_inner_index])
+    else:
+        physical_geometry = "full_fluid_sphere"
+        has_inner_core = False
+        r_icb = float(rr[0])
+
+    inner_stop = max(0, int(fluid_inner_index))
+    magnetic_inside = bool(
+        grid_includes_center
+        and has_inner_core
+        and magnetic_present
+        and inner_stop > 0
+        and magnetic_profile.size == rr.size
+        and float(np.nanmax(magnetic_profile[:inner_stop])) > float(magnetic_tolerance)
+    )
+    has_conducting_inner_core = bool(
+        grid_includes_center
+        and has_inner_core
+        and magnetic_inside
+        and requested_geometry != "shell"
+    )
+
+    if requested_geometry == "conducting-inner-core" and not magnetic_inside:
+        raise ValueError(
+            "--geometry conducting-inner-core was requested, but no magnetic field was "
+            "detected inside the inferred inner-core interval."
+        )
+    if requested_geometry == "conducting-inner-core" or has_conducting_inner_core:
+        physical_geometry = "spherical_shell_conducting_inner_core"
+        has_conducting_inner_core = True
+
+    return {
+        "grid_includes_center": grid_includes_center,
+        "transform_fullsphere": transform_fullsphere,
+        "transform_geometry": "regular_full_radius" if transform_fullsphere else "shell_radial_grid",
+        "physical_geometry": physical_geometry,
+        "full_sphere": bool(physical_geometry == "full_fluid_sphere"),
+        "has_inner_core": bool(has_inner_core),
+        "has_conducting_inner_core": bool(has_conducting_inner_core),
+        "fluid_inner_index": int(fluid_inner_index),
+        "r_icb": float(r_icb),
+        "classification_method": inferred_from,
+        "velocity_radial_absmax": velocity_profile,
+        "magnetic_radial_absmax": magnetic_profile,
+        "velocity_absmax": velocity_scale,
+        "magnetic_absmax": magnetic_scale,
+        "flow_zero_threshold": float(flow_threshold),
+        "magnetic_inside_inner_core": magnetic_inside,
+        "first_sustained_active_velocity_index": (
+            None if first_active_index is None else int(first_active_index)
+        ),
+        "minimum_inner_core_radius_fraction": float(minimum_inner_core_radius_fraction),
+    }
+
+
+def zero_inside_fluid_boundary(arr: np.ndarray, fluid_inner_index: int) -> np.ndarray:
+    """Return a copy with the solid inner-core interval set to zero."""
+    out = np.ascontiguousarray(np.asarray(arr, dtype=np.float64).copy())
+    if int(fluid_inner_index) > 0:
+        out[: int(fluid_inner_index), ...] = 0.0
+    return out
+
+
+def embed_fluid_radial_field(
+    arr_fluid: np.ndarray,
+    nr_total: int,
+    fluid_inner_index: int,
+) -> np.ndarray:
+    """Embed a fluid-shell field onto a full-radius master grid with zero in the solid."""
+    values = np.asarray(arr_fluid, dtype=np.float64)
+    expected = int(nr_total) - int(fluid_inner_index)
+    if values.shape[0] != expected:
+        raise ValueError(
+            f"Fluid radial field has {values.shape[0]} levels; expected {expected}."
+        )
+    out = np.zeros((int(nr_total),) + values.shape[1:], dtype=np.float64)
+    out[int(fluid_inner_index):] = values
+    return np.ascontiguousarray(out)
 
 
 REGULAR_RADIAL_REPRESENTATION = "regular_r_power_g_x"
@@ -543,13 +788,16 @@ def write_f32(path: Path, arr: np.ndarray) -> dict[str, float | None]:
 
     finite = np.isfinite(arr32)
     if not np.any(finite):
-        return {"min": None, "max": None, "mean": None}
+        return {"min": None, "max": None, "mean": None, "absmax": None}
 
     good = arr32[finite]
+    amin = float(np.min(good))
+    amax = float(np.max(good))
     return {
-        "min": float(np.min(good)),
-        "max": float(np.max(good)),
+        "min": amin,
+        "max": amax,
         "mean": float(np.mean(good)),
+        "absmax": max(abs(amin), abs(amax)),
     }
 
 
@@ -685,12 +933,41 @@ def gradient_phi_periodic(arr: np.ndarray, phi: np.ndarray) -> np.ndarray:
     return (np.roll(arr, -1, axis=2) - np.roll(arr, 1, axis=2)) / (2.0 * dphi)
 
 
-def gradient_scalar_3d(field: np.ndarray, r: np.ndarray, theta: np.ndarray, phi: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return d/dr, d/dtheta, d/dphi for a scalar field[r,theta,phi]."""
-    dr = np.gradient(field, np.asarray(r, dtype=np.float64), axis=0, edge_order=2)
-    dtheta = np.gradient(field, np.asarray(theta, dtype=np.float64), axis=1, edge_order=2)
-    dphi = gradient_phi_periodic(field, phi)
-    return np.ascontiguousarray(dr), np.ascontiguousarray(dtheta), np.ascontiguousarray(dphi)
+def gradient_scalar_3d(
+    field: np.ndarray,
+    r: np.ndarray,
+    theta: np.ndarray,
+    phi: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return physical spherical gradient components.
+
+    The returned components are ``d/dr``, ``(1/r)d/dtheta`` and
+    ``(1/(r sin(theta)))d/dphi``.  This is the same convention used by
+    ``modules.gradient_spat`` and by the XSHELLS converter.
+    """
+    values = np.asarray(field, dtype=np.float64)
+    rr = np.asarray(r, dtype=np.float64)
+    th = np.asarray(theta, dtype=np.float64)
+    ph = np.asarray(phi, dtype=np.float64)
+    edge_r = 2 if rr.size >= 3 else 1
+    edge_t = 2 if th.size >= 3 else 1
+    d_dr = np.gradient(values, rr, axis=0, edge_order=edge_r)
+    d_dtheta = np.gradient(values, th, axis=1, edge_order=edge_t)
+    d_dphi = gradient_phi_periodic(values, ph)
+
+    r3 = rr[:, None, None]
+    sin3 = np.sin(th)[None, :, None]
+    safe_r = np.where(np.abs(r3) > 1.0e-14, r3, np.inf)
+    safe_rsin = np.where(np.abs(r3 * sin3) > 1.0e-14, r3 * sin3, np.inf)
+    grad_theta = d_dtheta / safe_r
+    grad_phi = d_dphi / safe_rsin
+    grad_theta[~np.isfinite(grad_theta)] = 0.0
+    grad_phi[~np.isfinite(grad_phi)] = 0.0
+    return (
+        np.ascontiguousarray(d_dr),
+        np.ascontiguousarray(grad_theta),
+        np.ascontiguousarray(grad_phi),
+    )
 
 
 def compute_helicity(Ur: np.ndarray, Ut: np.ndarray, Up: np.ndarray, r: np.ndarray, theta: np.ndarray, phi: np.ndarray) -> np.ndarray:
@@ -888,11 +1165,13 @@ def compute_induction(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Backward-compatible wrapper returning curl(u x B).
 
-    ``curl_spat`` is accepted for compatibility with older calls, but is not
-    used: modules.py::curl_spat differentiates a scalar and is not a vector-curl
-    operator.
+    When ``curl_spat`` is supplied, the vector-curl implementation from the
+    bundled ``modules.py`` is used.  The explicit implementation is retained as
+    a fallback and as an independent validation reference.
     """
     Er, Et, Ep = compute_emf(Ur, Ut, Up, Br, Bt, Bp)
+    if curl_spat is not None:
+        return curl_spat(Er, Et, Ep, r, theta, phi)
     return compute_induction_from_emf(Er, Et, Ep, r, theta, phi)
 
 
@@ -1794,6 +2073,68 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=1.0e-12,
         help="Relative tolerance used to identify r=0 in full-sphere states. Default: 1e-12.",
     )
+    p.add_argument(
+        "--geometry",
+        choices=["auto", "full-sphere", "shell", "conducting-inner-core"],
+        default="auto",
+        help=(
+            "Physical fluid geometry. In auto mode, r=0 selects the regular full-radius "
+            "transform, but a leading zero-velocity interval with magnetic field inside it "
+            "is classified as a shell with a conducting inner core."
+        ),
+    )
+    p.add_argument(
+        "--conducting-inner-core",
+        action="store_true",
+        help="Alias for --geometry conducting-inner-core.",
+    )
+    p.add_argument(
+        "--fluid-inner-radius",
+        type=float,
+        default=None,
+        help=(
+            "Explicit fluid inner-boundary radius. Use this when a no-slip boundary makes "
+            "the exact ICB ambiguous from the first non-zero velocity point."
+        ),
+    )
+    p.add_argument(
+        "--flow-zero-rel-tol",
+        type=float,
+        default=1.0e-10,
+        help="Relative spectral velocity threshold used to detect a zero-flow inner core.",
+    )
+    p.add_argument(
+        "--flow-zero-abs-tol",
+        type=float,
+        default=0.0,
+        help="Absolute spectral velocity threshold used to detect a zero-flow inner core.",
+    )
+    p.add_argument(
+        "--min-inner-core-points",
+        type=int,
+        default=2,
+        help="Minimum leading zero-velocity radial points required for automatic inner-core detection.",
+    )
+    p.add_argument(
+        "--min-inner-core-radius-fraction",
+        type=float,
+        default=0.02,
+        help=(
+            "Minimum inferred ICB radius divided by r_outer for automatic inner-core "
+            "detection. This prevents regular full-sphere behaviour confined to the "
+            "first few central points from being mistaken for a solid inner core."
+        ),
+    )
+    p.add_argument(
+        "--inner-core-validation-buffer-points",
+        type=int,
+        default=3,
+        help=(
+            "Radial points excluded immediately below the inferred ICB when validating "
+            "zero physical velocity. Default 3 matches the half-width of the Leeds "
+            "seven-point x-derivative stencil."
+        ),
+    )
 
     # Optional explicit parameter overrides. If omitted, the converter tries to
     # parse them from the path and then asks interactively when missing.
@@ -2006,6 +2347,16 @@ def run_sequence_conversion(args: argparse.Namespace) -> None:
             cmd += ["--modules-dir", str(args.modules_dir)]
         if args.no_inner_core:
             cmd += ["--no-inner-core"]
+        cmd += ["--geometry", str(args.geometry)]
+        if args.conducting_inner_core:
+            cmd += ["--conducting-inner-core"]
+        if args.fluid_inner_radius is not None:
+            cmd += ["--fluid-inner-radius", str(args.fluid_inner_radius)]
+        cmd += ["--flow-zero-rel-tol", str(args.flow_zero_rel_tol)]
+        cmd += ["--flow-zero-abs-tol", str(args.flow_zero_abs_tol)]
+        cmd += ["--min-inner-core-points", str(args.min_inner_core_points)]
+        cmd += ["--min-inner-core-radius-fraction", str(args.min_inner_core_radius_fraction)]
+        cmd += ["--inner-core-validation-buffer-points", str(args.inner_core_validation_buffer_points)]
         cmd += ["--center-tolerance", str(args.center_tolerance)]
         append_parameter_overrides(cmd, args)
         if args.cmb_br_ltrunc is not None:
@@ -2092,6 +2443,14 @@ def main() -> None:
 
     if not math.isfinite(float(args.center_tolerance)) or float(args.center_tolerance) <= 0.0:
         raise ValueError("--center-tolerance must be finite and > 0.")
+    if int(args.min_inner_core_points) < 2:
+        raise ValueError("--min-inner-core-points must be >= 2.")
+    if not (0.0 <= float(args.min_inner_core_radius_fraction) < 1.0):
+        raise ValueError("--min-inner-core-radius-fraction must satisfy 0 <= value < 1.")
+    if int(args.inner_core_validation_buffer_points) < 0:
+        raise ValueError("--inner-core-validation-buffer-points must be >= 0.")
+    if float(args.flow_zero_rel_tol) < 0.0 or float(args.flow_zero_abs_tol) < 0.0:
+        raise ValueError("Flow-zero tolerances must be non-negative.")
 
     if args.sequence_first is not None or args.sequence_last is not None:
         if args.sequence_first is None or args.sequence_last is None:
@@ -2114,6 +2473,7 @@ def main() -> None:
     SH_to_spat = user_modules.SH_to_spat
     SH_to_spat_nom0 = user_modules.SH_to_spat_nom0
     gradient_spat = user_modules.gradient_spat
+    curl_spat = user_modules.curl_spat
     PolTor_to_spat_fullsphere = getattr(user_modules, "PolTor_to_spat_fullsphere", None)
     SH_to_spat_fullsphere = getattr(user_modules, "SH_to_spat_fullsphere", None)
     SH_to_spat_nom0_fullsphere = getattr(user_modules, "SH_to_spat_nom0_fullsphere", None)
@@ -2163,21 +2523,49 @@ def main() -> None:
     mmax = as_scalar_int(state["mmax"], "mmax")
     time = float(np.asarray(state.get("t", np.nan)).item())
 
+    if args.conducting_inner_core:
+        if args.geometry not in ("auto", "conducting-inner-core"):
+            raise ValueError("--conducting-inner-core conflicts with --geometry.")
+        args.geometry = "conducting-inner-core"
+    if args.no_inner_core:
+        if args.geometry not in ("auto", "full-sphere"):
+            raise ValueError("--full-sphere/--no-inner-core conflicts with --geometry.")
+        args.geometry = "full-sphere"
+
+    geometry = infer_leeds_geometry(
+        r, uP, uT, BP, BT,
+        center_tolerance=args.center_tolerance,
+        magnetic_tolerance=args.magnetic_tol,
+        flow_zero_relative_tolerance=args.flow_zero_rel_tol,
+        flow_zero_absolute_tolerance=args.flow_zero_abs_tol,
+        minimum_inner_core_points=args.min_inner_core_points,
+        minimum_inner_core_radius_fraction=args.min_inner_core_radius_fraction,
+        requested_geometry=args.geometry,
+        fluid_inner_radius=args.fluid_inner_radius,
+    )
     center_mask = full_sphere_center_mask(r, args.center_tolerance)
-    detected_full_sphere = bool(np.any(center_mask))
-    if args.no_inner_core and not detected_full_sphere:
-        raise ValueError(
-            "--no-inner-core/--full-sphere was requested, but the radial grid does not include r=0. "
-            f"The first radius is {float(r[0]):.8e}."
-        )
-    full_sphere = bool(args.no_inner_core or detected_full_sphere)
-    if detected_full_sphere and not args.no_inner_core:
-        print("Full-sphere state detected automatically from r[0]=0.")
-    if full_sphere:
-        print("Full-sphere/no-inner-core mode enabled.")
+    transform_fullsphere = bool(geometry["transform_fullsphere"])
+    full_sphere = bool(geometry["full_sphere"])
+    has_inner_core = bool(geometry["has_inner_core"])
+    has_conducting_inner_core = bool(geometry["has_conducting_inner_core"])
+    fluid_inner_index = int(geometry["fluid_inner_index"])
+    r_icb = float(geometry["r_icb"])
+    detected_full_sphere = bool(transform_fullsphere)
+
+    print(
+        "Geometry: "
+        f"{geometry['physical_geometry']} (method={geometry['classification_method']}, "
+        f"transform_fullsphere={transform_fullsphere}, r_icb={r_icb:.12g})"
+    )
+    if has_conducting_inner_core:
         print(
-            "  Using the Leeds regular representation f_lm=r^(l+p0)G_lm(x), x=r^2, "
-            "through the bundled modules.py full-sphere API."
+            "  Conducting inner core detected: velocity is zero in the leading radial "
+            "interval while magnetic coefficients remain non-zero."
+        )
+    if transform_fullsphere:
+        print(
+            "  Radial grid includes r=0: using the Leeds regular representation "
+            "f_lm=r^(l+p0)G_lm(x), x=r^2, through the bundled modules.py API."
         )
         required_fullsphere = {
             "PolTor_to_spat_fullsphere": PolTor_to_spat_fullsphere,
@@ -2219,12 +2607,12 @@ def main() -> None:
 
     print(f"Transform grid: lmax={lmax_transform}, mmax={mmax_transform}")
     fullsphere_transform_meta: dict[str, Any] = {
-        "enabled": bool(full_sphere),
-        "method": "shell_PolTor_to_spat" if not full_sphere else "modules_v2_regular_qst_in_x",
+        "enabled": bool(transform_fullsphere),
+        "method": "shell_PolTor_to_spat" if not transform_fullsphere else "modules_v2_regular_qst_in_x",
         "fields": {},
     }
 
-    if full_sphere:
+    if transform_fullsphere:
         print("Transforming velocity with modules.PolTor_to_spat_fullsphere...")
         uP_is_regular, uP_offset, uP_source = fullsphere_storage_info(
             radial_representations["uP"], "uP"
@@ -2282,7 +2670,7 @@ def main() -> None:
 
     if has_magnetic_field:
         print(f"Magnetic state detected: max(abs(BP))={BP_abs_max:.6e}, max(abs(BT))={BT_abs_max:.6e}")
-        if full_sphere:
+        if transform_fullsphere:
             print("Transforming magnetic field with modules.PolTor_to_spat_fullsphere...")
             BP_is_regular, BP_offset, BP_source = fullsphere_storage_info(
                 radial_representations["BP"], "BP"
@@ -2328,7 +2716,7 @@ def main() -> None:
         Br = Bt = Bp = None
 
     print("Transforming scalar fields to physical space...")
-    if full_sphere:
+    if transform_fullsphere:
         C_is_regular, C_offset, C_source = fullsphere_storage_info(
             radial_representations["C"], "C"
         )
@@ -2388,7 +2776,7 @@ def main() -> None:
     Compspatnom0 = as_r_theta_phi(Compspatnom0, nr, ntheta, nphi)
 
     center_vector_diagnostics: dict[str, Any] = {}
-    if full_sphere:
+    if transform_fullsphere:
         Ur, Ut, Up, velocity_center_diag = enforce_fullsphere_cartesian_center_limit(
             Ur, Ut, Up, theta, phi, center_mask, "velocity"
         )
@@ -2407,8 +2795,103 @@ def main() -> None:
     if has_magnetic_field:
         Babs = np.sqrt(Br * Br + Bt * Bt + Bp * Bp)
 
+    # Validate the spectral geometry classification in physical space before any
+    # fluid-domain masking. This implements the physical criterion directly:
+    # velocity must vanish inside the ICB while magnetic field remains present.
+    spatial_velocity_profile = np.nanmax(Uabs, axis=(1, 2))
+    spatial_velocity_scale = float(np.nanmax(spatial_velocity_profile))
+    spatial_flow_threshold = max(
+        float(args.flow_zero_abs_tol),
+        float(args.flow_zero_rel_tol) * max(spatial_velocity_scale, 0.0),
+    )
+    spatial_magnetic_profile = (
+        np.nanmax(Babs, axis=(1, 2))
+        if has_magnetic_field
+        else np.zeros_like(spatial_velocity_profile)
+    )
+    spatial_velocity_inside_absmax = 0.0
+    spatial_velocity_deep_inside_absmax = 0.0
+    spatial_magnetic_inside_absmax = 0.0
+    inner_validation_stop = 0
+    if transform_fullsphere and has_inner_core and fluid_inner_index > 0:
+        spatial_velocity_inside_absmax = float(
+            np.nanmax(spatial_velocity_profile[:fluid_inner_index])
+        )
+        spatial_magnetic_inside_absmax = float(
+            np.nanmax(spatial_magnetic_profile[:fluid_inner_index])
+        )
+        inner_validation_stop = max(
+            0,
+            int(fluid_inner_index) - int(args.inner_core_validation_buffer_points),
+        )
+        if inner_validation_stop > 0:
+            spatial_velocity_deep_inside_absmax = float(
+                np.nanmax(spatial_velocity_profile[:inner_validation_stop])
+            )
+        else:
+            spatial_velocity_deep_inside_absmax = spatial_velocity_inside_absmax
+        if spatial_velocity_deep_inside_absmax > spatial_flow_threshold:
+            message = (
+                "The inferred inner-core interval contains non-zero physical velocity "
+                "away from the ICB derivative stencil: "
+                f"max|u|={spatial_velocity_deep_inside_absmax:.6e}, "
+                f"threshold={spatial_flow_threshold:.6e}."
+            )
+            if args.geometry == "auto":
+                print("WARNING: " + message + " Reclassifying as a full fluid sphere.")
+                geometry["physical_geometry"] = "full_fluid_sphere"
+                geometry["classification_method"] += "_rejected_by_spatial_velocity"
+                geometry["full_sphere"] = True
+                geometry["has_inner_core"] = False
+                geometry["has_conducting_inner_core"] = False
+                geometry["fluid_inner_index"] = 0
+                geometry["r_icb"] = float(r[0])
+                full_sphere = True
+                has_inner_core = False
+                has_conducting_inner_core = False
+                fluid_inner_index = 0
+                r_icb = float(r[0])
+            else:
+                raise ValueError(message)
+        elif has_conducting_inner_core and spatial_magnetic_inside_absmax <= float(args.magnetic_tol):
+            message = (
+                "The inferred conducting inner core contains no non-zero physical magnetic field."
+            )
+            if args.geometry == "conducting-inner-core":
+                raise ValueError(message)
+            print("WARNING: " + message + " Keeping a non-conducting spherical-shell classification.")
+            has_conducting_inner_core = False
+            geometry["has_conducting_inner_core"] = False
+            geometry["physical_geometry"] = "spherical_shell"
+
+    geometry["spatial_flow_zero_threshold"] = float(spatial_flow_threshold)
+    geometry["spatial_velocity_inside_absmax"] = float(spatial_velocity_inside_absmax)
+    geometry["spatial_velocity_deep_inside_absmax"] = float(spatial_velocity_deep_inside_absmax)
+    geometry["spatial_magnetic_inside_absmax"] = float(spatial_magnetic_inside_absmax)
+    geometry["inner_core_validation_stop_index"] = int(inner_validation_stop)
+    geometry["inner_core_validation_buffer_points"] = int(args.inner_core_validation_buffer_points)
+
+    # Enforce the physical fluid domain independently of the full-radius transform.
+    if has_inner_core:
+        Ur = zero_inside_fluid_boundary(Ur, fluid_inner_index)
+        Ut = zero_inside_fluid_boundary(Ut, fluid_inner_index)
+        Up = zero_inside_fluid_boundary(Up, fluid_inner_index)
+        Cspat = zero_inside_fluid_boundary(Cspat, fluid_inner_index)
+        Compspat = zero_inside_fluid_boundary(Compspat, fluid_inner_index)
+        Cspatnom0 = zero_inside_fluid_boundary(Cspatnom0, fluid_inner_index)
+        Compspatnom0 = zero_inside_fluid_boundary(Compspatnom0, fluid_inner_index)
+
+    Uabs = np.sqrt(Ur * Ur + Ut * Ut + Up * Up)
+    if has_magnetic_field:
+        Babs = np.sqrt(Br * Br + Bt * Bt + Bp * Bp)
+
+    R, THETA, PHI = np.meshgrid(r, theta, phi, indexing="ij")
+    Us = Ur * np.sin(THETA) + Ut * np.cos(THETA)
+    Uz = Ur * np.cos(THETA) - Ut * np.sin(THETA)
+
     Er = Et = Ep = None
-    Ir = It = Ip = None
+    Er_fluct = Et_fluct = Ep_fluct = None
+    Ir = It = Ip = Iz = None
     if args.emf or args.induction:
         magnetic_components_ready = (
             has_magnetic_field
@@ -2424,33 +2907,73 @@ def main() -> None:
         else:
             print("Computing motional EMF u x B...")
             Er, Et, Ep = compute_emf(Ur, Ut, Up, Br, Bt, Bp)
-            if full_sphere:
+            ur_fluct = remove_m0_phi(Ur)
+            ut_fluct = remove_m0_phi(Ut)
+            up_fluct = remove_m0_phi(Up)
+            br_fluct = remove_m0_phi(Br)
+            bt_fluct = remove_m0_phi(Bt)
+            bp_fluct = remove_m0_phi(Bp)
+            Er_fluct, Et_fluct, Ep_fluct = compute_emf(
+                ur_fluct, ut_fluct, up_fluct,
+                br_fluct, bt_fluct, bp_fluct,
+            )
+            if transform_fullsphere and not has_inner_core:
                 Er, Et, Ep, emf_center_diag = enforce_fullsphere_cartesian_center_limit(
                     Er, Et, Ep, theta, phi, center_mask, "EMF"
                 )
                 center_vector_diagnostics["EMF"] = emf_center_diag
             if args.induction:
-                print("Computing induction curl(u x B)...")
-                Ir, It, Ip = compute_induction_from_emf(Er, Et, Ep, r, theta, phi)
-                if full_sphere:
+                print("Computing induction curl(u x B) with modules.curl_spat...")
+                if has_inner_core:
+                    r_fluid = r[fluid_inner_index:]
+                    Ir_f, It_f, Ip_f = curl_spat(
+                        Er[fluid_inner_index:],
+                        Et[fluid_inner_index:],
+                        Ep[fluid_inner_index:],
+                        r_fluid,
+                        theta,
+                        phi,
+                    )
+                    Ir = embed_fluid_radial_field(Ir_f, len(r), fluid_inner_index)
+                    It = embed_fluid_radial_field(It_f, len(r), fluid_inner_index)
+                    Ip = embed_fluid_radial_field(Ip_f, len(r), fluid_inner_index)
+                else:
+                    Ir, It, Ip = curl_spat(Er, Et, Ep, r, theta, phi)
+                if transform_fullsphere and not has_inner_core:
                     Ir, It, Ip, induction_center_diag = enforce_fullsphere_cartesian_center_limit(
                         Ir, It, Ip, theta, phi, center_mask, "induction"
                     )
                     center_vector_diagnostics["induction"] = induction_center_diag
+                Iz = Ir * np.cos(THETA) - It * np.sin(THETA)
 
     Cspatnol0 = remove_global_mean(Cspat)
     Compspatnol0 = remove_global_mean(Compspat)
 
     print("Computing full 3-D scalar gradients, N2 fluctuations, and helicity...")
-    grad_rC_3d, grad_thetaC_3d, grad_phiC_3d = gradient_scalar_3d(Cspat, r, theta, phi)
-    grad_rComp_3d, grad_thetaComp_3d, grad_phiComp_3d = gradient_scalar_3d(Compspat, r, theta, phi)
-    if full_sphere:
-        grad_rC_3d, grad_thetaC_3d, grad_phiC_3d = regularize_scalar_gradient_center(
-            grad_rC_3d, grad_thetaC_3d, grad_phiC_3d, center_mask
+    if has_inner_core:
+        r_fluid = r[fluid_inner_index:]
+        grad_rC_f, grad_thetaC_f, grad_phiC_f = gradient_scalar_3d(
+            Cspat[fluid_inner_index:], r_fluid, theta, phi
         )
-        grad_rComp_3d, grad_thetaComp_3d, grad_phiComp_3d = regularize_scalar_gradient_center(
-            grad_rComp_3d, grad_thetaComp_3d, grad_phiComp_3d, center_mask
+        grad_rComp_f, grad_thetaComp_f, grad_phiComp_f = gradient_scalar_3d(
+            Compspat[fluid_inner_index:], r_fluid, theta, phi
         )
+        grad_rC_3d = embed_fluid_radial_field(grad_rC_f, len(r), fluid_inner_index)
+        grad_thetaC_3d = embed_fluid_radial_field(grad_thetaC_f, len(r), fluid_inner_index)
+        grad_phiC_3d = embed_fluid_radial_field(grad_phiC_f, len(r), fluid_inner_index)
+        grad_rComp_3d = embed_fluid_radial_field(grad_rComp_f, len(r), fluid_inner_index)
+        grad_thetaComp_3d = embed_fluid_radial_field(grad_thetaComp_f, len(r), fluid_inner_index)
+        grad_phiComp_3d = embed_fluid_radial_field(grad_phiComp_f, len(r), fluid_inner_index)
+    else:
+        grad_rC_3d, grad_thetaC_3d, grad_phiC_3d = gradient_scalar_3d(Cspat, r, theta, phi)
+        grad_rComp_3d, grad_thetaComp_3d, grad_phiComp_3d = gradient_scalar_3d(Compspat, r, theta, phi)
+        if transform_fullsphere:
+            grad_rC_3d, grad_thetaC_3d, grad_phiC_3d = regularize_scalar_gradient_center(
+                grad_rC_3d, grad_thetaC_3d, grad_phiC_3d, center_mask
+            )
+            grad_rComp_3d, grad_thetaComp_3d, grad_phiComp_3d = regularize_scalar_gradient_center(
+                grad_rComp_3d, grad_thetaComp_3d, grad_phiComp_3d, center_mask
+            )
 
     # Fluctuating (m != 0) gradient fields.
     grad_rC_fluct = remove_m0_phi(grad_rC_3d)
@@ -2460,13 +2983,19 @@ def main() -> None:
     grad_thetaComp_fluct = remove_m0_phi(grad_thetaComp_3d)
     grad_phiComp_fluct = remove_m0_phi(grad_phiComp_3d)
 
-    # Full N^2 everywhere, plus its fluctuating m != 0 component.
-    # N2 is kept as the historical/default fluctuating field for compatibility.
-    # N2_full keeps the axisymmetric m=0 component.
-    N2_full = r[:, None, None] * E**2 * (grad_rComp_3d * RaC / Sc + grad_rC_3d * RaT / Pr)
+    N2_full = r[:, None, None] * E**2 * (
+        grad_rComp_3d * RaC / Sc + grad_rC_3d * RaT / Pr
+    )
     N2_volume = remove_m0_phi(N2_full)
 
-    helicity = compute_helicity(Ur, Ut, Up, r, theta, phi)
+    if has_inner_core:
+        helicity_fluid = compute_helicity(
+            Ur[fluid_inner_index:], Ut[fluid_inner_index:], Up[fluid_inner_index:],
+            r[fluid_inner_index:], theta, phi,
+        )
+        helicity = embed_fluid_radial_field(helicity_fluid, len(r), fluid_inner_index)
+    else:
+        helicity = compute_helicity(Ur, Ut, Up, r, theta, phi)
 
     # Keep simple 1-D profiles for reference.
     N2_profile = np.mean(N2_full, axis=(1, 2))
@@ -2482,15 +3011,24 @@ def main() -> None:
         "ur": Ur,
         "ut": Ut,
         "up": Up,
+        "us": Us,
+        "uz": Uz,
         "Uabs": Uabs,
         "ur_phiavg": Ur_phiavg,
         "ut_phiavg": Ut_phiavg,
         "up_phiavg": Up_phiavg,
+        "ur_nom0": remove_m0_phi(Ur),
+        "ut_nom0": remove_m0_phi(Ut),
+        "up_nom0": remove_m0_phi(Up),
         "helicity": helicity,
         "C": Cspat,
         "Comp": Compspat,
         "Cnom0": Cspatnom0,
         "Compnom0": Compspatnom0,
+        "C_nom0": Cspatnom0,
+        "Comp_nom0": Compspatnom0,
+        "C_phiavg": phi_average_volume(Cspat, "C"),
+        "Comp_phiavg": phi_average_volume(Compspat, "Comp"),
         "Cnol0": Cspatnol0,
         "Compnol0": Compspatnol0,
         "N2": N2_volume,
@@ -2504,6 +3042,9 @@ def main() -> None:
             "EMFt": Et,
             "EMFp": Ep,
             "EMFabs": np.sqrt(Er * Er + Et * Et + Ep * Ep),
+            "EMFr_fluct": Er_fluct,
+            "EMFt_fluct": Et_fluct,
+            "EMFp_fluct": Ep_fluct,
         })
 
     if args.induction and Ir is not None and It is not None and Ip is not None:
@@ -2511,6 +3052,7 @@ def main() -> None:
             "Ir": Ir,
             "It": It,
             "Ip": Ip,
+            "Iz": Iz,
             "Iabs": np.sqrt(Ir * Ir + It * It + Ip * Ip),
         })
 
@@ -2526,6 +3068,9 @@ def main() -> None:
             "Br_phiavg": Br_phiavg,
             "Bt_phiavg": Bt_phiavg,
             "Bp_phiavg": Bp_phiavg,
+            "Br_nom0": remove_m0_phi(Br),
+            "Bt_nom0": remove_m0_phi(Bt),
+            "Bp_nom0": remove_m0_phi(Bp),
             **fields,
         }
 
@@ -2733,7 +3278,11 @@ def main() -> None:
 
         if args.field_line_mode in ("shell", "both"):
             print("Computing shell magnetic field lines from the actual simulation B field...")
-            shell_dr = np.diff(r)
+            r_shell_field = r[fluid_inner_index:] if has_inner_core else r
+            Br_shell_field = Br[fluid_inner_index:] if has_inner_core else Br
+            Bt_shell_field = Bt[fluid_inner_index:] if has_inner_core else Bt
+            Bp_shell_field = Bp[fluid_inner_index:] if has_inner_core else Bp
+            shell_dr = np.diff(r_shell_field)
             shell_dr = np.abs(shell_dr[np.isfinite(shell_dr) & (np.abs(shell_dr) > 0.0)])
             if shell_dr.size == 0:
                 raise ValueError("Could not determine radial spacing for shell field-line tracing.")
@@ -2742,10 +3291,10 @@ def main() -> None:
             shell_seed_offset = 1.5 * shell_step_size
 
             shell_lines = compute_shell_field_lines_from_cmb(
-                Br,
-                Bt,
-                Bp,
-                r,
+                Br_shell_field,
+                Bt_shell_field,
+                Bp_shell_field,
+                r_shell_field,
                 theta,
                 phi,
                 ntheta_seed=args.line_seed_theta,
@@ -2864,6 +3413,9 @@ def main() -> None:
 
     metadata = {
         "description": "Converted physical-space quantities from Leeds spherical-dynamo state file.",
+        "source_format": "leeds",
+        "converter_version": CONVERTER_PACKAGE_VERSION,
+        "viewer_field_contract": "dynamo-three-viewer-v2-common",
         "source_state": path,
         "state_number": state_number,
         "time": json_number(time),
@@ -2882,6 +3434,7 @@ def main() -> None:
             "induction_exported": bool(args.induction and Ir is not None),
             "emf_definition": "u x B",
             "induction_definition": "curl(u x B)",
+            "curl_implementation": "modules.curl_spat using gradient_spat",
         },
         "magnetic": {
             "has_magnetic_field": bool(has_magnetic_field),
@@ -2890,6 +3443,7 @@ def main() -> None:
             "BT_abs_max": json_number(BT_abs_max),
             "criterion": "max(BP_abs_max, BT_abs_max) > magnetic_tol",
             "magnetic_tol": json_number(args.magnetic_tol),
+            "has_conducting_inner_core": bool(has_conducting_inner_core),
         },
         "title": meta_title,
         "nr": nr_out,
@@ -2897,13 +3451,38 @@ def main() -> None:
         "nphi": nphi_out,
         "r_inner": json_number(r_out[0]),
         "r_outer": json_number(r_out[-1]),
-        "has_inner_core": bool(not full_sphere and float(r_out[0]) > 0.0),
+        "r_icb": json_number(r_icb),
+        "icb_radius": json_number(r_icb),
+        "icb_index": int(np.argmin(np.abs(r_out - r_icb))),
+        "r_fluid_inner": json_number(r_icb),
+        "has_inner_core": bool(has_inner_core),
+        "has_conducting_inner_core": bool(has_conducting_inner_core),
         "full_sphere": bool(full_sphere),
+        "physical_geometry": geometry["physical_geometry"],
+        "geometry_detection": {
+            "method": geometry["classification_method"],
+            "transform_fullsphere": bool(transform_fullsphere),
+            "transform_geometry": geometry["transform_geometry"],
+            "grid_includes_center": bool(geometry["grid_includes_center"]),
+            "fluid_inner_index_native": int(fluid_inner_index),
+            "flow_zero_threshold": json_number(geometry["flow_zero_threshold"]),
+            "velocity_absmax": json_number(geometry["velocity_absmax"]),
+            "magnetic_absmax": json_number(geometry["magnetic_absmax"]),
+            "magnetic_inside_inner_core": bool(geometry["magnetic_inside_inner_core"]),
+            "first_sustained_active_velocity_index": geometry["first_sustained_active_velocity_index"],
+            "minimum_inner_core_radius_fraction": json_number(geometry["minimum_inner_core_radius_fraction"]),
+            "spatial_flow_zero_threshold": json_number(geometry["spatial_flow_zero_threshold"]),
+            "spatial_velocity_inside_absmax": json_number(geometry["spatial_velocity_inside_absmax"]),
+            "spatial_velocity_deep_inside_absmax": json_number(geometry["spatial_velocity_deep_inside_absmax"]),
+            "spatial_magnetic_inside_absmax": json_number(geometry["spatial_magnetic_inside_absmax"]),
+            "inner_core_validation_stop_index": int(geometry["inner_core_validation_stop_index"]),
+            "inner_core_validation_buffer_points": int(geometry["inner_core_validation_buffer_points"]),
+        },
         "state_radial_representations": radial_representations,
         "full_sphere_transform": fullsphere_transform_meta,
         "center_regularization": {
-            "enabled": bool(full_sphere),
-            "requested_explicitly": bool(args.no_inner_core),
+            "enabled": bool(transform_fullsphere),
+            "requested_explicitly": bool(args.no_inner_core or args.geometry != "auto"),
             "detected_from_radius_grid": bool(detected_full_sphere),
             "center_tolerance": json_number(args.center_tolerance),
             "method": "Leeds direct regular coefficients f_lm=r^(l+p0)G_lm(x), x=r^2",

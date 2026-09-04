@@ -1,0 +1,66 @@
+{
+  "description": "Synthetic demo data. Replace with converted physical statefile later.",
+  "nr": 64,
+  "ntheta": 128,
+  "nphi": 256,
+  "r_inner": 0.35,
+  "r_outer": 1.0,
+  "has_inner_core": true,
+  "layout": "r_theta_phi",
+  "endianness": "little",
+  "fields": {
+    "Br": "Br_volume.f32",
+    "Bt": "Bt_volume.f32",
+    "Bp": "Bp_volume.f32",
+    "ur": "ur_volume.f32",
+    "ut": "ut_volume.f32",
+    "up": "up_volume.f32",
+    "C": "C_volume.f32",
+    "Babs": "Babs_volume.f32"
+  },
+  "ranges": {
+    "Br": {
+      "min": -2.0,
+      "max": 2.0
+    },
+    "Bt": {
+      "min": -1.1364961238768956e-07,
+      "max": 0.9999235272407532
+    },
+    "Bp": {
+      "min": -0.6497482657432556,
+      "max": 0.6497482657432556
+    },
+    "ur": {
+      "min": -0.24990317225456238,
+      "max": 0.24990317225456238
+    },
+    "ut": {
+      "min": -0.4498601257801056,
+      "max": 0.4498601257801056
+    },
+    "up": {
+      "min": -0.1499534249305725,
+      "max": 0.7999388575553894
+    },
+    "C": {
+      "min": -0.9403735995292664,
+      "max": 0.9403736591339111
+    },
+    "Babs": {
+      "min": 0.23244181275367737,
+      "max": 2.0
+    }
+  },
+  "magnetic": {
+    "has_magnetic_field": true,
+    "classification": "demo_dynamo",
+    "criterion": "synthetic demo data"
+  },
+  "field_lines": {
+    "B_lines": "B_lines.json",
+    "mode": "demo_shell",
+    "description": "Synthetic closed-looking shell loops inside the fluid shell",
+    "count": 162
+  }
+}

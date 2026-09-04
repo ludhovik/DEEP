@@ -4,11 +4,30 @@
     <meta charset="UTF-8" />
     <title>Dynamo 3D Viewer</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <script type="module" src="/src/main.js"></script>
+    <script type="module" src="./src/main.js"></script>
   </head>
 
   <body>
     <div id="app"></div>
+
+    <div id="dataset-launcher" class="dataset-launcher">
+      <div class="dataset-launcher-card">
+        <div class="dataset-launcher-kicker">Dynamo Three Viewer</div>
+        <h1>Open a converted dynamo dataset</h1>
+        <p>The viewer runs in your browser. Local files are read directly from the folder you select and are <strong>not uploaded</strong>.</p>
+        <div class="dataset-launcher-actions">
+          <button id="open-local-dataset" class="primary" type="button">Open local dataset folder</button>
+          <button id="open-demo-dataset" type="button">Open bundled demonstration</button>
+        </div>
+        <div class="dataset-url-row">
+          <label for="dataset-url-input">Or load a converted dataset from a URL</label>
+          <div class="dataset-url-controls"><input id="dataset-url-input" type="url" placeholder="https://example.org/viewer-data" /><button id="open-url-dataset" type="button">Load URL</button></div>
+          <small>Remote servers must allow CORS access.</small>
+        </div>
+        <div id="dataset-launcher-status" class="dataset-launcher-status" role="status" aria-live="polite"></div>
+        <div class="dataset-launcher-format">Select the folder containing <code>metadata.json</code>, or a sequence root containing <code>sequence.json</code> and <code>frames/</code>.</div>
+      </div>
+    </div>
 
     <div id="info-panel">
       <div class="title">Dynamo 3D Viewer</div>

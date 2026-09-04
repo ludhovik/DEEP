@@ -7,9 +7,23 @@ import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import GUI from "lil-gui";
 
+const APP_BASE_URL = new URL(import.meta.env.BASE_URL || "./", window.location.href);
+function appPublicUrl(relativePath) {
+  const clean = String(relativePath || "").replace(/^\/+/, "");
+  return new URL(clean, APP_BASE_URL).toString();
+}
+const DEFAULT_DATASET_ROOT = appPublicUrl("data").replace(/\/+$/, "");
+const DEFAULT_SECONDARY_DATASET_ROOT = appPublicUrl("data2").replace(/\/+$/, "");
+
 const statusEl = document.getElementById("status");
 const exportMessageEl = document.getElementById("export-message");
 const axesOverlayEl = document.getElementById("axes-overlay");
+const datasetLauncherEl = document.getElementById("dataset-launcher");
+const datasetLauncherStatusEl = document.getElementById("dataset-launcher-status");
+const datasetUrlInputEl = document.getElementById("dataset-url-input");
+const openLocalDatasetButtonEl = document.getElementById("open-local-dataset");
+const openDemoDatasetButtonEl = document.getElementById("open-demo-dataset");
+const openUrlDatasetButtonEl = document.getElementById("open-url-dataset");
 
 const displaySlots = ["cmb", "icb", "radial", "earth", "equator", "equator2", "meridian", "meridian2", "fieldlines"];
 const displayNames = {
@@ -287,11 +301,12 @@ const params = {
   exportPdfWhite: () => exportCurrentViewPDF(),
   recordFullRotation: () => startFullRotationRecording(),
 
-  datasetPath: "/data",
+  datasetPath: DEFAULT_DATASET_ROOT,
   selectPrimaryDatasetFolder: () => selectDatasetFolder("primary"),
+  chooseDatasetSource: () => showDatasetLauncher(),
   reloadDataset: () => loadDatasetFromParams(),
 
-  secondaryDatasetPath: "/data2",
+  secondaryDatasetPath: DEFAULT_SECONDARY_DATASET_ROOT,
   secondaryDatasetLabel: "D2",
   selectSecondaryDatasetFolder: () => selectDatasetFolder("secondary"),
   loadSecondaryDataset: () => loadSecondaryDatasetFromParams(),
@@ -356,7 +371,7 @@ let fieldLineDataCacheBytes = 0;
 let heavyObjectCacheBytes = 0;
 let cacheAccessCounter = 0;
 
-const EARTH_TEXTURE_URL = "/assets/earth_blue_marble.jpg";
+const EARTH_TEXTURE_URL = appPublicUrl("assets/earth_blue_marble.jpg");
 const EARTH_TEXTURE_ATTRIBUTION = "Earth texture: local file public/assets/earth_blue_marble.jpg."; 
 
 const dataCache = new Map();
@@ -365,8 +380,8 @@ const jsonCache = new Map();
 let dataCacheBytes = 0;
 let guiRoot = null;
 let povGuiRoot = null;
-let datasetRootPath = "/data";
-let dataBasePath = "/data";
+let datasetRootPath = DEFAULT_DATASET_ROOT;
+let dataBasePath = DEFAULT_DATASET_ROOT;
 let secondaryDataset = null;
 const datasetFolderSources = new Map();
 let sequenceIndex = null;
@@ -1075,14 +1090,17 @@ async function updateEarthSurface(options = {}) {
 
 
 function normaliseDatasetRoot(path) {
-  let raw = String(path || "/data").trim();
-  if (!raw) return "/data";
+  let raw = String(path || DEFAULT_DATASET_ROOT).trim();
+  if (!raw) return DEFAULT_DATASET_ROOT;
 
   if (/^fsdir:[^/]+(?:\/.*)?$/i.test(raw)) {
     return raw.replace(/\\/g, "/").replace(/\/+$/, "");
   }
 
   raw = raw.replace(/\\/g, "/");
+
+  if (/^https?:\/\//i.test(raw)) return raw.replace(/\/+$/, "");
+  if (/^\.{1,2}\//.test(raw)) return new URL(raw, APP_BASE_URL).toString().replace(/\/+$/, "");
 
   // Local absolute paths use a synthetic localfs: root. Vite serves them via
   // the localhost middleware in vite.config.js. This is more reliable on
@@ -1114,7 +1132,7 @@ function normaliseDatasetRoot(path) {
 
   let p = raw.replace(/^public\//, "");
   p = p.replace(/\/+$/, "");
-  if (!p) p = "/data";
+  if (!p) return DEFAULT_DATASET_ROOT;
   if (!p.startsWith("/")) p = `/${p}`;
   return p;
 }
@@ -1251,12 +1269,54 @@ async function selectDatasetFolder(role) {
       await loadSecondaryDatasetFromParams();
     } else {
       params.datasetPath = syntheticPath;
-      await loadDatasetFromParams();
+      const ok = await loadDatasetFromParams();
+      if (ok) hideDatasetLauncher();
     }
   } catch (err) {
     console.error(err);
     setStatus(`Could not select dataset folder: ${err.message}`);
   }
+}
+
+function setDatasetLauncherStatus(message, isError = false) {
+  if (!datasetLauncherStatusEl) return;
+  datasetLauncherStatusEl.textContent = message || "";
+  datasetLauncherStatusEl.classList.toggle("error", Boolean(isError));
+}
+
+function showDatasetLauncher(message = "Choose a converted dataset to begin.") {
+  datasetLauncherEl?.classList.remove("hidden");
+  setDatasetLauncherStatus(message, false);
+}
+
+function hideDatasetLauncher() {
+  datasetLauncherEl?.classList.add("hidden");
+}
+
+async function loadBundledDemoDataset() {
+  setDatasetLauncherStatus("Loading bundled demonstration dataset…");
+  params.datasetPath = DEFAULT_DATASET_ROOT;
+  const ok = await loadDatasetFromParams();
+  if (!ok) setDatasetLauncherStatus("Bundled demonstration dataset could not be loaded.", true);
+}
+
+async function loadRemoteDatasetFromLauncher() {
+  const requested = String(datasetUrlInputEl?.value || "").trim();
+  if (!requested) { setDatasetLauncherStatus("Enter a converted dataset URL.", true); return; }
+  params.datasetPath = requested;
+  setDatasetLauncherStatus(`Loading ${requested}…`);
+  const ok = await loadDatasetFromParams();
+  if (!ok) setDatasetLauncherStatus("Could not load this URL. Check metadata.json and CORS settings.", true);
+}
+
+function bindDatasetLauncher() {
+  openLocalDatasetButtonEl?.addEventListener("click", async () => {
+    setDatasetLauncherStatus("Select the converted dataset folder. The files remain on your computer.");
+    await selectDatasetFolder("primary");
+  });
+  openDemoDatasetButtonEl?.addEventListener("click", () => loadBundledDemoDataset());
+  openUrlDatasetButtonEl?.addEventListener("click", () => loadRemoteDatasetFromLauncher());
+  datasetUrlInputEl?.addEventListener("keydown", (event) => { if (event.key === "Enter") loadRemoteDatasetFromLauncher(); });
 }
 
 function getDatasetPathFromQuery() {
@@ -1271,7 +1331,7 @@ function askForDatasetRoot(message = null) {
   const queryPath = getDatasetPathFromQuery();
   if (queryPath) return normaliseDatasetRoot(queryPath);
 
-  const saved = localStorage.getItem("dynamoThreeViewer.datasetPath") || params.datasetPath || "/data";
+  const saved = localStorage.getItem("dynamoThreeViewer.datasetPath") || params.datasetPath || DEFAULT_DATASET_ROOT;
   const promptMessage = message || [
     "Enter a dataset path or public URL path.",
     "",
@@ -1288,7 +1348,7 @@ function askForDatasetRoot(message = null) {
   ].join("\n");
 
   const chosen = window.prompt(promptMessage, saved);
-  return normaliseDatasetRoot(chosen || saved || "/data");
+  return normaliseDatasetRoot(chosen || saved || DEFAULT_DATASET_ROOT);
 }
 
 function rememberDatasetRoot(path) {
@@ -2299,7 +2359,7 @@ async function clearSecondaryDataset() {
 }
 
 async function loadFloat32ForBase(basePath, filename, expectedLength) {
-  const cleanBase = String(basePath || "/data").replace(/\/+$/, "");
+  const cleanBase = String(basePath || DEFAULT_DATASET_ROOT).replace(/\/+$/, "");
   const cacheKey = `${cleanBase}/${filename}`;
   if (dataCache.has(cacheKey)) {
     const info = dataCacheMeta.get(cacheKey);
@@ -5788,9 +5848,12 @@ async function loadDatasetFromParams() {
     await updateEarthSurface();
     updateVisibility();
     setStatusSummary(`dataset:${datasetRootPath}`);
+    hideDatasetLauncher();
+    return true;
   } catch (err) {
     console.error(err);
     setStatus(`Could not load dataset ${params.datasetPath}: ${err.message}`);
+    return false;
   }
 }
 
@@ -5835,6 +5898,7 @@ function buildGui() {
   gui.add(params, "resetCamera").name("Reset camera view");
 
   const datasetFolder = gui.addFolder("Dataset");
+  datasetFolder.add(params, "chooseDatasetSource").name("Choose data source…");
   datasetFolder.add(params, "datasetPath").name("Primary path / URL");
   datasetFolder.add(params, "selectPrimaryDatasetFolder").name("Select primary folder");
   datasetFolder.add(params, "reloadDataset").name("Load primary path");
@@ -7583,60 +7647,23 @@ function animate(now = performance.now()) {
 }
 
 async function init() {
-  let started = false;
+  syncCameraParamsFromCamera(false);
+  bindExportPanelButtons();
+  bindDatasetLauncher();
+  updateLighting();
+  animate();
 
-  for (let attempt = 0; attempt < 3 && !started; attempt++) {
-    try {
-      const message = attempt === 0 ? null : [
-        `Could not load dataset: ${params.datasetPath}`,
-        "",
-        "Enter another public path or absolute filesystem path.",
-        "",
-        "Examples:",
-        "  /data",
-        "  C:\\Users\\wgdh881\\Downloads\\data_FLAYER_C19",
-        "  file:/work/project/data_FLAYER_C19"
-      ].join("\n");
-
-      datasetRootPath = rememberDatasetRoot(askForDatasetRoot(message));
-      params.datasetPath = datasetRootPath;
-      dataBasePath = datasetRootPath;
-      sequenceIndex = null;
-      params.sequenceFrame = 0;
-      clearLoadedDataCaches(false);
-
-      setStatus(`Loading metadata from ${datasetRootPath}...`);
-      await loadSequenceIndex(true);
-
-      if (sequenceIndex?.frames?.length > 0) {
-        const frame = sequenceIndex.frames[clamp(Math.round(params.sequenceFrame), 0, sequenceIndex.frames.length - 1)];
-        dataBasePath = sequenceFrameBasePath(frame);
-      }
-
-      metadata = await loadMetadata();
-      await loadCoordinates();
-
-      applyDefaultFields();
-      syncCameraParamsFromCamera(false);
-      buildGui();
-      bindExportPanelButtons();
-      updateLighting();
-
-      await rebuildAllMeshes();
-      await loadFieldLines();
-      await updateEarthSurface();
-
-      animate();
-      started = true;
-    } catch (err) {
-      console.error(err);
-      setStatus(`Error loading ${params.datasetPath}: ${err.message}`);
-      if (attempt === 2) {
-        buildGui();
-        bindExportPanelButtons();
-      }
-    }
+  const queryPath = getDatasetPathFromQuery();
+  if (queryPath) {
+    params.datasetPath = queryPath;
+    showDatasetLauncher(`Loading dataset: ${queryPath}`);
+    const ok = await loadDatasetFromParams();
+    if (!ok) showDatasetLauncher("The requested dataset could not be loaded. Choose another source.");
+    return;
   }
+
+  setStatus("Choose a converted dataset to begin.");
+  showDatasetLauncher();
 }
 
 window.addEventListener("keydown", handleViewerKeyboardShortcut);

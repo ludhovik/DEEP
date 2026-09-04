@@ -1,6 +1,6 @@
 {
   "name": "dynamo-three-viewer",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,7 +8,9 @@
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "convert-state": "python tools/convert_state_to_viewer.py"
+    "convert-state": "python tools/convert_state_to_viewer.py",
+    "convert-xshells": "python tools/convert_xshells_to_viewer.py",
+    "test-converters": "python tests/test_converter_package.py"
   },
   "dependencies": {
     "lil-gui": "latest",

@@ -1,0 +1,53 @@
+Leeds and XSHELLS converter output parity check
+===============================================
+
+Shared field names after this patch
+-----------------------------------
+Velocity:
+  ur, ut, up, us, uz, Uabs, helicity
+
+Velocity phi averages / m0 helpers:
+  ur_phiavg, ut_phiavg, up_phiavg
+  XSHELLS also keeps ur_nom0, ut_nom0, up_nom0 unless --no-m0-fields is used.
+
+Magnetic:
+  Br, Bt, Bp, Babs
+
+Magnetic phi averages / m0 helpers:
+  Br_phiavg, Bt_phiavg, Bp_phiavg
+  XSHELLS also keeps Br_nom0, Bt_nom0, Bp_nom0 unless --no-m0-fields is used.
+
+Optional EMF, with --emf:
+  EMFr, EMFt, EMFp, EMFabs
+  EMFr_fluct, EMFt_fluct, EMFp_fluct, EMFabs_fluct
+
+Optional induction, with --induction:
+  Ir, It, Ip, Iz, Iabs
+
+Buoyancy:
+  N2, N2_full
+
+Scalars:
+  Leeds: C, Comp
+  XSHELLS: T, Comp
+
+Reason for the scalar-name difference:
+  Leeds C is the codensity field in the Leeds state file.
+  XSHELLS fieldT is temperature and fieldC is composition.
+
+Conducting inner core logic for Leeds
+-------------------------------------
+The Leeds converter no longer uses r[0] == 0 by itself as a full-sphere test.
+If r[0] == 0, velocity coefficients are zero over a leading radial block, and
+magnetic coefficients are finite in that same block, the file is treated as:
+
+  spherical_shell_conducting_inner_core
+
+Velocity/scalars are transformed on the fluid shell and embedded as zero inside
+r < r_icb. Magnetic field is allowed to occupy the conducting inner core.
+
+Manual override options:
+  --full-sphere
+  --conducting-inner-core
+  --fluid-inner-radius <R>
+  --inner-core-velocity-tol <tol>

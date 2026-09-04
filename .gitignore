@@ -1,8 +1,4 @@
 node_modules/
 dist/
 .DS_Store
-public/data*
-V*RELEASE
-package*
-_pycache_/
-tools/_pycache_/
+.vite/

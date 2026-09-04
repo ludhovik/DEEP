@@ -97,6 +97,7 @@ function localFilesystemPlugin() {
 }
 
 export default defineConfig({
+  base: "./",
   plugins: [localFilesystemPlugin()],
   server: { host: "127.0.0.1" },
   preview: { host: "127.0.0.1" },

@@ -1,0 +1,7 @@
+numpy
+scipy
+h5py
+matplotlib
+pyxshells
+# shtns must also be installed and importable in the runtime environment.
+# cartopy is optional and is used only by plotting helpers in modules.py.

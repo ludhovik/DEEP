@@ -44,15 +44,24 @@ try:
     # are shared so both converters produce identical field-line JSON.
     from convert_state_to_viewer import (
         choose_regular_seed_grid,
+        compute_emf,
         compute_external_field_lines_from_cmb,
+        compute_helicity,
         compute_shell_field_lines_from_cmb,
     )
 except ImportError:  # pragma: no cover - package-style invocation
     from tools.convert_state_to_viewer import (
         choose_regular_seed_grid,
+        compute_emf,
         compute_external_field_lines_from_cmb,
+        compute_helicity,
         compute_shell_field_lines_from_cmb,
     )
+
+try:
+    from modules import curl_spat
+except ImportError:  # pragma: no cover - package-style invocation
+    from .modules import curl_spat
 
 
 RADIAL_ATOL = 1.0e-11
@@ -60,24 +69,30 @@ EARTH_RADIUS_KM = 6371.0
 CMB_RADIUS_KM = 3480.0
 DEFAULT_EARTH_RADIUS_SCALE = EARTH_RADIUS_KM / CMB_RADIUS_KM
 DEFAULT_EARTH_BR_LMAX = 13
+CONVERTER_PACKAGE_VERSION = "3.0.0"
 
 
-def json_number(value: Any, default: float = 0.0) -> float:
+def json_number(value: Any, default: float | None = None) -> float | None:
     try:
         out = float(np.asarray(value).item())
     except Exception:
-        out = float(default)
-    return out if math.isfinite(out) else float(default)
+        return default
+    return out if math.isfinite(out) else default
 
 
 def finite_range(arr: np.ndarray) -> dict[str, float]:
     values = np.asarray(arr, dtype=np.float64)
     good = values[np.isfinite(values)]
     if good.size == 0:
-        return {"min": 0.0, "max": 0.0, "absmax": 0.0}
+        return {"min": 0.0, "max": 0.0, "mean": 0.0, "absmax": 0.0}
     amin = float(np.min(good))
     amax = float(np.max(good))
-    return {"min": amin, "max": amax, "absmax": max(abs(amin), abs(amax))}
+    return {
+        "min": amin,
+        "max": amax,
+        "mean": float(np.mean(good)),
+        "absmax": max(abs(amin), abs(amax)),
+    }
 
 
 def write_f32(path: Path, arr: np.ndarray) -> dict[str, float]:
@@ -484,6 +499,28 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-gradients", action="store_true", help="Do not export scalar gradients.")
     p.add_argument("--no-m0-fields", action="store_true", help="Do not export m=0-removed and phi-average variants.")
     p.add_argument("--no-parameter-prompt", action="store_true")
+    p.add_argument("--emf", action="store_true", help="Export the motional EMF u x B. Disabled by default.")
+    p.add_argument(
+        "--induction",
+        action="store_true",
+        help="Export curl(u x B). Disabled by default; EMF is computed internally.",
+    )
+    p.add_argument(
+        "--geometry",
+        choices=["auto", "full-sphere", "shell", "conducting-inner-core"],
+        default="auto",
+        help=(
+            "Physical fluid geometry. Auto uses the native fluid and magnetic radial "
+            "domains; a magnetic grid extending below the fluid ICB is classified as "
+            "a conducting inner core."
+        ),
+    )
+    p.add_argument(
+        "--fluid-inner-radius",
+        type=float,
+        default=None,
+        help="Explicit fluid inner-boundary radius used for geometry metadata and masking.",
+    )
 
     p.add_argument("--Ek", "--E", dest="Ek", type=float)
     p.add_argument("--Pr", "--PrT", "--Pr_T", dest="Pr", type=float)
@@ -615,16 +652,46 @@ def main() -> None:
 
     shell_key = next((key for key in ("velocity", "temperature", "composition") if key in loaded), master_key)
     r_shell = radial_grids[shell_key]
-    r_icb = float(r_shell[0])
+    native_r_icb = float(r_shell[0])
+    if args.fluid_inner_radius is None:
+        r_icb = native_r_icb
+        geometry_method = f"native_{shell_key}_radial_domain"
+    else:
+        requested_r_icb = float(args.fluid_inner_radius)
+        spacing = float(np.median(np.abs(np.diff(r_shell)))) if len(r_shell) > 1 else RADIAL_ATOL
+        tolerance = max(RADIAL_ATOL, 0.51 * spacing)
+        if abs(requested_r_icb - native_r_icb) > tolerance:
+            raise ValueError(
+                f"--fluid-inner-radius={requested_r_icb} does not match the native "
+                f"{shell_key} inner radius {native_r_icb} within {tolerance}. "
+                "XSHELLS fluid-only fields already define the physical ICB."
+            )
+        r_icb = native_r_icb
+        geometry_method = "explicit_fluid_inner_radius_validated_against_native_grid"
+
     magnetic_r = radial_grids.get("magnetic")
-    has_conducting_inner_core = bool(
+    magnetic_domain_extends_inside_icb = bool(
         magnetic_r is not None and magnetic_r[0] < r_icb - RADIAL_ATOL and r_icb > RADIAL_ATOL
     )
-    if has_conducting_inner_core:
-        print(
-            f"Conducting inner core detected: B extends to r={magnetic_r[0]:.12g}; "
-            f"fluid shell begins at r_icb={r_icb:.12g}."
+
+    if args.geometry == "full-sphere" and r_icb > RADIAL_ATOL:
+        raise ValueError(
+            "--geometry full-sphere was requested, but the native fluid grid starts "
+            f"at r={r_icb:.12g}."
         )
+    if args.geometry in ("shell", "conducting-inner-core") and r_icb <= RADIAL_ATOL:
+        raise ValueError(
+            f"--geometry {args.geometry} was requested, but the native fluid grid includes r=0."
+        )
+    if args.geometry == "conducting-inner-core" and not magnetic_domain_extends_inside_icb:
+        raise ValueError(
+            "--geometry conducting-inner-core was requested, but the magnetic radial "
+            "domain does not extend below the fluid ICB."
+        )
+
+    has_inner_core = bool(r_icb > RADIAL_ATOL)
+    has_conducting_inner_core = False  # confirmed after magnetic synthesis
+    magnetic_inside_absmax = 0.0
 
     # The fluid field defines the ICB and CMB. For the current conducting-inner-core
     # use case the magnetic outer radius is the same CMB, but using r_shell[-1]
@@ -636,6 +703,10 @@ def main() -> None:
 
     def register(name: str, arr: np.ndarray, r_native: np.ndarray, source_key: str) -> None:
         native_fields[name] = (np.asarray(arr, dtype=np.float32), r_native, source_key)
+
+    Ur = Ut = Up = None
+    Br = Bt = Bp = None
+    ru = rb = None
 
     velocity = loaded.get("velocity")
     if velocity is not None:
@@ -650,7 +721,13 @@ def main() -> None:
         register("ur", Ur, ru, "velocity")
         register("ut", Ut, ru, "velocity")
         register("up", Up, ru, "velocity")
+        theta_u = theta[None, :, None]
+        Us = Ur * np.sin(theta_u) + Ut * np.cos(theta_u)
+        Uz = Ur * np.cos(theta_u) - Ut * np.sin(theta_u)
+        register("us", Us, ru, "velocity")
+        register("uz", Uz, ru, "velocity")
         register("Uabs", np.sqrt(Ur**2 + Ut**2 + Up**2), ru, "velocity")
+        register("helicity", compute_helicity(Ur, Ut, Up, ru, theta, phi), ru, "velocity")
         if not args.no_m0_fields:
             register("ur_phiavg", phi_average_volume(Ur), ru, "velocity")
             register("ut_phiavg", phi_average_volume(Ut), ru, "velocity")
@@ -669,6 +746,29 @@ def main() -> None:
         rb = radial_grids["magnetic"]
         b = sanitise_synthesised_field(b, rb, "magnetic field")
         Br, Bt, Bp = b[:, 0], b[:, 1], b[:, 2]
+        if magnetic_domain_extends_inside_icb:
+            inner_mask = rb < r_icb - RADIAL_ATOL
+            if np.any(inner_mask):
+                magnetic_inside_absmax = float(
+                    np.nanmax(
+                        np.sqrt(
+                            Br[inner_mask] * Br[inner_mask]
+                            + Bt[inner_mask] * Bt[inner_mask]
+                            + Bp[inner_mask] * Bp[inner_mask]
+                        )
+                    )
+                )
+            has_conducting_inner_core = bool(magnetic_inside_absmax > 0.0)
+            if has_conducting_inner_core:
+                print(
+                    f"Conducting inner core detected: non-zero B extends to "
+                    f"r={rb[0]:.12g}; fluid shell begins at r_icb={r_icb:.12g}."
+                )
+        if args.geometry == "conducting-inner-core" and not has_conducting_inner_core:
+            raise ValueError(
+                "--geometry conducting-inner-core was requested, but the magnetic field "
+                "is zero inside the fluid ICB."
+            )
         register("Br", Br, rb, "magnetic")
         register("Bt", Bt, rb, "magnetic")
         register("Bp", Bp, rb, "magnetic")
@@ -692,10 +792,17 @@ def main() -> None:
             T = np.asarray(temperature.spat_full(), dtype=np.float64)
         rt = radial_grids["temperature"]
         T = sanitise_synthesised_field(T, rt, "temperature")
-        scalar_native["T"] = (T, rt, "temperature")
-        register("T", T, rt, "temperature")
+        scalar_native["C"] = (T, rt, "temperature")
+        register("C", T, rt, "temperature")
+        register("T", T, rt, "temperature")  # backward-compatible XSHELLS alias
+        Cnom0 = remove_m0_phi(T)
+        Cnol0 = T - np.mean(T, axis=(0, 1, 2))
+        register("Cnom0", Cnom0, rt, "temperature")
+        register("C_nom0", Cnom0, rt, "temperature")
+        register("Cnol0", Cnol0, rt, "temperature")
+        register("C_phiavg", phi_average_volume(T), rt, "temperature")
         if not args.no_m0_fields:
-            register("T_nom0", remove_m0_phi(T), rt, "temperature")
+            register("T_nom0", Cnom0, rt, "temperature")
             register("T_phiavg", phi_average_volume(T), rt, "temperature")
 
     composition = loaded.get("composition")
@@ -709,9 +816,12 @@ def main() -> None:
         Comp = sanitise_synthesised_field(Comp, rc, "composition")
         scalar_native["Comp"] = (Comp, rc, "composition")
         register("Comp", Comp, rc, "composition")
-        if not args.no_m0_fields:
-            register("Comp_nom0", remove_m0_phi(Comp), rc, "composition")
-            register("Comp_phiavg", phi_average_volume(Comp), rc, "composition")
+        Compnom0 = remove_m0_phi(Comp)
+        Compnol0 = Comp - np.mean(Comp, axis=(0, 1, 2))
+        register("Compnom0", Compnom0, rc, "composition")
+        register("Comp_nom0", Compnom0, rc, "composition")
+        register("Compnol0", Compnol0, rc, "composition")
+        register("Comp_phiavg", phi_average_volume(Comp), rc, "composition")
 
     gradients: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, str]] = {}
     if not args.no_gradients:
@@ -727,6 +837,51 @@ def main() -> None:
                 register(f"grad_theta{name}", remove_m0_phi(gt), rr, source_key)
                 register(f"grad_phi{name}", remove_m0_phi(gp), rr, source_key)
 
+    optional_diagnostics = {
+        "emf_requested": bool(args.emf),
+        "emf_exported": False,
+        "induction_requested": bool(args.induction),
+        "induction_exported": False,
+        "emf_definition": "u x B",
+        "fluctuating_emf_definition": "u_prime x B_prime",
+        "induction_definition": "curl(u x B)",
+        "curl_implementation": "modules.curl_spat using gradient_spat",
+    }
+    if args.emf or args.induction:
+        if Ur is None or Ut is None or Up is None or Br is None or Bt is None or Bp is None or ru is None or rb is None:
+            print("Skipping optional EMF/induction: both velocity and magnetic fields are required.")
+        else:
+            print("Computing XSHELLS motional EMF on the native fluid radial grid...")
+            Br_u = radial_remap_to_master(Br, rb, ru, outside_value=0.0)
+            Bt_u = radial_remap_to_master(Bt, rb, ru, outside_value=0.0)
+            Bp_u = radial_remap_to_master(Bp, rb, ru, outside_value=0.0)
+            Er, Et, Ep = compute_emf(Ur, Ut, Up, Br_u, Bt_u, Bp_u)
+            urp, utp, upp = remove_m0_phi(Ur), remove_m0_phi(Ut), remove_m0_phi(Up)
+            brp, btp, bpp = remove_m0_phi(Br_u), remove_m0_phi(Bt_u), remove_m0_phi(Bp_u)
+            Erf, Etf, Epf = compute_emf(urp, utp, upp, brp, btp, bpp)
+
+            if args.emf:
+                register("EMFr", Er, ru, "velocity")
+                register("EMFt", Et, ru, "velocity")
+                register("EMFp", Ep, ru, "velocity")
+                register("EMFabs", np.sqrt(Er**2 + Et**2 + Ep**2), ru, "velocity")
+                register("EMFr_fluct", Erf, ru, "velocity")
+                register("EMFt_fluct", Etf, ru, "velocity")
+                register("EMFp_fluct", Epf, ru, "velocity")
+                optional_diagnostics["emf_exported"] = True
+
+            if args.induction:
+                print("Computing XSHELLS induction with modules.curl_spat...")
+                Ir, It, Ip = curl_spat(Er, Et, Ep, ru, theta, phi)
+                theta_i = theta[None, :, None]
+                Iz = Ir * np.cos(theta_i) - It * np.sin(theta_i)
+                register("Ir", Ir, ru, "velocity")
+                register("It", It, ru, "velocity")
+                register("Ip", Ip, ru, "velocity")
+                register("Iz", Iz, ru, "velocity")
+                register("Iabs", np.sqrt(Ir**2 + It**2 + Ip**2), ru, "velocity")
+                optional_diagnostics["induction_exported"] = True
+
     prompt_missing = not args.no_parameter_prompt
     Ek = resolve_parameter(args.Ek, existing_paths, ("Ek", "E"), "Ek", "Ekman number", prompt_missing)
     Pr = resolve_parameter(args.Pr, existing_paths, ("Pr", "PrT", "Pr_T"), "Pr", "thermal Prandtl number", prompt_missing)
@@ -734,7 +889,7 @@ def main() -> None:
     RaT = resolve_parameter(args.RaT, existing_paths, ("RaT", "Ra_T", "Ra"), "RaT", "thermal Rayleigh number", prompt_missing)
     RaC = resolve_parameter(args.RaC, existing_paths, ("RaC", "Ra_C"), "RaC", "compositional Rayleigh number", prompt_missing)
 
-    grad_t = gradients.get("T")
+    grad_t = gradients.get("C")
     grad_c = gradients.get("Comp")
     can_n2 = np.isfinite(Ek) and (
         (grad_t is not None and np.isfinite(Pr) and np.isfinite(RaT))
@@ -973,6 +1128,7 @@ def main() -> None:
                 max_steps=args.line_max_steps,
                 step_size=shell_step,
                 seed_offset=1.5 * shell_step,
+                full_sphere=not has_inner_core,
             )
             shell_count = len(shell_lines)
             combined_lines.extend(shell_lines)
@@ -1082,6 +1238,8 @@ def main() -> None:
     metadata = {
         "description": "Converted physical-space quantities from XSHELLS field files using pyxshells.",
         "source_format": "xshells",
+        "converter_version": CONVERTER_PACKAGE_VERSION,
+        "viewer_field_contract": "dynamo-three-viewer-v2-common",
         "source_fields": source_map,
         "time": json_number(time),
         "parameters": {
@@ -1099,6 +1257,7 @@ def main() -> None:
             "nphi": int(len(phi)),
             "library": "pyxshells/SHTns",
         },
+        "optional_magnetic_diagnostics": optional_diagnostics,
         "magnetic": {
             "has_magnetic_field": bool(has_magnetic),
             "classification": "magnetic" if has_magnetic else "non_magnetic",
@@ -1114,8 +1273,22 @@ def main() -> None:
         "icb_radius": json_number(r_icb),
         "icb_index": int(icb_index),
         "r_fluid_inner": json_number(r_icb),
-        "has_inner_core": bool(r_icb > r_out[0] + RADIAL_ATOL),
-        "has_conducting_inner_core": has_conducting_inner_core,
+        "has_inner_core": bool(has_inner_core),
+        "has_conducting_inner_core": bool(has_conducting_inner_core),
+        "full_sphere": bool(not has_inner_core),
+        "physical_geometry": (
+            "spherical_shell_conducting_inner_core"
+            if has_conducting_inner_core
+            else ("spherical_shell" if has_inner_core else "full_fluid_sphere")
+        ),
+        "geometry_detection": {
+            "method": geometry_method,
+            "transform_geometry": "native_xshells_radial_domains",
+            "fluid_domain_source": shell_key,
+            "magnetic_domain_extends_inside_icb": bool(magnetic_domain_extends_inside_icb),
+            "magnetic_inside_inner_core_absmax": json_number(magnetic_inside_absmax),
+            "requested_geometry": args.geometry,
+        },
         "master_radial_field": master_key,
         "radial_domains": radial_domains,
         "field_domains": field_domains,

@@ -1,5 +1,12 @@
 # Dynamo Three.js Viewer
 
+> **Integrated release 0.3.0.** This package includes the complete viewer and the
+> aligned Leeds/XSHELLS converter package v3.0.0. Both converters support the
+> common field contract, optional `--emf` and `--induction`, and explicit physical
+> geometry metadata for full spheres, ordinary shells, and shells with conducting
+> inner cores. See `V3_RELEASE_NOTES.md` and `CONVERTER_VALIDATION.md`.
+
+
 Local Three.js/Vite viewer for spherical-dynamo output from:
 
 - the Leeds Spherical Dynamo code;
@@ -2124,3 +2131,23 @@ so spaces and punctuation are preserved exactly. Restart `npm run dev` or
 If the Vite server runs inside WSL rather than Windows, use the corresponding
 `/mnt/c/Users/...` path or the folder-selection button.
 
+
+## Leeds / XSHELLS converter parity and conductive inner cores
+
+Both converters now expose the same viewer field names for shared diagnostics where the required source data exist: velocity (`ur`, `ut`, `up`, `us`, `uz`, `Uabs`, `helicity`), magnetic field (`Br`, `Bt`, `Bp`, `Babs`), optional EMF (`--emf`: `EMFr`, `EMFt`, `EMFp`, `EMFabs`, plus fluctuating components), and optional induction (`--induction`: `Ir`, `It`, `Ip`, `Iz`, `Iabs`). The optional diagnostics are off by default.
+
+For Leeds states, a radial grid with `r[0] = 0` is no longer assumed to mean a no-inner-core full sphere. If the velocity is zero over a leading inner radial region while magnetic field is present there, the converter classifies the file as a spherical shell with a conducting inner core. Use `--conducting-inner-core` to force this mode, `--fluid-inner-radius <R>` to set the ICB manually, or `--full-sphere` to force no-inner-core full-sphere mode.
+
+---
+
+## Hosted viewer / GitHub Pages (v0.4)
+
+The viewer can now be deployed as a static website. A visitor does not need Node.js, a repository clone, or a local web server. On startup the site offers:
+
+- **Open local dataset folder** — reads an already-converted dataset directly from the user's computer; files are not uploaded;
+- **Open bundled demonstration** — loads `public/data/` from the deployed site;
+- **Load dataset from URL** — reads a converted dataset hosted elsewhere, provided that host allows CORS.
+
+Local sequence roots containing `sequence.json` and `frames/` work through the same folder picker.
+
+A ready-to-use GitHub Pages workflow is included at `.github/workflows/deploy-pages.yml`. See `GITHUB_PAGES.md` for deployment and data-layout instructions.
