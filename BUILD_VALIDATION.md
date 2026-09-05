@@ -1,6 +1,6 @@
 # Integrated package validation
 
-Completed for release `dynamo-three-viewer` 0.3.0:
+Completed for release `DEEPscope` 0.3.0:
 
 - Python syntax compilation passed for both converters, `modules.py`, and converter tests.
 - Converter regression suite passed: 9/9 tests.

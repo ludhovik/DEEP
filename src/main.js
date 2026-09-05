@@ -24,9 +24,27 @@ const datasetUrlInputEl = document.getElementById("dataset-url-input");
 const openLocalDatasetButtonEl = document.getElementById("open-local-dataset");
 const openDemoDatasetButtonEl = document.getElementById("open-demo-dataset");
 const openUrlDatasetButtonEl = document.getElementById("open-url-dataset");
+const infoPanelEl = document.getElementById("info-panel");
+const infoHeaderEl = document.getElementById("info-header");
+const infoContentEl = document.getElementById("info-content");
+const infoCollapseButtonEl = document.getElementById("info-collapse-button");
+const infoResizeHandleEl = document.getElementById("info-resize-handle");
 const legendPanelEl = document.getElementById("legend-panel");
 const legendHeaderEl = document.getElementById("legend-header");
+const legendContentEl = document.getElementById("legend-content");
 const legendCollapseButtonEl = document.getElementById("legend-collapse-button");
+const legendResizeHandleEl = document.getElementById("legend-resize-handle");
+
+const PANEL_POSITION_OPTIONS = {
+  "Left centre": "left-center",
+  "Right centre": "right-center",
+  "Top left": "top-left",
+  "Top right": "top-right",
+  "Bottom left": "bottom-left",
+  "Bottom right": "bottom-right",
+  "Dragged position": "custom",
+};
+const PANEL_POSITIONS = new Set(Object.values(PANEL_POSITION_OPTIONS));
 
 const displaySlots = ["cmb", "icb", "radial", "earth", "equator", "equator2", "meridian", "meridian2", "fieldlines"];
 const displayNames = {
@@ -224,11 +242,20 @@ const params = {
   backgroundColor: "#050505",
   customColourLow: "#283cb4",
   customColourHigh: "#b42828",
+  titleVisible: true,
+  titleCollapsed: false,
+  titlePosition: "top-left",
+  titleX: 0.02,
+  titleY: 0.02,
+  titleWidth: 390,
+  titleHeight: 0,
   legendVisible: true,
   legendCollapsed: false,
   legendPosition: "left-center",
   legendX: 0.02,
   legendY: 0.50,
+  legendWidth: 330,
+  legendHeight: 0,
 
   cmbOpacity: 0.82,
   icbOpacity: 0.72,
@@ -405,7 +432,7 @@ let deferredSequenceObjectsHidden = false;
 let datasetLoadInProgress = false;
 let datasetRequestSignal = null;
 const sequenceControllers = [];
-const legendControllers = [];
+const panelLayoutControllers = [];
 
 const videoState = {
   active: false,
@@ -507,33 +534,61 @@ function updateBackgroundColor() {
   document.body.style.backgroundColor = requested;
 }
 
-function refreshLegendControllers() {
-  for (const controller of legendControllers) controller.updateDisplay();
+function refreshPanelLayoutControllers() {
+  for (const controller of panelLayoutControllers) controller.updateDisplay();
 }
 
-function applyLegendLayout() {
-  if (!legendPanelEl) return;
-  legendPanelEl.style.display = params.legendVisible ? "block" : "none";
-  legendPanelEl.classList.toggle("collapsed", Boolean(params.legendCollapsed));
-  if (legendCollapseButtonEl) {
-    legendCollapseButtonEl.textContent = params.legendCollapsed ? "+" : "\u2212";
-    legendCollapseButtonEl.setAttribute("aria-expanded", String(!params.legendCollapsed));
-    legendCollapseButtonEl.setAttribute(
-      "aria-label",
-      params.legendCollapsed ? "Expand legends" : "Collapse legends"
-    );
+function applyFloatingPanelLayout({
+  panel,
+  content,
+  collapseButton,
+  visibleKey,
+  collapsedKey,
+  positionKey,
+  xKey,
+  yKey,
+  widthKey,
+  heightKey,
+  defaultPosition,
+  collapsedLabel,
+  minWidth,
+  minHeight,
+}) {
+  if (!panel) return;
+  const visible = Boolean(params[visibleKey]);
+  const collapsed = Boolean(params[collapsedKey]);
+  panel.style.display = visible ? "" : "none";
+  panel.classList.toggle("collapsed", collapsed);
+  if (collapseButton) {
+    collapseButton.textContent = collapsed ? "+" : "\u2212";
+    collapseButton.setAttribute("aria-expanded", String(!collapsed));
+    collapseButton.setAttribute("aria-label", `${collapsed ? "Expand" : "Collapse"} ${collapsedLabel}`);
   }
-  if (!params.legendVisible) return;
+  if (!visible) return;
 
-  legendPanelEl.style.transform = "none";
-  const margin = 18;
-  const rect = legendPanelEl.getBoundingClientRect();
+  const margin = 14;
+  const availableWidth = Math.max(120, window.innerWidth - 2 * margin);
+  const availableHeight = Math.max(48, window.innerHeight - 2 * margin);
+  const effectiveMinWidth = Math.min(minWidth, availableWidth);
+  const requestedWidth = Number(params[widthKey]);
+  const width = clamp(Number.isFinite(requestedWidth) ? requestedWidth : minWidth, effectiveMinWidth, availableWidth);
+  panel.style.width = `${Math.round(width)}px`;
+
+  const requestedHeight = Number(params[heightKey]);
+  const manualHeight = !collapsed && Number.isFinite(requestedHeight) && requestedHeight > 0;
+  panel.style.height = manualHeight
+    ? `${Math.round(clamp(requestedHeight, Math.min(minHeight, availableHeight), availableHeight))}px`
+    : "auto";
+  if (content) content.style.maxHeight = manualHeight ? "none" : "";
+
+  panel.style.transform = "none";
+  const rect = panel.getBoundingClientRect();
   const maxX = Math.max(margin, window.innerWidth - rect.width - margin);
   const maxY = Math.max(margin, window.innerHeight - rect.height - margin);
   let x = margin;
   let y = Math.max(margin, 0.5 * (window.innerHeight - rect.height));
 
-  switch (params.legendPosition) {
+  switch (params[positionKey]) {
     case "right-center":
       x = maxX;
       break;
@@ -552,56 +607,185 @@ function applyLegendLayout() {
       y = maxY;
       break;
     case "custom":
-      x = margin + clamp(Number(params.legendX), 0, 1) * Math.max(0, maxX - margin);
-      y = margin + clamp(Number(params.legendY), 0, 1) * Math.max(0, maxY - margin);
+      x = margin + clamp(Number(params[xKey]), 0, 1) * Math.max(0, maxX - margin);
+      y = margin + clamp(Number(params[yKey]), 0, 1) * Math.max(0, maxY - margin);
       break;
     default:
-      params.legendPosition = "left-center";
+      params[positionKey] = defaultPosition;
+      if (defaultPosition === "top-left") y = margin;
   }
 
-  legendPanelEl.style.left = `${Math.round(clamp(x, margin, maxX))}px`;
-  legendPanelEl.style.top = `${Math.round(clamp(y, margin, maxY))}px`;
+  panel.style.left = `${Math.round(clamp(x, margin, maxX))}px`;
+  panel.style.top = `${Math.round(clamp(y, margin, maxY))}px`;
 }
 
-function bindLegendControls() {
-  legendCollapseButtonEl?.addEventListener("click", (event) => {
+function applyTitleLayout() {
+  applyFloatingPanelLayout({
+    panel: infoPanelEl,
+    content: infoContentEl,
+    collapseButton: infoCollapseButtonEl,
+    visibleKey: "titleVisible",
+    collapsedKey: "titleCollapsed",
+    positionKey: "titlePosition",
+    xKey: "titleX",
+    yKey: "titleY",
+    widthKey: "titleWidth",
+    heightKey: "titleHeight",
+    defaultPosition: "top-left",
+    collapsedLabel: "title box",
+    minWidth: 220,
+    minHeight: 88,
+  });
+}
+
+function applyLegendLayout() {
+  applyFloatingPanelLayout({
+    panel: legendPanelEl,
+    content: legendContentEl,
+    collapseButton: legendCollapseButtonEl,
+    visibleKey: "legendVisible",
+    collapsedKey: "legendCollapsed",
+    positionKey: "legendPosition",
+    xKey: "legendX",
+    yKey: "legendY",
+    widthKey: "legendWidth",
+    heightKey: "legendHeight",
+    defaultPosition: "left-center",
+    collapsedLabel: "legends",
+    minWidth: 220,
+    minHeight: 96,
+  });
+}
+
+function bindFloatingPanelControls({
+  panel,
+  header,
+  collapseButton,
+  resizeHandle,
+  collapsedKey,
+  positionKey,
+  xKey,
+  yKey,
+  widthKey,
+  heightKey,
+  minWidth,
+  minHeight,
+  applyLayout,
+}) {
+  collapseButton?.addEventListener("click", (event) => {
     event.stopPropagation();
-    params.legendCollapsed = !params.legendCollapsed;
-    applyLegendLayout();
-    refreshLegendControllers();
+    params[collapsedKey] = !params[collapsedKey];
+    applyLayout();
+    refreshPanelLayoutControllers();
   });
 
-  legendHeaderEl?.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0 || event.target === legendCollapseButtonEl || !legendPanelEl) return;
+  header?.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || event.target === collapseButton || !panel) return;
     event.preventDefault();
-    const startRect = legendPanelEl.getBoundingClientRect();
+    const startRect = panel.getBoundingClientRect();
     const offsetX = event.clientX - startRect.left;
     const offsetY = event.clientY - startRect.top;
-    legendHeaderEl.setPointerCapture?.(event.pointerId);
+    header.setPointerCapture?.(event.pointerId);
 
     const move = (moveEvent) => {
-      const rect = legendPanelEl.getBoundingClientRect();
+      const rect = panel.getBoundingClientRect();
       const margin = 6;
       const maxX = Math.max(margin, window.innerWidth - rect.width - margin);
       const maxY = Math.max(margin, window.innerHeight - rect.height - margin);
       const x = clamp(moveEvent.clientX - offsetX, margin, maxX);
       const y = clamp(moveEvent.clientY - offsetY, margin, maxY);
-      params.legendPosition = "custom";
-      params.legendX = maxX > margin ? (x - margin) / (maxX - margin) : 0;
-      params.legendY = maxY > margin ? (y - margin) / (maxY - margin) : 0;
-      legendPanelEl.style.left = `${Math.round(x)}px`;
-      legendPanelEl.style.top = `${Math.round(y)}px`;
-      legendPanelEl.style.transform = "none";
+      params[positionKey] = "custom";
+      params[xKey] = maxX > margin ? (x - margin) / (maxX - margin) : 0;
+      params[yKey] = maxY > margin ? (y - margin) / (maxY - margin) : 0;
+      panel.style.left = `${Math.round(x)}px`;
+      panel.style.top = `${Math.round(y)}px`;
+      panel.style.transform = "none";
     };
     const finish = () => {
-      legendHeaderEl.removeEventListener("pointermove", move);
-      legendHeaderEl.removeEventListener("pointerup", finish);
-      legendHeaderEl.removeEventListener("pointercancel", finish);
-      refreshLegendControllers();
+      header.removeEventListener("pointermove", move);
+      header.removeEventListener("pointerup", finish);
+      header.removeEventListener("pointercancel", finish);
+      refreshPanelLayoutControllers();
     };
-    legendHeaderEl.addEventListener("pointermove", move);
-    legendHeaderEl.addEventListener("pointerup", finish);
-    legendHeaderEl.addEventListener("pointercancel", finish);
+    header.addEventListener("pointermove", move);
+    header.addEventListener("pointerup", finish);
+    header.addEventListener("pointercancel", finish);
+  });
+
+  resizeHandle?.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || !panel || params[collapsedKey]) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const startRect = panel.getBoundingClientRect();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    resizeHandle.setPointerCapture?.(event.pointerId);
+
+    const move = (moveEvent) => {
+      const margin = 6;
+      const maxWidth = Math.max(120, window.innerWidth - startRect.left - margin);
+      const maxHeight = Math.max(48, window.innerHeight - startRect.top - margin);
+      const effectiveMinWidth = Math.min(minWidth, maxWidth);
+      const effectiveMinHeight = Math.min(minHeight, maxHeight);
+      const width = clamp(startRect.width + moveEvent.clientX - startX, effectiveMinWidth, maxWidth);
+      const height = clamp(startRect.height + moveEvent.clientY - startY, effectiveMinHeight, maxHeight);
+      params[widthKey] = Math.round(width);
+      params[heightKey] = Math.round(height);
+      panel.style.width = `${params[widthKey]}px`;
+      panel.style.height = `${params[heightKey]}px`;
+      const content = panel === infoPanelEl ? infoContentEl : legendContentEl;
+      if (content) content.style.maxHeight = "none";
+    };
+    const finish = () => {
+      resizeHandle.removeEventListener("pointermove", move);
+      resizeHandle.removeEventListener("pointerup", finish);
+      resizeHandle.removeEventListener("pointercancel", finish);
+      const rect = panel.getBoundingClientRect();
+      const margin = 6;
+      const maxX = Math.max(margin, window.innerWidth - rect.width - margin);
+      const maxY = Math.max(margin, window.innerHeight - rect.height - margin);
+      params[positionKey] = "custom";
+      params[xKey] = maxX > margin ? (rect.left - margin) / (maxX - margin) : 0;
+      params[yKey] = maxY > margin ? (rect.top - margin) / (maxY - margin) : 0;
+      applyLayout();
+      refreshPanelLayoutControllers();
+    };
+    resizeHandle.addEventListener("pointermove", move);
+    resizeHandle.addEventListener("pointerup", finish);
+    resizeHandle.addEventListener("pointercancel", finish);
+  });
+}
+
+function bindPanelLayoutControls() {
+  bindFloatingPanelControls({
+    panel: infoPanelEl,
+    header: infoHeaderEl,
+    collapseButton: infoCollapseButtonEl,
+    resizeHandle: infoResizeHandleEl,
+    collapsedKey: "titleCollapsed",
+    positionKey: "titlePosition",
+    xKey: "titleX",
+    yKey: "titleY",
+    widthKey: "titleWidth",
+    heightKey: "titleHeight",
+    minWidth: 220,
+    minHeight: 88,
+    applyLayout: applyTitleLayout,
+  });
+  bindFloatingPanelControls({
+    panel: legendPanelEl,
+    header: legendHeaderEl,
+    collapseButton: legendCollapseButtonEl,
+    resizeHandle: legendResizeHandleEl,
+    collapsedKey: "legendCollapsed",
+    positionKey: "legendPosition",
+    xKey: "legendX",
+    yKey: "legendY",
+    widthKey: "legendWidth",
+    heightKey: "legendHeight",
+    minWidth: 220,
+    minHeight: 96,
+    applyLayout: applyLegendLayout,
   });
 }
 
@@ -6246,9 +6430,7 @@ function applySnapshotParam(key, value) {
   if (!validFieldForState(key, value)) return false;
   if (key === "fieldLineDisplay" && !getAvailableFieldLineModes().includes(value)) return false;
   if (key === "earthDisplayMode" && !["texture", "magnetic"].includes(value)) return false;
-  if (key === "legendPosition" && ![
-    "left-center", "right-center", "top-left", "top-right", "bottom-left", "bottom-right", "custom"
-  ].includes(value)) return false;
+  if ((key === "legendPosition" || key === "titlePosition") && !PANEL_POSITIONS.has(value)) return false;
   params[key] = value;
   return true;
 }
@@ -6264,6 +6446,7 @@ async function applyViewState(snapshot) {
   updateLighting();
   updateBackgroundColor();
   applyCameraViewFromParams();
+  applyTitleLayout();
   applyLegendLayout();
   buildGui();
   await rebuildAllMeshes();
@@ -6272,6 +6455,7 @@ async function applyViewState(snapshot) {
   updateFieldLineVisuals();
   updateOpacities();
   updateVisibility();
+  applyTitleLayout();
   applyLegendLayout();
   setStatus(
     skippedFields.length > 0
@@ -6311,7 +6495,7 @@ async function loadViewStateCode() {
 async function saveViewStateCode() {
   const code = encodeViewState(collectViewState());
   const blob = new Blob([code + "\n"], { type: "text/plain;charset=utf-8" });
-  await saveBlob(blob, `dynamo-view-state-${Date.now()}.txt`, "view-state");
+  await saveBlob(blob, `deepscope-view-state-${Date.now()}.txt`, "view-state");
 }
 
 const DATASET_FIELD_PARAM_KEYS = [
@@ -6538,7 +6722,7 @@ function buildGui() {
   }
   sequenceControllers.length = 0;
   cameraParamControllers.length = 0;
-  legendControllers.length = 0;
+  panelLayoutControllers.length = 0;
   const gui = new GUI({ title: "Controls" });
   gui.domElement.classList.add("main-controls-gui");
   guiRoot = gui;
@@ -6668,18 +6852,17 @@ function buildGui() {
   appearance.addColor(params, "backgroundColor").name("Background").onChange(updateBackgroundColor);
   appearance.addColor(params, "customColourLow").name("Custom low colour").onChange(scheduleCustomColourRefresh);
   appearance.addColor(params, "customColourHigh").name("Custom high colour").onChange(scheduleCustomColourRefresh);
-  legendControllers.push(
+  panelLayoutControllers.push(
+    appearance.add(params, "titleVisible").name("Show title box").onChange(applyTitleLayout),
+    appearance.add(params, "titleCollapsed").name("Collapse title box").onChange(applyTitleLayout),
+    appearance.add(params, "titlePosition", PANEL_POSITION_OPTIONS).name("Title position").onChange(applyTitleLayout),
+    appearance.add(params, "titleWidth", 220, 900, 10).name("Title width px").onChange(applyTitleLayout),
+    appearance.add(params, "titleHeight", 0, 1000, 10).name("Title height (0 auto)").onChange(applyTitleLayout),
     appearance.add(params, "legendVisible").name("Show legends").onChange(applyLegendLayout),
     appearance.add(params, "legendCollapsed").name("Collapse legends").onChange(applyLegendLayout),
-    appearance.add(params, "legendPosition", {
-      "Left centre": "left-center",
-      "Right centre": "right-center",
-      "Top left": "top-left",
-      "Top right": "top-right",
-      "Bottom left": "bottom-left",
-      "Bottom right": "bottom-right",
-      "Dragged position": "custom",
-    }).name("Legend position").onChange(applyLegendLayout)
+    appearance.add(params, "legendPosition", PANEL_POSITION_OPTIONS).name("Legend position").onChange(applyLegendLayout),
+    appearance.add(params, "legendWidth", 220, 900, 10).name("Legend width px").onChange(applyLegendLayout),
+    appearance.add(params, "legendHeight", 0, 1400, 10).name("Legend height (0 auto)").onChange(applyLegendLayout)
   );
 
   const exportFolder = gui.addFolder("Export");
@@ -6901,7 +7084,7 @@ function drawExportColourbars(ctx, width, height) {
   if (slots.length === 0) return;
 
   const scale = clamp(width / Math.max(1, window.innerWidth), 1.0, 4.0);
-  const panelWidth = 330 * scale;
+  const panelWidth = clamp(Number(params.legendWidth) || 330, 220, 900) * scale;
   const panelHeight = 58 * scale;
   const gap = 8 * scale;
   const totalHeight = slots.length * panelHeight + (slots.length - 1) * gap;
@@ -7218,7 +7401,7 @@ async function renderSequencePngFrames() {
     if (!directoryHandle && zipFiles.length > 0) {
       setStatus(`Packaging ${zipFiles.length} PNG files into an uncompressed ZIP...`);
       const zipBlob = makeStoredZip(zipFiles);
-      await saveBlob(zipBlob, `dynamo-viewer-frames-${first}-${last}.zip`, "PNG sequence ZIP");
+      await saveBlob(zipBlob, `deepscope-frames-${first}-${last}.zip`, "PNG sequence ZIP");
     }
 
     completionMessage = sequencePngCancelRequested
@@ -7243,7 +7426,7 @@ async function exportCurrentViewPNG() {
   try {
     setStatus("Preparing PNG export...");
     const blob = await exportCanvasBlob("image/png", 1.0, params.exportWidthPx);
-    await saveBlob(blob, `dynamo-viewer-${Date.now()}.png`, "PNG");
+    await saveBlob(blob, `deepscope-${Date.now()}.png`, "PNG");
   } catch (err) {
     console.error(err);
     setStatus(`PNG export failed: ${err.message}`);
@@ -7322,7 +7505,7 @@ async function exportCurrentViewPDF() {
     const heightPx = Math.round(widthPx / camera.aspect);
     const dataUrl = exportCanvasDataUrl("image/jpeg", 0.95, widthPx);
     const blob = makeSimplePdfFromJpegDataUrl(dataUrl, widthPx, heightPx);
-    await saveBlob(blob, `dynamo-viewer-${Date.now()}.pdf`, "PDF");
+    await saveBlob(blob, `deepscope-${Date.now()}.pdf`, "PDF");
   } catch (err) {
     console.error(err);
     setStatus(`PDF export failed: ${err.message}`);
@@ -7672,8 +7855,8 @@ function makeWebMVideoBlob(encodedChunks, width, height, fps) {
   const info = makeEbmlElement([0x15, 0x49, 0xa9, 0x66], concatByteArrays([
     makeEbmlElement([0x2a, 0xd7, 0xb1], encodeEbmlUnsigned(1_000_000)),
     makeEbmlElement([0x44, 0x89], encodeEbmlFloat64(durationMs)),
-    makeEbmlElement([0x4d, 0x80], encodeEbmlString("dynamo-three-viewer")),
-    makeEbmlElement([0x57, 0x41], encodeEbmlString("dynamo-three-viewer")),
+    makeEbmlElement([0x4d, 0x80], encodeEbmlString("DEEPscope")),
+    makeEbmlElement([0x57, 0x41], encodeEbmlString("DEEPscope")),
   ]));
 
   const video = makeEbmlElement([0xe0], concatByteArrays([
@@ -7963,7 +8146,7 @@ async function startFullRotationRecording() {
   if (videoState.active) return;
 
   const backgroundExport = Boolean(params.videoBackgroundExport);
-  const offlineFilename = `dynamo-viewer-background-${Date.now()}.webm`;
+  const offlineFilename = `deepscope-background-${Date.now()}.webm`;
   let offlineFileHandle = null;
 
   if (backgroundExport) {
@@ -8104,7 +8287,7 @@ async function startFullRotationRecording() {
   recorder.onstop = async () => {
     const blob = new Blob(videoState.chunks, { type: mimeType || "video/webm" });
     try {
-      await saveBlob(blob, `dynamo-viewer-rotation-${Date.now()}.webm`, "video");
+      await saveBlob(blob, `deepscope-rotation-${Date.now()}.webm`, "video");
     } catch (err) {
       console.error(err);
       setStatus(`Video save failed: ${err.message}`);
@@ -8367,9 +8550,10 @@ async function init() {
   syncCameraParamsFromCamera(false);
   bindExportPanelButtons();
   bindDatasetLauncher();
-  bindLegendControls();
+  bindPanelLayoutControls();
   updateLighting();
   updateBackgroundColor();
+  applyTitleLayout();
   applyLegendLayout();
   animate();
 
@@ -8421,6 +8605,7 @@ window.addEventListener("resize", () => {
   updateFieldLineVisuals();
   syncCameraParamsFromCamera(true);
   updateAxesOverlay();
+  applyTitleLayout();
   applyLegendLayout();
 });
 

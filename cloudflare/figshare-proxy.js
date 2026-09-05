@@ -58,7 +58,7 @@ export default {
       const upstream = await fetch(upstreamUrl, {
         headers: {
           "Accept": "application/json",
-          "User-Agent": "DEEP-Figshare-Proxy/1.0",
+          "User-Agent": "DEEPscope-Figshare-Proxy/1.0",
         },
         cf: {
           cacheEverything: true,

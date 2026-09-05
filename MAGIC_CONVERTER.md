@@ -1,7 +1,7 @@
-# MagIC converter for DEEP
+# MagIC converter for DEEPscope
 
 `tools/convert_magic_to_viewer.py` converts the standard three-dimensional
-MagIC graphic files `G_<number>.TAG` and `G_ave.TAG` into the same DEEP data
+MagIC graphic files `G_<number>.TAG` and `G_ave.TAG` into the same DEEPscope data
 contract used by the Leeds and XSHELLS converters.
 
 ## Supported inputs
@@ -18,7 +18,7 @@ viewer conversion.
 
 ## Install
 
-From the DEEP repository:
+From the DEEPscope repository:
 
 ```bash
 python3 -m venv .venv
@@ -57,7 +57,7 @@ python tools/convert_magic_to_viewer.py \
 If `--ivar` is omitted, the highest numbered matching graphic is selected. Use
 `--average` to select `G_ave.TAG`.
 
-After conversion, start DEEP and load:
+After conversion, start DEEPscope and load:
 
 ```text
 /data_magic
@@ -122,7 +122,7 @@ CLI overrides (`--Ek`, `--Pr`, `--Sc`, `--RaT`, and `--RaC`) remain available.
 ## Coordinate and inner-core handling
 
 `MagicGraph` exposes fields as `(phi_sector, theta, radius)`, with the radial
-coordinate commonly running from the CMB toward the ICB. DEEP requires
+coordinate commonly running from the CMB toward the ICB. DEEPscope requires
 little-endian C-order `(radius, theta, phi)` arrays on an increasing radial
 grid. The converter performs this transformation and unfolds `minc` symmetry
 without retaining a duplicate `phi=2*pi` plane.

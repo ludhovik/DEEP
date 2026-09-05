@@ -86,7 +86,7 @@ function localFilesystemPlugin() {
   };
 
   return {
-    name: "dynamo-viewer-local-filesystem",
+    name: "deepscope-local-filesystem",
     configureServer(server) {
       install(server.middlewares);
     },

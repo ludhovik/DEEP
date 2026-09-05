@@ -20,21 +20,82 @@ canvas {
   position: fixed;
   top: 14px;
   left: 14px;
-  padding: 12px 14px;
   background: rgba(0, 0, 0, 0.62);
   color: white;
   border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 8px;
   font-size: 13px;
   line-height: 1.4;
-  pointer-events: none;
-  max-width: 360px;
+  width: 390px;
+  max-width: calc(100vw - 28px);
+  max-height: calc(100vh - 28px);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  pointer-events: auto;
+  user-select: none;
+  z-index: 45;
 }
 
-#info-panel .title {
+#info-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 5px 5px 5px 12px;
+  box-sizing: border-box;
+  cursor: move;
+  touch-action: none;
+}
+
+#info-header .title {
   font-weight: 700;
   font-size: 15px;
-  margin-bottom: 4px;
+}
+
+.panel-header-hint {
+  flex: 1;
+  color: #aaaaaa;
+  font-size: 10px;
+  text-align: right;
+}
+
+#info-collapse-button,
+#legend-collapse-button {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.10);
+  color: white;
+  cursor: pointer;
+  font: inherit;
+  font-size: 16px;
+  line-height: 18px;
+}
+
+#info-collapse-button:hover,
+#legend-collapse-button:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+#info-content {
+  min-height: 0;
+  padding: 2px 14px 12px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  user-select: text;
+}
+
+#info-panel.collapsed {
+  height: auto !important;
+}
+
+#info-panel.collapsed #info-content {
+  display: none;
 }
 
 #status {
@@ -53,6 +114,11 @@ canvas {
   transform: translateY(-50%);
   width: 330px;
   max-width: calc(100vw - 36px);
+  max-height: calc(100vh - 36px);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   color: white;
   font-size: 12px;
   z-index: 40;
@@ -84,26 +150,12 @@ canvas {
   font-size: 10px;
 }
 
-#legend-collapse-button {
-  width: 24px;
-  height: 22px;
-  padding: 0;
-  border: 1px solid rgba(255, 255, 255, 0.25);
-  border-radius: 5px;
-  background: rgba(255, 255, 255, 0.10);
-  color: white;
-  cursor: pointer;
-  font: inherit;
-  font-size: 16px;
-  line-height: 18px;
-}
-
-#legend-collapse-button:hover {
-  background: rgba(255, 255, 255, 0.22);
-}
-
 #legend-panel.collapsed #legend-content {
   display: none;
+}
+
+#legend-panel.collapsed {
+  height: auto !important;
 }
 
 #legend-panel.collapsed #legend-header {
@@ -111,9 +163,39 @@ canvas {
 }
 
 #legend-content {
+  flex: 1 1 auto;
+  min-height: 0;
   max-height: calc(100vh - 82px);
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+
+.panel-resize-handle {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  touch-action: none;
+  z-index: 3;
+  opacity: 0.7;
+}
+
+.panel-resize-handle::after {
+  content: "";
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid rgba(255, 255, 255, 0.78);
+  border-bottom: 2px solid rgba(255, 255, 255, 0.78);
+}
+
+#info-panel.collapsed .panel-resize-handle,
+#legend-panel.collapsed .panel-resize-handle {
+  display: none;
 }
 
 #colourbars {

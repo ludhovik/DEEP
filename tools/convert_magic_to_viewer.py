@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert MagIC ``G_#.TAG`` graphic snapshots to DEEP viewer data.
+"""Convert MagIC ``G_#.TAG`` graphic snapshots to DEEPscope viewer data.
 
 The official MagIC ``MagicGraph`` reader is used for the binary format.  MagIC
 stores physical arrays as ``(phi_sector, theta, radius)``; this converter
@@ -785,7 +785,7 @@ def convert_graph(path: Path, outdir: Path, args: argparse.Namespace) -> dict[st
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Convert MagIC G_#.TAG graphic files to DEEP viewer data.")
+    p = argparse.ArgumentParser(description="Convert MagIC G_#.TAG graphic files to DEEPscope viewer data.")
     source = p.add_argument_group("MagIC input")
     source.add_argument("--graph", help="Explicit G_<number>.TAG or G_ave.TAG file.")
     source.add_argument("--folder", help="MagIC run folder; selects a graphic using --ivar/--tag.")

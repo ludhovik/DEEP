@@ -1,4 +1,4 @@
-name: Deploy Dynamo Three Viewer to GitHub Pages
+name: Deploy DEEPscope to GitHub Pages
 
 on:
   push:

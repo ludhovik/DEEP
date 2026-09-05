@@ -1,6 +1,6 @@
-# DEEP — Dynamo Three.js Viewer
+# DEEPscope — Spherical Dynamo Viewer
 
-DEEP is a browser-based Three.js viewer for three-dimensional spherical-dynamo
+DEEPscope is a browser-based Three.js viewer for three-dimensional spherical-dynamo
 and convection simulations. It includes converters for:
 
 - the Leeds Spherical Dynamo code;
@@ -9,7 +9,7 @@ and convection simulations. It includes converters for:
   reader.
 
 Open the hosted viewer at
-[ludhovik.github.io/DEEP](https://ludhovik.github.io/DEEP/), or run it locally
+[the DEEPscope viewer](https://ludhovik.github.io/DEEP/), or run it locally
 with Vite. Local datasets are read in the browser and are not uploaded.
 
 ## What the viewer can display
@@ -27,14 +27,14 @@ with Vite. Local datasets are read in the browser and are not uploaded.
 
 Each display has independent field, range, colour map, and opacity controls.
 The appearance panel also provides a selectable background colour and a
-two-endpoint custom colour map. Legends can be hidden, collapsed, placed at a
-preset corner or side, or dragged anywhere in the viewport.
+two-endpoint custom colour map. The title and legend boxes can each be hidden,
+collapsed, placed at a preset location, dragged, or resized in the viewport.
 
 ## Quick start
 
 ### Use the hosted viewer
 
-1. Open [the DEEP viewer](https://ludhovik.github.io/DEEP/).
+1. Open [DEEPscope](https://ludhovik.github.io/DEEP/).
 2. Select **Open local dataset folder**, **Open bundled demonstration**, or
    enter a supported public repository URL.
 3. Open **Controls** in the upper-right corner.
@@ -179,17 +179,20 @@ Open **Appearance and legends** to set:
 
 - the canvas background colour;
 - the low and high endpoints of `custom-two-colour`;
+- title-box visibility, collapse state, position, width, and height;
 - legend visibility;
 - collapsed or expanded legend state;
-- a preset legend position.
+- legend position, width, and height.
 
 Choose `custom-two-colour` in any surface, slice, Earth-field, or field-line
 colour-map selector. The two custom endpoint colours are shared by all displays
 using that map.
 
-Drag the **Legends** header to place the legend manually. Click the `−`/`+`
-button to collapse or expand it. Both preset and dragged positions are included
-in view-state codes and in PNG/PDF layout.
+Drag the **DEEPscope** or **Legends** header to move that box. Drag its lower-right
+corner grip to resize it, and click `−`/`+` to collapse or expand it. A height of
+`0` in the controls restores automatic height. Positions, dimensions, visibility,
+and collapse states are included in view-state codes. Legend width and position
+also carry into PNG/PDF legend layout.
 
 ### Isosurfaces and field lines
 
@@ -219,7 +222,7 @@ A view state records the complete visual setup, including:
 - field-line style;
 - Earth and lighting settings;
 - camera position, target, scale, and field of view;
-- background and legend visibility, collapse state, and position;
+- background plus title/legend visibility, collapse state, position, and size;
 - export and video presentation settings.
 
 It deliberately does **not** contain the primary or secondary dataset path,

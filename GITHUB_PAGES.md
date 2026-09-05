@@ -6,7 +6,7 @@ This release is designed to be used as a static website. End users do **not** ne
 
 1. Push this project to GitHub with the viewer project at the repository root.
 2. In **Settings → Pages → Build and deployment**, choose **GitHub Actions** as the source.
-3. Push to `main` (or run the `Deploy Dynamo Three Viewer to GitHub Pages` workflow manually).
+3. Push to `main` (or run the `Deploy DEEPscope to GitHub Pages` workflow manually).
 4. Open the URL reported by the deployment job.
 
 The workflow in `.github/workflows/deploy-pages.yml` runs `npm ci`, builds the Vite application, uploads `dist/`, and deploys it to GitHub Pages.

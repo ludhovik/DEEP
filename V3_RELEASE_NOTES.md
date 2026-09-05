@@ -1,4 +1,4 @@
-# Dynamo Three Viewer 0.3.0 — converter parity release
+# DEEPscope 0.3.0 — converter parity release
 
 This release integrates the Leeds and XSHELLS converter package v3.0.0 into the complete Three.js viewer.
 

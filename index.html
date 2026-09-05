@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <title>Dynamo 3D Viewer</title>
+    <title>DEEPscope</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <script type="module" src="./src/main.js"></script>
   </head>
@@ -12,7 +12,7 @@
 
     <div id="dataset-launcher" class="dataset-launcher">
       <div class="dataset-launcher-card">
-        <div class="dataset-launcher-kicker">Dynamo Three Viewer</div>
+        <div class="dataset-launcher-kicker">DEEPscope</div>
         <h1>Open a converted dynamo dataset</h1>
         <p>The viewer runs in your browser. Local files are read directly from the folder you select and are <strong>not uploaded</strong>.</p>
         <div class="dataset-launcher-actions">
@@ -29,14 +29,21 @@
       </div>
     </div>
 
-    <div id="info-panel">
-      <div class="title">Dynamo 3D Viewer</div>
-      <div id="status">Loading...</div>
-      <div class="hint">
-        Mouse left: rotate<br />
-        Mouse wheel: zoom<br />
-        Mouse right: pan
+    <div id="info-panel" aria-label="Viewer title and status">
+      <div id="info-header">
+        <span class="title">DEEPscope</span>
+        <span class="panel-header-hint">drag to move</span>
+        <button id="info-collapse-button" type="button" aria-label="Collapse title box" aria-expanded="true">&#8722;</button>
       </div>
+      <div id="info-content">
+        <div id="status">Loading...</div>
+        <div class="hint">
+          Mouse left: rotate<br />
+          Mouse wheel: zoom<br />
+          Mouse right: pan
+        </div>
+      </div>
+      <div id="info-resize-handle" class="panel-resize-handle" role="separator" aria-label="Resize title box" title="Drag to resize"></div>
     </div>
 
     <div id="legend-panel" aria-label="Plot legends">
@@ -146,6 +153,7 @@
           <div class="legend-note">Exterior: potential/poloidal CMB-to-CMB arcs</div>
         </div>
       </div>
+      <div id="legend-resize-handle" class="panel-resize-handle" role="separator" aria-label="Resize legends" title="Drag to resize"></div>
     </div>
 
     <div id="export-panel">

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert XSHELLS field files to Dynamo Three Viewer data.
+"""Convert XSHELLS field files to DEEPscope viewer data.
 
 XSHELLS commonly stores one snapshot in separate files::
 
