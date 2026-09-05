@@ -289,24 +289,77 @@ canvas {
 
 #export-panel {
   position: fixed;
+  left: auto;
+  top: auto;
   right: 18px;
   bottom: 18px;
-  width: 230px;
+  width: 250px;
+  max-width: calc(100vw - 28px);
+  max-height: calc(100vh - 28px);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   color: white;
   font-size: 12px;
-  padding: 8px 10px;
   background: rgba(0, 0, 0, 0.68);
   border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 8px;
   z-index: 30;
 }
 
-.export-title {
-  font-weight: 650;
-  margin-bottom: 6px;
+#export-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 5px 5px 5px 10px;
+  box-sizing: border-box;
+  cursor: move;
+  touch-action: none;
+  user-select: none;
 }
 
-#export-panel button {
+.export-title {
+  font-weight: 650;
+}
+
+#export-collapse-button {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.10);
+  color: white;
+  cursor: pointer;
+  font: inherit;
+  font-size: 16px;
+  line-height: 18px;
+}
+
+#export-collapse-button:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+#export-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0 10px 8px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+#export-panel.collapsed {
+  height: auto !important;
+}
+
+#export-panel.collapsed #export-content {
+  display: none;
+}
+
+#export-content button {
   display: block;
   width: 100%;
   margin: 5px 0;
@@ -319,7 +372,7 @@ canvas {
   font: inherit;
 }
 
-#export-panel button:hover {
+#export-content button:hover {
   background: rgba(255, 255, 255, 0.22);
 }
 
@@ -327,6 +380,10 @@ canvas {
   margin-top: 6px;
   color: #bbbbbb;
   line-height: 1.25;
+}
+
+#export-panel.collapsed .panel-resize-handle {
+  display: none;
 }
 
 

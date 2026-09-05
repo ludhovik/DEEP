@@ -34,6 +34,11 @@ const legendHeaderEl = document.getElementById("legend-header");
 const legendContentEl = document.getElementById("legend-content");
 const legendCollapseButtonEl = document.getElementById("legend-collapse-button");
 const legendResizeHandleEl = document.getElementById("legend-resize-handle");
+const exportPanelEl = document.getElementById("export-panel");
+const exportHeaderEl = document.getElementById("export-header");
+const exportContentEl = document.getElementById("export-content");
+const exportCollapseButtonEl = document.getElementById("export-collapse-button");
+const exportResizeHandleEl = document.getElementById("export-resize-handle");
 
 const PANEL_POSITION_OPTIONS = {
   "Left centre": "left-center",
@@ -256,6 +261,13 @@ const params = {
   legendY: 0.50,
   legendWidth: 330,
   legendHeight: 0,
+  exportPanelVisible: true,
+  exportPanelCollapsed: false,
+  exportPanelPosition: "bottom-right",
+  exportPanelX: 0.98,
+  exportPanelY: 0.98,
+  exportPanelWidth: 250,
+  exportPanelHeight: 0,
 
   cmbOpacity: 0.82,
   icbOpacity: 0.72,
@@ -615,6 +627,8 @@ function applyFloatingPanelLayout({
       if (defaultPosition === "top-left") y = margin;
   }
 
+  panel.style.right = "auto";
+  panel.style.bottom = "auto";
   panel.style.left = `${Math.round(clamp(x, margin, maxX))}px`;
   panel.style.top = `${Math.round(clamp(y, margin, maxY))}px`;
 }
@@ -657,9 +671,29 @@ function applyLegendLayout() {
   });
 }
 
+function applyExportPanelLayout() {
+  applyFloatingPanelLayout({
+    panel: exportPanelEl,
+    content: exportContentEl,
+    collapseButton: exportCollapseButtonEl,
+    visibleKey: "exportPanelVisible",
+    collapsedKey: "exportPanelCollapsed",
+    positionKey: "exportPanelPosition",
+    xKey: "exportPanelX",
+    yKey: "exportPanelY",
+    widthKey: "exportPanelWidth",
+    heightKey: "exportPanelHeight",
+    defaultPosition: "bottom-right",
+    collapsedLabel: "quick export",
+    minWidth: 190,
+    minHeight: 150,
+  });
+}
+
 function bindFloatingPanelControls({
   panel,
   header,
+  content,
   collapseButton,
   resizeHandle,
   collapsedKey,
@@ -733,7 +767,6 @@ function bindFloatingPanelControls({
       params[heightKey] = Math.round(height);
       panel.style.width = `${params[widthKey]}px`;
       panel.style.height = `${params[heightKey]}px`;
-      const content = panel === infoPanelEl ? infoContentEl : legendContentEl;
       if (content) content.style.maxHeight = "none";
     };
     const finish = () => {
@@ -760,6 +793,7 @@ function bindPanelLayoutControls() {
   bindFloatingPanelControls({
     panel: infoPanelEl,
     header: infoHeaderEl,
+    content: infoContentEl,
     collapseButton: infoCollapseButtonEl,
     resizeHandle: infoResizeHandleEl,
     collapsedKey: "titleCollapsed",
@@ -775,6 +809,7 @@ function bindPanelLayoutControls() {
   bindFloatingPanelControls({
     panel: legendPanelEl,
     header: legendHeaderEl,
+    content: legendContentEl,
     collapseButton: legendCollapseButtonEl,
     resizeHandle: legendResizeHandleEl,
     collapsedKey: "legendCollapsed",
@@ -786,6 +821,22 @@ function bindPanelLayoutControls() {
     minWidth: 220,
     minHeight: 96,
     applyLayout: applyLegendLayout,
+  });
+  bindFloatingPanelControls({
+    panel: exportPanelEl,
+    header: exportHeaderEl,
+    content: exportContentEl,
+    collapseButton: exportCollapseButtonEl,
+    resizeHandle: exportResizeHandleEl,
+    collapsedKey: "exportPanelCollapsed",
+    positionKey: "exportPanelPosition",
+    xKey: "exportPanelX",
+    yKey: "exportPanelY",
+    widthKey: "exportPanelWidth",
+    heightKey: "exportPanelHeight",
+    minWidth: 190,
+    minHeight: 150,
+    applyLayout: applyExportPanelLayout,
   });
 }
 
@@ -6430,7 +6481,7 @@ function applySnapshotParam(key, value) {
   if (!validFieldForState(key, value)) return false;
   if (key === "fieldLineDisplay" && !getAvailableFieldLineModes().includes(value)) return false;
   if (key === "earthDisplayMode" && !["texture", "magnetic"].includes(value)) return false;
-  if ((key === "legendPosition" || key === "titlePosition") && !PANEL_POSITIONS.has(value)) return false;
+  if (["legendPosition", "titlePosition", "exportPanelPosition"].includes(key) && !PANEL_POSITIONS.has(value)) return false;
   params[key] = value;
   return true;
 }
@@ -6448,6 +6499,7 @@ async function applyViewState(snapshot) {
   applyCameraViewFromParams();
   applyTitleLayout();
   applyLegendLayout();
+  applyExportPanelLayout();
   buildGui();
   await rebuildAllMeshes();
   await loadFieldLines();
@@ -6457,6 +6509,7 @@ async function applyViewState(snapshot) {
   updateVisibility();
   applyTitleLayout();
   applyLegendLayout();
+  applyExportPanelLayout();
   setStatus(
     skippedFields.length > 0
       ? `View state loaded; unavailable fields skipped: ${[...new Set(skippedFields)].join(", ")}.`
@@ -6862,7 +6915,12 @@ function buildGui() {
     appearance.add(params, "legendCollapsed").name("Collapse legends").onChange(applyLegendLayout),
     appearance.add(params, "legendPosition", PANEL_POSITION_OPTIONS).name("Legend position").onChange(applyLegendLayout),
     appearance.add(params, "legendWidth", 220, 900, 10).name("Legend width px").onChange(applyLegendLayout),
-    appearance.add(params, "legendHeight", 0, 1400, 10).name("Legend height (0 auto)").onChange(applyLegendLayout)
+    appearance.add(params, "legendHeight", 0, 1400, 10).name("Legend height (0 auto)").onChange(applyLegendLayout),
+    appearance.add(params, "exportPanelVisible").name("Show quick export").onChange(applyExportPanelLayout),
+    appearance.add(params, "exportPanelCollapsed").name("Collapse quick export").onChange(applyExportPanelLayout),
+    appearance.add(params, "exportPanelPosition", PANEL_POSITION_OPTIONS).name("Quick export position").onChange(applyExportPanelLayout),
+    appearance.add(params, "exportPanelWidth", 190, 900, 10).name("Quick export width px").onChange(applyExportPanelLayout),
+    appearance.add(params, "exportPanelHeight", 0, 1000, 10).name("Quick export height (0 auto)").onChange(applyExportPanelLayout)
   );
 
   const exportFolder = gui.addFolder("Export");
@@ -8555,6 +8613,7 @@ async function init() {
   updateBackgroundColor();
   applyTitleLayout();
   applyLegendLayout();
+  applyExportPanelLayout();
   animate();
 
   const queryPath = getDatasetPathFromQuery();
@@ -8607,6 +8666,7 @@ window.addEventListener("resize", () => {
   updateAxesOverlay();
   applyTitleLayout();
   applyLegendLayout();
+  applyExportPanelLayout();
 });
 
 init();

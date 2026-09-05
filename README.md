@@ -27,8 +27,9 @@ with Vite. Local datasets are read in the browser and are not uploaded.
 
 Each display has independent field, range, colour map, and opacity controls.
 The appearance panel also provides a selectable background colour and a
-two-endpoint custom colour map. The title and legend boxes can each be hidden,
-collapsed, placed at a preset location, dragged, or resized in the viewport.
+two-endpoint custom colour map. The title, legend, and quick-export boxes can
+each be hidden, collapsed, placed at a preset location, dragged, or resized in
+the viewport.
 
 ## Quick start
 
@@ -182,17 +183,18 @@ Open **Appearance and legends** to set:
 - title-box visibility, collapse state, position, width, and height;
 - legend visibility;
 - collapsed or expanded legend state;
-- legend position, width, and height.
+- legend position, width, and height;
+- quick-export visibility, collapse state, position, width, and height.
 
 Choose `custom-two-colour` in any surface, slice, Earth-field, or field-line
 colour-map selector. The two custom endpoint colours are shared by all displays
 using that map.
 
-Drag the **DEEPscope** or **Legends** header to move that box. Drag its lower-right
-corner grip to resize it, and click `−`/`+` to collapse or expand it. A height of
-`0` in the controls restores automatic height. Positions, dimensions, visibility,
-and collapse states are included in view-state codes. Legend width and position
-also carry into PNG/PDF legend layout.
+Drag the **DEEPscope**, **Legends**, or **Quick export** header to move that box.
+Drag its lower-right corner grip to resize it, and click `−`/`+` to collapse or
+expand it. A height of `0` in the controls restores automatic height. Positions,
+dimensions, visibility, and collapse states are included in view-state codes.
+Legend width and position also carry into PNG/PDF legend layout.
 
 ### Isosurfaces and field lines
 
@@ -258,7 +260,8 @@ A view state records the complete visual setup, including:
 - field-line style;
 - Earth and lighting settings;
 - camera position, target, scale, and field of view;
-- background plus title/legend visibility, collapse state, position, and size;
+- background plus title/legend/quick-export visibility, collapse state,
+  position, and size;
 - export and video presentation settings.
 
 It deliberately does **not** contain the primary or secondary dataset path,

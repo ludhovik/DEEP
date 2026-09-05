@@ -156,12 +156,19 @@
       <div id="legend-resize-handle" class="panel-resize-handle" role="separator" aria-label="Resize legends" title="Drag to resize"></div>
     </div>
 
-    <div id="export-panel">
-      <div class="export-title">Export</div>
-      <button id="export-png-button" type="button">PNG + legends</button>
-      <button id="export-pdf-button" type="button">PDF + legends</button>
-      <button id="export-video-button" type="button">Record 360°</button>
-      <div id="export-message">Files are saved by the browser.</div>
+    <div id="export-panel" aria-label="Quick export">
+      <div id="export-header">
+        <span class="export-title">Quick export</span>
+        <span class="panel-header-hint">drag to move</span>
+        <button id="export-collapse-button" type="button" aria-label="Collapse quick export" aria-expanded="true">&#8722;</button>
+      </div>
+      <div id="export-content">
+        <button id="export-png-button" type="button">PNG + legends</button>
+        <button id="export-pdf-button" type="button">PDF + legends</button>
+        <button id="export-video-button" type="button">Record 360°</button>
+        <div id="export-message">Files are saved by the browser.</div>
+      </div>
+      <div id="export-resize-handle" class="panel-resize-handle" role="separator" aria-label="Resize quick export" title="Drag to resize"></div>
     </div>
   
     <div id="axes-overlay" aria-hidden="true"></div>
