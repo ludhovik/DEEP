@@ -30,6 +30,11 @@ from typing import Any
 import numpy as np
 
 try:
+    from viewer_bundle import ViewerSampling, staged_bundle_output, write_f32
+except ImportError:
+    from tools.viewer_bundle import ViewerSampling, staged_bundle_output, write_f32
+
+try:
     import pyxshells
 except ImportError as exc:  # pragma: no cover - environment-dependent
     raise SystemExit(
@@ -69,7 +74,7 @@ EARTH_RADIUS_KM = 6371.0
 CMB_RADIUS_KM = 3480.0
 DEFAULT_EARTH_RADIUS_SCALE = EARTH_RADIUS_KM / CMB_RADIUS_KM
 DEFAULT_EARTH_BR_LMAX = 13
-CONVERTER_PACKAGE_VERSION = "3.2.0"
+CONVERTER_PACKAGE_VERSION = "3.3.0"
 
 
 def json_number(value: Any, default: float | None = None) -> float | None:
@@ -93,14 +98,6 @@ def finite_range(arr: np.ndarray) -> dict[str, float]:
         "mean": float(np.mean(good)),
         "absmax": max(abs(amin), abs(amax)),
     }
-
-
-def write_f32(path: Path, arr: np.ndarray) -> dict[str, float]:
-    values = np.asarray(arr)
-    values = np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
-    values = np.ascontiguousarray(values.astype("<f4", copy=False))
-    values.tofile(path)
-    return finite_range(values)
 
 
 def remove_m0_phi(arr: np.ndarray) -> np.ndarray:
@@ -355,15 +352,10 @@ def sanitise_synthesised_field(arr: np.ndarray, r: np.ndarray, label: str) -> np
             bad = ~np.isfinite(values)
         remaining = int(np.count_nonzero(bad))
         if remaining:
-            print(f"Warning: replacing {remaining} non-finite values in {label} with zero.")
-            values = np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
+            raise ValueError(f"{label} contains {remaining} non-finite values outside the regularized centre.")
         if centre_bad:
             print(f"  {label}: set the singular r=0 spherical-component layer to zero.")
     return values
-
-
-def downsample(arr: np.ndarray, dr: int, dt: int, dp: int) -> np.ndarray:
-    return np.ascontiguousarray(np.asarray(arr)[::dr, ::dt, ::dp])
 
 
 def nearest_index(values: np.ndarray, target: float) -> int:
@@ -607,8 +599,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main() -> None:
-    args = build_arg_parser().parse_args()
+def convert_xshells(args: argparse.Namespace) -> None:
     if args.line_seeds is not None:
         args.line_seed_theta, args.line_seed_phi = choose_regular_seed_grid(args.line_seeds)
         print(
@@ -799,10 +790,8 @@ def main() -> None:
         register("C", T, rt, "temperature")
         register("T", T, rt, "temperature")  # backward-compatible XSHELLS alias
         Cnom0 = remove_m0_phi(T)
-        Cnol0 = T - np.mean(T, axis=(0, 1, 2))
         register("Cnom0", Cnom0, rt, "temperature")
         register("C_nom0", Cnom0, rt, "temperature")
-        register("Cnol0", Cnol0, rt, "temperature")
         register("C_phiavg", phi_average_volume(T), rt, "temperature")
         if not args.no_m0_fields:
             register("T_nom0", Cnom0, rt, "temperature")
@@ -820,10 +809,8 @@ def main() -> None:
         scalar_native["Comp"] = (Comp, rc, "composition")
         register("Comp", Comp, rc, "composition")
         Compnom0 = remove_m0_phi(Comp)
-        Compnol0 = Comp - np.mean(Comp, axis=(0, 1, 2))
         register("Compnom0", Compnom0, rc, "composition")
         register("Comp_nom0", Compnom0, rc, "composition")
-        register("Compnol0", Compnol0, rc, "composition")
         register("Comp_phiavg", phi_average_volume(Comp), rc, "composition")
 
     gradients: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, str]] = {}
@@ -919,11 +906,21 @@ def main() -> None:
     else:
         print("N2 not generated: provide scalar field(s) and finite Ek/Ra/Pr or Ek/RaC/Sc values.")
 
-    print(f"Mapping all fields to the {master_key} radial grid...")
+    dr = max(1, int(args.downsample_r))
+    dt = max(1, int(args.downsample_theta))
+    dp = max(1, int(args.downsample_phi))
+    sampling = ViewerSampling(r_master, theta, phi, dr, dt, dp, required_radii=[r_icb, r_cmb])
+
+    print(f"Mapping all fields to the boundary-preserving {master_key} viewer grid...")
     fields: dict[str, np.ndarray] = {}
     field_domains: dict[str, dict[str, Any]] = {}
     for name, (arr, rr, source_key) in native_fields.items():
-        fields[name] = radial_remap_to_master(arr, rr, r_master, outside_value=0.0)
+        if not np.isfinite(arr).all():
+            raise ValueError(f"{name} contains non-finite values before viewer downsampling.")
+        # Map directly from each native field to the output grid. An ICB added
+        # to a magnetic master grid must retain the fluid boundary value, not
+        # an interpolation across the zero-filled solid/fluid interface.
+        fields[name] = sampling.angular(radial_remap_to_master(arr, rr, sampling.r, outside_value=0.0))
         field_domains[name] = {
             "source": source_key,
             "r_min": json_number(rr[0]),
@@ -931,13 +928,7 @@ def main() -> None:
             "outside_native_domain": "zero",
         }
 
-    dr = max(1, int(args.downsample_r))
-    dt = max(1, int(args.downsample_theta))
-    dp = max(1, int(args.downsample_phi))
-    if (dr, dt, dp) != (1, 1, 1):
-        print(f"Downsampling r/theta/phi by {dr}/{dt}/{dp}")
-        fields = {name: downsample(arr, dr, dt, dp) for name, arr in fields.items()}
-    r_out, theta_out, phi_out = r_master[::dr], theta[::dt], phi[::dp]
+    r_out, theta_out, phi_out = sampling.r, sampling.theta, sampling.phi
     icb_index = nearest_index(r_out, r_icb)
 
     outdir = Path(args.out)
@@ -1003,7 +994,7 @@ def main() -> None:
             Br_lcut = synthesize_cmb_br_ltrunc_xshells(
                 magnetic.sht, Br_cmb_native, effective_lcut
             )
-            Br_lcut = np.ascontiguousarray(Br_lcut[::dt, ::dp])
+            Br_lcut = sampling.angular(Br_lcut)
             if Br_lcut.shape != (len(theta_out), len(phi_out)):
                 raise ValueError(
                     f"Truncated CMB Br shape {Br_lcut.shape} does not match viewer grid "
@@ -1042,7 +1033,7 @@ def main() -> None:
             Br_earth = synthesize_earth_br_ltrunc_xshells(
                 magnetic.sht, Br_cmb_native, effective_lcut, r_cmb, r_earth
             )
-            Br_earth = np.ascontiguousarray(Br_earth[::dt, ::dp])
+            Br_earth = sampling.angular(Br_earth)
             if Br_earth.shape != (len(theta_out), len(phi_out)):
                 raise ValueError(
                     f"Earth-surface Br shape {Br_earth.shape} does not match viewer grid "
@@ -1078,8 +1069,8 @@ def main() -> None:
 
     profiles: dict[str, Any] = {"r": [json_number(x) for x in r_out]}
     if n2_native is not None:
-        n2_on_master = radial_remap_to_master(n2_native[0], n2_native[1], r_master)
-        n2_profile = np.mean(n2_on_master, axis=(1, 2))[::dr]
+        n2_on_output = radial_remap_to_master(n2_native[0], n2_native[1], r_out)
+        n2_profile = np.mean(n2_on_output, axis=(1, 2))
         profiles["N2"] = [json_number(x) for x in n2_profile]
     with open(outdir / "profiles.json", "w", encoding="utf-8") as stream:
         json.dump(profiles, stream, allow_nan=False)
@@ -1250,6 +1241,8 @@ def main() -> None:
         "description": "Converted physical-space quantities from XSHELLS field files using pyxshells.",
         "source_format": "xshells",
         "converter_version": CONVERTER_PACKAGE_VERSION,
+        "sampling": sampling.description(),
+        "invalid_value_policy": "reject_nonfinite_and_float32_overflow",
         "viewer_field_contract": "dynamo-three-viewer-v2-common",
         "source_fields": source_map,
         "time": json_number(time),
@@ -1323,6 +1316,13 @@ def main() -> None:
     print(f"Viewer data written to: {outdir.resolve()}")
     print(f"ICB: r={r_icb:.12g}, output radial index={icb_index}")
     print(f"Fields: {', '.join(field_files)}")
+
+
+def main() -> None:
+    args = build_arg_parser().parse_args()
+    with staged_bundle_output(args.out) as output:
+        args.out = str(output)
+        convert_xshells(args)
 
 
 if __name__ == "__main__":

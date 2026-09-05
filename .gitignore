@@ -9,3 +9,7 @@ __pycache__/
 .wrangler/
 .dev.vars
 .dev.vars.*
+
+.deepscope-stage-*/
+.deepscope-backup-*/
+.deepscope-backups/

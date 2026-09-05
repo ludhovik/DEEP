@@ -12,7 +12,9 @@
 
 ### Regression tests
 
-`tests/test_converter_package.py` completed with 15/15 tests passing:
+`tests/test_converter_package.py` completed with 31/31 tests passing for the
+3.3 converter fixes. This suite uses synthetic/import-only backends where a
+native simulation reader or SHTns is unavailable:
 
 - full-fluid-sphere geometry;
 - conducting-inner-core geometry;
@@ -23,6 +25,22 @@
 - direct comparison of `modules.curl_spat` with an independent spherical-curl implementation;
 - common viewer-field contract;
 - common CLI options and metadata contract.
+
+The added regressions cover:
+
+- SHTns-compatible Leeds longitudes;
+- a non-axisymmetric MagIC `l=m=8` exterior harmonic, with relative component
+  errors below `1e-11`, and analytic `m=1` pole limits;
+- exact graphic-file number matching;
+- retained CMB/ICB/radial endpoints, colatitude low-pass, and longitude
+  anti-aliasing even for a stride that does not divide the sample count;
+- a downsampled synthetic MagIC bundle with volume, CMB and Earth maps;
+- absence of `Cnol0` and `Compnol0` from all new converter exports;
+- rejecting NaN, infinity and float32 overflow without overwriting a file;
+- CLI staging for all three converters, validation failures, a late sequence
+  failure, and rollback after a failed publish rename;
+- retained prior output/unrelated files and backups outside `public/` in a
+  Git checkout.
 
 ### Magnetic field-line validation
 
@@ -118,4 +136,8 @@ Real `shtns` and `pyxshells` libraries were not installed in the packaging envir
 - a synthetic XSHELLS backend;
 - syntax and CLI checks.
 
-The spectral transforms themselves retain the previously validated Leeds implementation in the supplied `modules.py`; no full production conversion against the real SHTns or pyxshells libraries was possible in this environment.
+The spectral transforms retain the previously validated Leeds coefficient
+conventions in `modules.py`, with the longitude-coordinate correction described
+above. No full production conversion against real SHTns or pyxshells libraries
+was rerun for the 3.3 fixes. Earlier smoke-conversion notes record previous
+validation and do not substitute for rerunning a user's native snapshots.

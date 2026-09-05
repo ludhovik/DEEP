@@ -206,7 +206,7 @@ class ConverterPackageTests(unittest.TestCase):
         required = {
             "ur", "ut", "up", "us", "uz", "Uabs", "helicity",
             "Br", "Bt", "Bp", "Babs",
-            "C", "Comp", "Cnom0", "Compnom0", "Cnol0", "Compnol0",
+            "C", "Comp", "Cnom0", "Compnom0",
             "N2", "N2_full",
             "EMFr", "EMFt", "EMFp", "EMFabs",
             "EMFr_fluct", "EMFt_fluct", "EMFp_fluct",
@@ -382,13 +382,14 @@ class ConverterPackageTests(unittest.TestCase):
             self.assertTrue(exterior["polarity_matches_source"])
             self.assertEqual(exterior["line_id"], shell["line_id"])
 
-    def test_magic_end_to_end_binary_contract(self):
+    @staticmethod
+    def fake_magic_graph():
         nr, ntheta, nphi = 5, 8, 12
         radius = np.linspace(1.0, 0.35, nr)
         theta = np.arccos(np.polynomial.legendre.leggauss(ntheta)[0][::-1])
         phi = np.linspace(0.0, 2.0 * math.pi, nphi, endpoint=False)
         P, T, R = np.meshgrid(phi, theta, radius, indexing="ij")
-        graph = types.SimpleNamespace(
+        return types.SimpleNamespace(
             radius=radius,
             colatitude=theta,
             minc=1,
@@ -409,6 +410,9 @@ class ConverterPackageTests(unittest.TestCase):
             prmag=2.0,
             radratio=0.35,
         )
+
+    def test_magic_end_to_end_binary_contract(self):
+        graph = self.fake_magic_graph()
         args = self.magic.build_arg_parser().parse_args([
             "--graph", "G_1.test", "--skip-field-lines", "--no-earth-br",
             "--no-gradients", "--no-m0-fields",
@@ -422,6 +426,244 @@ class ConverterPackageTests(unittest.TestCase):
             self.assertIn("Comp", metadata["fields"])
             for filename in metadata["fields"].values():
                 self.assertEqual((output / filename).stat().st_size, expected_size)
+
+    def test_magic_downsampled_bundle_passes_publication_validation(self):
+        from tools.viewer_bundle import staged_bundle_output, validate_bundle
+        graph = self.fake_magic_graph()
+        args = self.magic.build_arg_parser().parse_args([
+            "--graph", "G_1.test", "--skip-field-lines", "--downsample-r", "3",
+            "--downsample-theta", "3", "--downsample-phi", "5",
+            "--cmb-br-ltrunc", "2", "--earth-br-ltrunc", "2",
+        ])
+        with tempfile.TemporaryDirectory() as folder:
+            output = pathlib.Path(folder) / "bundle"
+            with staged_bundle_output(output) as stage, mock.patch.object(self.magic, "load_graph", return_value=graph):
+                metadata = self.magic.convert_graph(pathlib.Path("G_1.test"), stage, args)
+            validate_bundle(output)
+            self.assertEqual(metadata["nphi"], 3)
+            self.assertTrue(metadata["surface_fields"])
+            self.assertFalse({"Cnol0", "Compnol0"} & metadata["fields"].keys())
+            self.assertAlmostEqual(metadata["r_outer"], 1.0)
+            self.assertAlmostEqual(metadata["r_inner"], 0.35)
+
+    def test_removed_diagnostics_are_not_exported(self):
+        for path in (LEEDS_PATH, XSHELLS_PATH, MAGIC_PATH):
+            self.assertFalse({"Cnol0", "Compnol0"} & literal_output_names(path))
+
+    def test_leeds_exterior_coordinates_match_shtns(self):
+        theta = np.linspace(0.1, math.pi - 0.1, 24)
+        phi = np.linspace(0, 2 * math.pi, 48, endpoint=False)
+        sh = self.fake_dipole_sht(theta, phi)
+        backend = types.SimpleNamespace(
+            shtns=types.SimpleNamespace(sht_schmidt=0, SHT_NO_CS_PHASE=0, sht=lambda *a: sh),
+            lsd_to_shtns=lambda *a: np.array([[1 + 0j]]),
+        )
+        result = self.leeds.external_potential_field_from_BP(
+            np.zeros((2, 1, 2)), np.array([0.35, 1.0]), np.array([1.0]), 1, 0, backend
+        )
+        np.testing.assert_array_equal(result[-1], phi)
+        self.assertNotIn("nphi+2", MODULES_PATH.read_text())
+        self.assertNotIn("nphi + 2", MODULES_PATH.read_text())
+
+    def test_magic_exterior_nonaxisymmetric_harmonic(self):
+        theta = np.arccos(np.polynomial.legendre.leggauss(24)[0][::-1])
+        phi = np.linspace(0, 2 * math.pi, 48, endpoint=False)
+        m = 8
+        cmb = np.sin(theta)[:, None]**m * np.cos(m * phi)[None, :]
+        r = np.array([1.0, 1.3, 2.0])
+        br, bt, bp = self.magic.exterior_potential_field(cmb, theta, phi, 1.0, r, m)
+        decay = r[:, None, None] ** (-m - 2)
+        expected_t = -m / (m + 1) * np.sin(theta)[:, None]**(m - 1) * np.cos(theta)[:, None] * np.cos(m * phi)[None, :]
+        expected_p = m / (m + 1) * np.sin(theta)[:, None]**(m - 1) * np.sin(m * phi)[None, :]
+        for actual, expected in ((br, cmb * decay), (bt, expected_t * decay), (bp, expected_p * decay)):
+            self.assertLess(np.linalg.norm(actual - expected) / np.linalg.norm(expected), 1e-11)
+
+    def test_magic_analytic_gradient_at_poles(self):
+        theta = np.array([0.0, 0.3, math.pi / 2, math.pi])
+        phi = np.linspace(0, 2 * math.pi, 16, endpoint=False)
+        # V=sin(theta) cos(phi)=-2 sqrt(2pi/3) Re(Y_11).
+        gt, gp = self.magic.synthesize_angular_gradient({(1, 1): -math.sqrt(2 * math.pi / 3)}, theta, phi)
+        np.testing.assert_allclose(gt, np.cos(theta)[:, None] * np.cos(phi)[None, :], atol=2e-14)
+        np.testing.assert_allclose(gp, -np.ones((len(theta), 1)) * np.sin(phi)[None, :], atol=2e-14)
+
+    def test_magic_exact_graph_number(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = pathlib.Path(folder)
+            (root / "G_1.test").touch()
+            (root / "G_10.test").touch()
+            self.assertEqual(self.magic.discover_graph(root, None, 1, False).name, "G_1.test")
+
+    def test_sampling_preserves_boundaries_and_filters_longitude(self):
+        r = np.array([0.0, 0.35, 0.7, 1.0])
+        theta = np.linspace(0.0, math.pi, 17)
+        phi = np.linspace(0.0, 2 * math.pi, 48, endpoint=False)
+        sampling = self.leeds.ViewerSampling(r, theta, phi, 2, 2, 5, required_radii=[0.35])
+        self.assertEqual(sampling.r.tolist(), [0.0, 0.35, 0.7, 1.0])
+        self.assertEqual(sampling.theta[[0, -1]].tolist(), [0.0, math.pi])
+        np.testing.assert_allclose(np.diff(sampling.phi), 2 * math.pi / len(sampling.phi))
+        field = np.broadcast_to(2 + np.cos(phi)[None, None, :] + np.cos(8 * phi)[None, None, :], (4, 17, 48))
+        result = sampling.volume(field)
+        expected = np.broadcast_to(2 + np.cos(sampling.phi), result.shape)
+        np.testing.assert_allclose(result, expected, atol=2e-14)
+        np.testing.assert_allclose(sampling.angular(field[-1]), result[-1], atol=2e-14)
+
+    def test_sampling_inserts_required_interior_boundary(self):
+        r = np.array([0.0, 0.4, 0.7, 1.0])
+        theta = np.linspace(0, math.pi, 8)
+        phi = np.linspace(0, 2 * math.pi, 12, endpoint=False)
+        sampling = self.leeds.ViewerSampling(r, theta, phi, 3, required_radii=[0.35])
+        np.testing.assert_allclose(sampling.r, [0, 0.35, 1])
+        np.testing.assert_allclose(sampling.radial(2 * r), 2 * sampling.r)
+
+    def test_theta_lowpass_and_nonfinite_values_on_discarded_radii(self):
+        r = np.linspace(0.35, 1.0, 5)
+        theta = np.linspace(0, math.pi, 65)
+        phi = np.linspace(0, 2 * math.pi, 16, endpoint=False)
+        sampling = self.leeds.ViewerSampling(r, theta, phi, 2, 4, 1)
+        wave = np.broadcast_to(np.cos(22 * theta)[None, :, None], (5, 65, 16))
+        filtered = sampling.volume(wave)
+        self.assertLess(np.max(np.abs(filtered[:, 3:-3])), 0.12)
+        bad = np.ones((5, 65, 16))
+        bad[1, 0, 0] = np.nan  # radial index 1 would otherwise be dropped
+        with self.assertRaises(ValueError):
+            sampling.volume(bad)
+
+    def test_all_writers_reject_invalid_values_without_overwriting(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = pathlib.Path(folder) / "field.f32"
+            for converter in (self.leeds, self.xshells, self.magic):
+                for bad in (np.nan, np.inf, -np.inf, 1e100):
+                    path.write_bytes(b"old output")
+                    with self.assertRaises(ValueError):
+                        converter.write_f32(path, np.array([1.0, bad]))
+                    self.assertEqual(path.read_bytes(), b"old output")
+                stats = converter.write_f32(path, np.array([-1., 0., 2.]))
+                self.assertAlmostEqual(stats["mean"], 1 / 3)
+
+    @staticmethod
+    def minimal_bundle(root, value=1.0):
+        import json
+        from tools.viewer_bundle import write_f32
+        root.mkdir(parents=True, exist_ok=True)
+        write_f32(root / "C_volume.f32", np.full((2, 2, 2), value))
+        (root / "coordinates.json").write_text(json.dumps({"r": [0.35, 1.0], "theta": [0.1, 3.0], "phi": [0.0, math.pi]}))
+        (root / "metadata.json").write_text(json.dumps({"nr": 2, "ntheta": 2, "nphi": 2, "r_inner": 0.35, "r_outer": 1.0, "coordinates": "coordinates.json", "fields": {"C": "C_volume.f32"}}))
+
+    def test_output_transaction_failure_preserves_previous_bundle(self):
+        from tools.viewer_bundle import staged_bundle_output
+        with tempfile.TemporaryDirectory() as folder:
+            root = pathlib.Path(folder) / "output"
+            self.minimal_bundle(root)
+            before = (root / "C_volume.f32").read_bytes()
+            with self.assertRaises(RuntimeError):
+                with staged_bundle_output(root) as stage:
+                    self.minimal_bundle(stage, 2)
+                    raise RuntimeError("Simulated failure after writing a field")
+            self.assertEqual((root / "C_volume.f32").read_bytes(), before)
+            self.assertEqual(list(pathlib.Path(folder).glob(".deepscope-*")), [])
+            with self.assertRaises(ValueError):
+                with staged_bundle_output(root) as stage:
+                    self.minimal_bundle(stage, 2)
+                    (stage / "C_volume.f32").write_bytes(b"bad")
+            self.assertEqual((root / "C_volume.f32").read_bytes(), before)
+
+    def test_output_transaction_retains_backup_and_unrelated_files(self):
+        from tools.viewer_bundle import staged_bundle_output
+        with tempfile.TemporaryDirectory() as folder:
+            root = pathlib.Path(folder) / "output"
+            self.minimal_bundle(root)
+            (root / "notes.txt").write_text("keep me")
+            with staged_bundle_output(root) as stage:
+                self.minimal_bundle(stage, 2)
+            self.assertTrue(np.all(np.fromfile(root / "C_volume.f32", dtype="<f4") == 2))
+            self.assertEqual((root / "notes.txt").read_text(), "keep me")
+            backups = list(pathlib.Path(folder).glob(".deepscope-backup-*"))
+            self.assertEqual(len(backups), 1)
+            self.assertTrue(np.all(np.fromfile(backups[0] / "C_volume.f32", dtype="<f4") == 1))
+
+    def test_output_publish_failure_rolls_back(self):
+        from tools import viewer_bundle
+        with tempfile.TemporaryDirectory() as folder:
+            root = pathlib.Path(folder) / "output"
+            self.minimal_bundle(root)
+            actual_replace = viewer_bundle.os.replace
+            calls = 0
+            def replace(source, destination):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    raise OSError("simulated publish failure")
+                return actual_replace(source, destination)
+            with self.assertRaises(OSError), mock.patch.object(viewer_bundle.os, "replace", side_effect=replace):
+                with viewer_bundle.staged_bundle_output(root) as stage:
+                    self.minimal_bundle(stage, 2)
+            self.assertTrue(np.all(np.fromfile(root / "C_volume.f32", dtype="<f4") == 1))
+            self.assertEqual(list(pathlib.Path(folder).glob(".deepscope-*")), [])
+
+    def test_all_converter_cli_entrypoints_stage_before_writing(self):
+        for converter, function in ((self.leeds, "convert_state"), (self.xshells, "convert_xshells"), (self.magic, "convert_graph")):
+            with self.subTest(converter=function), tempfile.TemporaryDirectory() as folder:
+                root = pathlib.Path(folder) / "output"
+                self.minimal_bundle(root)
+                args = types.SimpleNamespace(out=str(root), line_seeds=None, sequence_first=None, sequence_last=None)
+                parser = types.SimpleNamespace(parse_args=lambda: args)
+                def fail(*arguments):
+                    stage = pathlib.Path(arguments[1] if function == "convert_graph" else arguments[0].out)
+                    self.assertNotEqual(stage, root)
+                    self.minimal_bundle(stage, 2)
+                    raise RuntimeError("simulated backend failure")
+                with mock.patch.object(converter, "build_arg_parser", return_value=parser), \
+                     mock.patch.object(converter, function, side_effect=fail), \
+                     mock.patch.object(converter, "resolve_single_path", return_value=pathlib.Path("G_1.test"), create=True), \
+                     self.assertRaises(RuntimeError):
+                    converter.main()
+                self.assertTrue(np.all(np.fromfile(root / "C_volume.f32", dtype="<f4") == 1))
+
+    def test_late_sequence_failure_leaves_previous_sequence_intact(self):
+        import json
+        with tempfile.TemporaryDirectory() as folder:
+            root = pathlib.Path(folder) / "output"
+            inputs = pathlib.Path(folder) / "input"
+            inputs.mkdir()
+            for number in (1, 2):
+                (inputs / f"G_{number}.test").touch()
+            self.minimal_bundle(root)
+            self.minimal_bundle(root / "frames" / "old")
+            old_index = json.dumps({"frames": [{"path": "frames/old"}]})
+            (root / "sequence.json").write_text(old_index)
+            args = self.magic.build_arg_parser().parse_args([
+                "--folder", str(inputs), "--tag", "test", "--sequence-first", "1",
+                "--sequence-last", "2", "--sequence-clear", "--out", str(root),
+            ])
+            completed = []
+            def convert(path, output, _args):
+                if completed:
+                    raise RuntimeError("second frame is broken")
+                self.minimal_bundle(output, 2)
+                completed.append(path)
+                return {"time": 1.0}
+            with mock.patch.object(self.magic, "build_arg_parser", return_value=types.SimpleNamespace(parse_args=lambda: args)), \
+                 mock.patch.object(self.magic, "convert_graph", side_effect=convert), \
+                 self.assertRaises(RuntimeError):
+                self.magic.main()
+            self.assertEqual(len(completed), 1)
+            self.assertEqual((root / "sequence.json").read_text(), old_index)
+            self.assertTrue((root / "frames" / "old" / "metadata.json").is_file())
+            self.assertFalse((root / "frames" / "G_00001").exists())
+
+    def test_repository_backups_are_outside_the_public_directory(self):
+        from tools.viewer_bundle import staged_bundle_output
+        with tempfile.TemporaryDirectory() as folder:
+            repo = pathlib.Path(folder)
+            (repo / ".git").mkdir()
+            root = repo / "public" / "data"
+            self.minimal_bundle(root)
+            with staged_bundle_output(root) as stage:
+                self.minimal_bundle(stage, 2)
+            backups = list((repo / ".deepscope-backups").iterdir())
+            self.assertEqual(len(backups), 1)
+            self.assertTrue((backups[0] / "C_volume.f32").is_file())
+            self.assertEqual([p.name for p in (repo / "public").iterdir()], ["data"])
 
 
 if __name__ == "__main__":

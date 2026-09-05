@@ -418,7 +418,13 @@ let earthTexture = null;
 const fieldLineDataCache = new Map();
 const fieldLineDataCacheMeta = new Map();
 const isosurfaceObjectCache = new Map();
+const isosurfaceBuildPromises = new Map();
 const fieldLineObjectCache = new Map();
+const fieldLineBuildPromises = new Map();
+const heavyCachePins = new Map();
+let heavyCacheGeneration = 0;
+let renderEpoch = 0;
+const renderRequestVersions = new Map();
 let fieldLineDataCacheBytes = 0;
 let heavyObjectCacheBytes = 0;
 let cacheAccessCounter = 0;
@@ -528,12 +534,98 @@ function debouncedViewerTask(label, task, delayMs = 100) {
 }
 
 function cancelPendingViewerTasks() {
+  invalidateRenderRequests();
   for (const timer of pendingViewerTaskTimers) window.clearTimeout(timer);
   pendingViewerTaskTimers.clear();
   if (customColourRefreshTimer) {
     window.clearTimeout(customColourRefreshTimer);
     customColourRefreshTimer = null;
   }
+}
+
+function invalidateRenderRequests() {
+  renderEpoch++;
+  renderRequestVersions.clear();
+}
+
+function captureRenderContext(basePath = dataBasePath, meta = metadata, coordinates = coords) {
+  return { basePath, metadata: meta, coords: coordinates, secondaryDataset,
+    params: { ...params }, epoch: renderEpoch };
+}
+
+function renderContextIsCurrent(context) {
+  return context.epoch === renderEpoch && context.basePath === dataBasePath
+    && context.metadata === metadata && context.coords === coords
+    && context.secondaryDataset === secondaryDataset;
+}
+
+function withCapturedRenderContext(context, callback) {
+  // Only the synchronous part of callback runs in this context. Never hold
+  // viewer globals across an await (in particular during frame preloading).
+  const saved = captureRenderContext();
+  try {
+    dataBasePath = context.basePath;
+    metadata = context.metadata;
+    coords = context.coords;
+    secondaryDataset = context.secondaryDataset;
+    Object.assign(params, context.params);
+    return callback();
+  } finally {
+    dataBasePath = saved.basePath;
+    metadata = saved.metadata;
+    coords = saved.coords;
+    secondaryDataset = saved.secondaryDataset;
+    Object.assign(params, saved.params);
+  }
+}
+
+function renderSignature(slot) {
+  if (slot === "isosurface") return getIsosurfaceObjectCacheKey();
+  if (slot === "field-lines") return getFieldLineObjectCacheKey();
+  const prefix = slot === "earth" ? "earth" : slot;
+  const visibility = { cmb: "showCMB", icb: "showICB", radial: "showRadialSurface",
+    equator: "showEquator", equator2: "showEquator2", meridian: "showMeridian",
+    meridian2: "showMeridian2", earth: "showEarthSurface" }[slot];
+  return JSON.stringify(Object.entries(params).filter(([key, value]) => {
+    if (typeof value === "function" || key.endsWith("Opacity")) return false;
+    const own = key.startsWith(prefix) && !key.startsWith(`${prefix}2`);
+    const clip = ["cmb", "earth"].includes(slot) && (key.startsWith("quarter")
+      || key.startsWith("cmbClip") || key === "cmbRearSide"
+      || key === "meridianPhiDeg" || key === "meridian2PhiDeg");
+    return own || key === visibility || clip;
+  }));
+}
+
+function beginRenderRequest(slot) {
+  const version = (renderRequestVersions.get(slot) || 0) + 1;
+  renderRequestVersions.set(slot, version);
+  return { slot, version, context: captureRenderContext(), signature: renderSignature(slot) };
+}
+
+function renderRequestIsCurrent(request) {
+  return renderContextIsCurrent(request.context)
+    && renderRequestVersions.get(request.slot) === request.version
+    && renderSignature(request.slot) === request.signature;
+}
+
+async function loadForRender(request, loader) {
+  try {
+    return await loader();
+  } catch (error) {
+    if (!renderRequestIsCurrent(request)) return null;
+    throw error;
+  }
+}
+
+function pinHeavyCacheEntry(type, key) {
+  const id = `${type}:${key}`;
+  heavyCachePins.set(id, (heavyCachePins.get(id) || 0) + 1);
+  return () => {
+    const remaining = (heavyCachePins.get(id) || 1) - 1;
+    if (remaining > 0) heavyCachePins.set(id, remaining);
+    else heavyCachePins.delete(id);
+    enforceCacheMemoryLimit();
+  };
 }
 
 function updateBackgroundColor() {
@@ -1420,6 +1512,7 @@ function earthSurfaceFieldRange(fieldObject) {
 }
 
 async function updateEarthSurface(options = {}) {
+  let request = beginRenderRequest("earth");
   const reuseGeometry = Boolean(options.reuseGeometry);
   const attribution = document.getElementById("earth-attribution");
 
@@ -1441,9 +1534,11 @@ async function updateEarthSurface(options = {}) {
           throw new Error("No Earth-surface magnetic field is listed in metadata.surface_fields.");
         }
         params.earthField = earthFields[0];
+        request = beginRenderRequest("earth");
       }
 
-      const fieldObject = await loadEarthDisplayField(params.earthField);
+      const fieldObject = await loadForRender(request, () => loadEarthDisplayField(params.earthField));
+      if (!renderRequestIsCurrent(request)) return;
       const radiusScale = Number(fieldObject.info.radius_scale || params.earthRadiusScale || 1.83);
       const metadataRadius = Number(fieldObject.info.radius);
       const radius = Number.isFinite(metadataRadius) && metadataRadius > 0
@@ -1467,8 +1562,7 @@ async function updateEarthSurface(options = {}) {
         earthMesh.visible = true;
         applyOpacityAndDepth(earthMesh.material, params.earthOpacity);
       } else {
-        disposeObject(earthMesh);
-        earthMesh = makeEarthFieldSurfaceMesh(
+        const replacement = makeEarthFieldSurfaceMesh(
           fieldObject,
           radius,
           params.earthOpacity,
@@ -1477,6 +1571,8 @@ async function updateEarthSurface(options = {}) {
           params.earthColormap,
           clipOptions
         );
+        disposeObject(earthMesh);
+        earthMesh = replacement;
         earthMesh.visible = true;
         scene.add(earthMesh);
       }
@@ -1495,15 +1591,17 @@ async function updateEarthSurface(options = {}) {
         earthMesh.visible = true;
         applyOpacityAndDepth(earthMesh.material, params.earthOpacity);
       } else {
-        const texture = await ensureEarthTexture();
-        disposeObject(earthMesh);
-        earthMesh = makeEarthSurfaceMesh(
+        const texture = await loadForRender(request, () => ensureEarthTexture());
+        if (!renderRequestIsCurrent(request)) return;
+        const replacement = makeEarthSurfaceMesh(
           radius,
           params.earthOpacity,
           texture,
           params.earthLongitudeDeg,
           clipOptions
         );
+        disposeObject(earthMesh);
+        earthMesh = replacement;
         earthMesh.userData.viewerTopology = { kind: "earth-texture", radius };
         earthMesh.visible = true;
         scene.add(earthMesh);
@@ -1514,6 +1612,7 @@ async function updateEarthSurface(options = {}) {
 
     await rebuildGapFillers();
   } catch (err) {
+    if (!renderRequestIsCurrent(request)) return;
     console.warn("Could not update Earth surface", err);
     hideColourbarForSlot("earth");
     setStatus(`Earth surface could not be loaded: ${err.message}`);
@@ -2118,8 +2217,8 @@ function isActiveIsosurfaceEntry(entry) {
   return Boolean(
     entry
     && (
-      entry.positive === isoPositiveMesh
-      || entry.negative === isoNegativeMesh
+      (entry.positive && entry.positive === isoPositiveMesh?.geometry)
+      || (entry.negative && entry.negative === isoNegativeMesh?.geometry)
     )
   );
 }
@@ -2133,8 +2232,8 @@ function isActiveFieldLineEntry(entry) {
 
 function removeIsosurfaceCacheEntry(key, entry) {
   if (!entry) return;
-  disposeMeshResources(entry.positive);
-  disposeMeshResources(entry.negative);
+  entry.positive?.dispose();
+  entry.negative?.dispose();
   heavyObjectCacheBytes = Math.max(0, heavyObjectCacheBytes - (entry.bytes || 0));
   isosurfaceObjectCache.delete(key);
 }
@@ -2169,6 +2268,7 @@ function enforceCacheMemoryLimit(protectedEntry = null) {
     for (const [key, entry] of isosurfaceObjectCache.entries()) {
       if (
         !isActiveIsosurfaceEntry(entry)
+        && !heavyCachePins.has(`isosurface:${key}`)
         && !(protectedEntry?.type === "isosurface" && protectedEntry.key === key)
       ) {
         candidates.push({ type: "isosurface", key, entry, last: entry.last || 0, bytes: entry.bytes || 0 });
@@ -2178,6 +2278,7 @@ function enforceCacheMemoryLimit(protectedEntry = null) {
     for (const [key, entry] of fieldLineObjectCache.entries()) {
       if (
         !isActiveFieldLineEntry(entry)
+        && !heavyCachePins.has(`field-lines:${key}`)
         && !(protectedEntry?.type === "field-lines" && protectedEntry.key === key)
       ) {
         candidates.push({ type: "field-lines", key, entry, last: entry.last || 0, bytes: entry.bytes || 0 });
@@ -2205,8 +2306,11 @@ function enforceCacheMemoryLimit(protectedEntry = null) {
 }
 
 function detachActiveIsosurfaces() {
-  if (isoPositiveMesh) scene.remove(isoPositiveMesh);
-  if (isoNegativeMesh) scene.remove(isoNegativeMesh);
+  for (const mesh of [isoPositiveMesh, isoNegativeMesh]) {
+    if (!mesh) continue;
+    scene.remove(mesh);
+    mesh.material.dispose();
+  }
   isoPositiveMesh = null;
   isoNegativeMesh = null;
 }
@@ -2219,12 +2323,15 @@ function detachActiveFieldLineGroups() {
 }
 
 function disposeHeavyPlaybackCaches() {
+  heavyCacheGeneration++;
+  isosurfaceBuildPromises.clear();
+  fieldLineBuildPromises.clear();
   detachActiveIsosurfaces();
   detachActiveFieldLineGroups();
 
   for (const entry of isosurfaceObjectCache.values()) {
-    disposeMeshResources(entry.positive);
-    disposeMeshResources(entry.negative);
+    entry.positive?.dispose();
+    entry.negative?.dispose();
   }
   isosurfaceObjectCache.clear();
 
@@ -2244,24 +2351,23 @@ function roundedCacheNumber(value) {
 
 function getIsosurfaceObjectCacheKey(basePath = dataBasePath) {
   const clip = getActiveIsoClipOptions();
+  const source = resolveFieldSource(params.isoField);
   return JSON.stringify({
     basePath: String(basePath),
     field: params.isoField,
     resolution: Math.round(Number(params.isoResolution)),
     showPositive: Boolean(params.showIsoPositive),
     positiveValue: roundedCacheNumber(params.isoPositiveValue),
-    positiveColor: params.isoPositiveColor,
     showNegative: Boolean(params.showIsoNegative),
     negativeValue: roundedCacheNumber(params.isoNegativeValue),
-    negativeColor: params.isoNegativeColor,
-    opacity: roundedCacheNumber(params.isoOpacity),
-    transparencyMode: params.isoTransparencyMode,
+    fieldSource: [source.basePath, source.meta?.fields?.[source.rawName]],
     clip,
     grid: [
       Number(metadata?.nr),
       Number(metadata?.ntheta),
       Number(metadata?.nphi),
     ],
+    coordinates: coords,
   });
 }
 
@@ -2279,134 +2385,162 @@ function getFieldLineObjectCacheKey(basePath = dataBasePath) {
     transform: params.lineValueTransform,
     minimum: roundedCacheNumber(params.lineMin),
     maximum: roundedCacheNumber(params.lineMax),
-    width: roundedCacheNumber(params.lineWidthPx),
-    opacity: roundedCacheNumber(params.lineOpacity),
     files: metadata?.field_lines || {},
   });
 }
 
-async function buildIsosurfaceObjectCacheEntry() {
-  const field = await loadField(params.isoField);
-  const isoClipOptions = getActiveIsoClipOptions();
-  let positive = null;
-  let negative = null;
-  let triangleCount = 0;
+async function buildIsosurfaceObjectCacheEntry(context = captureRenderContext()) {
+  const field = await withCapturedRenderContext(context, () => loadField(context.params.isoField));
+  return withCapturedRenderContext(context, () => {
+    const isoClipOptions = getActiveIsoClipOptions();
+    let positive = null;
+    let negative = null;
+    let triangleCount = 0;
 
-  if (params.showIsoPositive) {
-    positive = makeSphericalGridIsosurfaceMesh(
-      field,
-      Number(params.isoPositiveValue),
-      params.isoPositiveColor,
-      params.isoOpacity,
-      params.isoResolution,
-      isoClipOptions
-    );
-    positive.visible = false;
-    triangleCount += positive.userData.triangleCount || 0;
-  }
+    try {
+      if (params.showIsoPositive) {
+        const mesh = makeSphericalGridIsosurfaceMesh(
+          field,
+          Number(params.isoPositiveValue),
+          params.isoPositiveColor,
+          params.isoOpacity,
+          params.isoResolution,
+          isoClipOptions
+        );
+        positive = mesh.geometry;
+        mesh.material.dispose();
+        triangleCount += mesh.userData.triangleCount || 0;
+      }
 
-  if (params.showIsoNegative) {
-    negative = makeSphericalGridIsosurfaceMesh(
-      field,
-      Number(params.isoNegativeValue),
-      params.isoNegativeColor,
-      params.isoOpacity,
-      params.isoResolution,
-      isoClipOptions
-    );
-    negative.visible = false;
-    triangleCount += negative.userData.triangleCount || 0;
-  }
+      if (params.showIsoNegative) {
+        const mesh = makeSphericalGridIsosurfaceMesh(
+          field,
+          Number(params.isoNegativeValue),
+          params.isoNegativeColor,
+          params.isoOpacity,
+          params.isoResolution,
+          isoClipOptions
+        );
+        negative = mesh.geometry;
+        mesh.material.dispose();
+        triangleCount += mesh.userData.triangleCount || 0;
+      }
+    } catch (error) {
+      positive?.dispose();
+      negative?.dispose();
+      throw error;
+    }
 
-  return {
-    positive,
-    negative,
-    triangleCount,
-    clipped: Boolean(params.isoClipWithMeridian),
-    bytes: object3DMemoryBytes(positive) + object3DMemoryBytes(negative),
-    last: ++cacheAccessCounter,
-  };
+    return {
+      positive,
+      negative,
+      triangleCount,
+      clipped: Boolean(params.isoClipWithMeridian),
+      bytes: geometryMemoryBytes(positive) + geometryMemoryBytes(negative),
+      last: ++cacheAccessCounter,
+    };
+  });
 }
 
-async function ensureIsosurfaceObjectCacheEntry() {
-  const key = getIsosurfaceObjectCacheKey();
+async function ensureIsosurfaceObjectCacheEntry(context = captureRenderContext()) {
+  const key = withCapturedRenderContext(context, () => getIsosurfaceObjectCacheKey());
   let entry = isosurfaceObjectCache.get(key);
   if (!entry) {
-    entry = await buildIsosurfaceObjectCacheEntry();
-    entry.key = key;
-    isosurfaceObjectCache.set(key, entry);
-    heavyObjectCacheBytes += entry.bytes || 0;
-    enforceCacheMemoryLimit({ type: "isosurface", key });
+    let pending = isosurfaceBuildPromises.get(key);
+    if (!pending) {
+      const generation = heavyCacheGeneration;
+      pending = (async () => {
+        const built = await buildIsosurfaceObjectCacheEntry(context);
+        if (generation !== heavyCacheGeneration) {
+          built.positive?.dispose();
+          built.negative?.dispose();
+          throw new DOMException("Isosurface build superseded", "AbortError");
+        }
+        built.key = key;
+        isosurfaceObjectCache.set(key, built);
+        heavyObjectCacheBytes += built.bytes || 0;
+        enforceCacheMemoryLimit({ type: "isosurface", key });
+        return built;
+      })().finally(() => {
+        if (isosurfaceBuildPromises.get(key) === pending) isosurfaceBuildPromises.delete(key);
+      });
+      isosurfaceBuildPromises.set(key, pending);
+    }
+    entry = await pending;
   } else {
     entry.last = ++cacheAccessCounter;
   }
   return entry;
 }
 
-async function buildFieldLineObjectCacheEntry() {
-  const availableModes = getAvailableFieldLineModes();
+async function buildFieldLineObjectCacheEntry(context = captureRenderContext()) {
+  const availableModes = getAvailableFieldLineModes(context.metadata);
   if (availableModes.length === 0) {
     return { groups: {}, strengthRange: null, bytes: 0, last: ++cacheAccessCounter };
   }
 
-  if (!availableModes.includes(params.fieldLineDisplay)) {
-    params.fieldLineDisplay = availableModes[0];
+  if (!availableModes.includes(context.params.fieldLineDisplay)) {
+    context.params.fieldLineDisplay = availableModes[0];
   }
 
-  const modesToLoad = params.fieldLineDisplay === "both"
+  const modesToLoad = context.params.fieldLineDisplay === "both"
     ? ["shell", "exterior"]
-    : [params.fieldLineDisplay];
+    : [context.params.fieldLineDisplay];
 
   const groups = {};
   let allLoadedLines = [];
 
-  for (const mode of modesToLoad) {
-    if (!availableModes.includes(mode)) continue;
-    const lines = await loadLinesForMode(mode);
-    const group = makeFieldLineGroup(lines, mode);
-    group.visible = false;
-    groups[mode] = group;
-    allLoadedLines = allLoadedLines.concat(group.userData.lines || []);
+  try {
+    for (const mode of modesToLoad) {
+      if (!availableModes.includes(mode)) continue;
+      const lines = await loadLinesForMode(mode, context);
+      const group = withCapturedRenderContext(context, () => makeFieldLineGroup(lines, mode));
+      group.visible = false;
+      groups[mode] = group;
+      allLoadedLines = allLoadedLines.concat(group.userData.lines || []);
+    }
+  } catch (error) {
+    for (const group of Object.values(groups)) disposeFieldLineGroupResources(group);
+    throw error;
   }
 
   return {
     groups,
-    strengthRange: allLoadedLines.length > 0 ? getFieldLineRange(allLoadedLines) : null,
+    strengthRange: allLoadedLines.length > 0
+      ? withCapturedRenderContext(context, () => getFieldLineRange(allLoadedLines)) : null,
     bytes: Object.values(groups).reduce((sum, group) => sum + object3DMemoryBytes(group), 0),
     last: ++cacheAccessCounter,
   };
 }
 
-async function ensureFieldLineObjectCacheEntry() {
-  const key = getFieldLineObjectCacheKey();
+async function ensureFieldLineObjectCacheEntry(context = captureRenderContext()) {
+  const key = withCapturedRenderContext(context, () => getFieldLineObjectCacheKey());
   let entry = fieldLineObjectCache.get(key);
   if (!entry) {
-    entry = await buildFieldLineObjectCacheEntry();
-    entry.key = key;
-    fieldLineObjectCache.set(key, entry);
-    heavyObjectCacheBytes += entry.bytes || 0;
-    enforceCacheMemoryLimit({ type: "field-lines", key });
+    let pending = fieldLineBuildPromises.get(key);
+    if (!pending) {
+      const generation = heavyCacheGeneration;
+      pending = (async () => {
+        const built = await buildFieldLineObjectCacheEntry(context);
+        if (generation !== heavyCacheGeneration) {
+          for (const group of Object.values(built.groups)) disposeFieldLineGroupResources(group);
+          throw new DOMException("Field-line build superseded", "AbortError");
+        }
+        built.key = key;
+        fieldLineObjectCache.set(key, built);
+        heavyObjectCacheBytes += built.bytes || 0;
+        enforceCacheMemoryLimit({ type: "field-lines", key });
+        return built;
+      })().finally(() => {
+        if (fieldLineBuildPromises.get(key) === pending) fieldLineBuildPromises.delete(key);
+      });
+      fieldLineBuildPromises.set(key, pending);
+    }
+    entry = await pending;
   } else {
     entry.last = ++cacheAccessCounter;
   }
   return entry;
-}
-
-async function withSequenceFrameContext(basePath, frameMetadata, callback) {
-  const savedBasePath = dataBasePath;
-  const savedMetadata = metadata;
-  const savedCoordinates = coords;
-
-  try {
-    dataBasePath = basePath;
-    metadata = frameMetadata;
-    coords = await loadCoordinatesForBase(basePath, frameMetadata);
-    return await callback();
-  } finally {
-    dataBasePath = savedBasePath;
-    metadata = savedMetadata;
-    coords = savedCoordinates;
-  }
 }
 
 async function preloadHeavyObjectsForFrame(basePath, frameMetadata) {
@@ -2421,14 +2555,14 @@ async function preloadHeavyObjectsForFrame(basePath, frameMetadata) {
     return { isosurfaces: false, fieldLines: false };
   }
 
-  return await withSequenceFrameContext(basePath, frameMetadata, async () => {
-    if (preloadIsosurfaces) await ensureIsosurfaceObjectCacheEntry();
-    if (preloadFieldLines) await ensureFieldLineObjectCacheEntry();
-    return {
-      isosurfaces: preloadIsosurfaces,
-      fieldLines: preloadFieldLines,
-    };
-  });
+  const frameCoords = await loadCoordinatesForBase(basePath, frameMetadata);
+  const context = captureRenderContext(basePath, frameMetadata, frameCoords);
+  if (preloadIsosurfaces) await ensureIsosurfaceObjectCacheEntry(context);
+  if (preloadFieldLines) await ensureFieldLineObjectCacheEntry(context);
+  return {
+    isosurfaces: preloadIsosurfaces,
+    fieldLines: preloadFieldLines,
+  };
 }
 
 function enforceDataCacheLimit() {
@@ -2605,6 +2739,9 @@ async function preloadSequenceFrames(options = {}) {
     await loadSequenceIndex(false);
   }
   if (!sequenceIndex || !Array.isArray(sequenceIndex.frames) || sequenceIndex.frames.length === 0) return;
+  const preloadEpoch = renderEpoch;
+  const preloadIndex = sequenceIndex;
+  const preloadRoot = datasetRootPath;
 
   const range = normaliseSequencePlaybackRange();
   if (range.count <= 0) return;
@@ -2631,19 +2768,23 @@ async function preloadSequenceFrames(options = {}) {
   let preparedFieldLines = 0;
 
   for (let k = 0; k < maxFrames; k++) {
+    if (preloadEpoch !== renderEpoch) return;
     const i = sequenceFrameAtRangeOffset(k, start);
-    const frame = sequenceIndex.frames[i];
-    const basePath = sequenceFrameBasePath(frame);
+    const frame = preloadIndex.frames[i];
+    const basePath = sequenceFrameBasePathForRoot(preloadRoot, frame);
     const meta = await loadMetadataForBase(basePath);
     await loadCoordinatesForBase(basePath, meta);
+    if (preloadEpoch !== renderEpoch) return;
 
     const requests = getPreloadFieldRequests(meta);
     for (const req of requests) {
       await loadFloat32ForBase(basePath, req.filename, req.expectedLength);
+      if (preloadEpoch !== renderEpoch) return;
       loadedFiles++;
     }
 
     const prepared = await preloadHeavyObjectsForFrame(basePath, meta);
+    if (preloadEpoch !== renderEpoch) return;
     if (prepared.isosurfaces) preparedIsosurfaces++;
     if (prepared.fieldLines) preparedFieldLines++;
 
@@ -2712,6 +2853,7 @@ async function refreshDeferredSequenceObjects() {
 async function loadFrameByIndex(index, options = {}) {
   if (sequenceFrameLoading) return false;
   sequenceFrameLoading = true;
+  let operationEpoch = renderEpoch;
   const previous = {
     dataBasePath,
     metadata,
@@ -2733,12 +2875,14 @@ async function loadFrameByIndex(index, options = {}) {
     const candidateBasePath = sequenceFrameBasePath(frame);
     const candidateMetadata = await loadMetadataForBase(candidateBasePath);
     validateDatasetMetadata(candidateMetadata, `metadata.json for frame ${i}`);
-    const gridUnchanged = previous.metadata && samePlaybackGrid(previous.metadata, candidateMetadata);
-    const candidateCoords = gridUnchanged && coords.r && coords.theta && coords.phi
-      ? coords
-      : await loadCoordinatesForBase(candidateBasePath, candidateMetadata);
+    const candidateCoords = await loadCoordinatesForBase(candidateBasePath, candidateMetadata);
     validateDatasetCoordinates(candidateCoords, candidateMetadata, `coordinates for frame ${i}`);
+    if (operationEpoch !== renderEpoch) return false;
+    const gridUnchanged = previous.metadata
+      && samePlaybackGrid(previous.metadata, candidateMetadata, previous.coords, candidateCoords);
 
+    invalidateRenderRequests();
+    operationEpoch = renderEpoch;
     dataBasePath = candidateBasePath;
     metadata = candidateMetadata;
     coords = candidateCoords;
@@ -2776,16 +2920,19 @@ async function loadFrameByIndex(index, options = {}) {
       reuseGeometry: gridUnchanged,
       includeHeavy: refreshIsosurfaces,
     });
+    if (operationEpoch !== renderEpoch) return false;
 
     if (params.showFieldLines && refreshFieldLines) {
       await loadFieldLines();
     }
+    if (operationEpoch !== renderEpoch) return false;
 
     updateVisibility();
     if (playbackUpdate) setDeferredSequenceObjectVisibility(true);
     setStatus(`Frame ${i + 1}/${n}: ${frame.label || frame.state_number || i}; cache=${formatBytes(totalCacheBytes())}`);
     return true;
   } catch (err) {
+    if (operationEpoch !== renderEpoch || err?.name === "AbortError") return false;
     console.error("Could not load sequence frame", err);
     if (committed) {
       dataBasePath = previous.dataBasePath;
@@ -2896,17 +3043,26 @@ async function loadMetadata() {
 }
 
 async function loadCoordinatesForBase(basePath, meta) {
-  const empty = { r: null, theta: null, phi: null };
-  if (!meta?.coordinates) return empty;
+  if (meta?.coordinates === undefined || meta?.coordinates === null) {
+    const uniform = uniformDatasetCoordinates(meta);
+    validateDatasetCoordinates(uniform, meta, "uniform coordinates");
+    return uniform;
+  }
+  if (typeof meta.coordinates !== "string" || !meta.coordinates.trim()) {
+    throw new Error("metadata.coordinates must name a coordinates JSON file.");
+  }
 
   const url = dataUrlForBase(basePath, meta.coordinates);
-  if (jsonCache.has(url)) return jsonCache.get(url);
+  if (jsonCache.has(url)) {
+    const cached = jsonCache.get(url);
+    validateDatasetCoordinates(cached, meta, url);
+    return cached;
+  }
 
   const response = await fetchDatasetResource(url);
   if (!response.ok) {
     releaseDatasetResponse(response);
-    console.warn(`Could not load ${url}; falling back to uniform coordinates.`);
-    return empty;
+    throw new Error(`Required coordinates could not be loaded: ${url} (HTTP ${response.status}).`);
   }
 
   const raw = await readDatasetResponse(response, "json");
@@ -2915,6 +3071,7 @@ async function loadCoordinatesForBase(basePath, meta) {
     theta: Array.isArray(raw.theta) ? raw.theta : null,
     phi: Array.isArray(raw.phi) ? raw.phi : null,
   };
+  validateDatasetCoordinates(parsed, meta, url);
   jsonCache.set(url, parsed);
   return parsed;
 }
@@ -2959,8 +3116,21 @@ function sameGridSignature(a, b) {
   return aa.nr === bb.nr && aa.ntheta === bb.ntheta && aa.nphi === bb.nphi;
 }
 
-function samePlaybackGrid(a, b) {
+function sameCoordinateArrays(a, b) {
+  for (const axis of ["r", "theta", "phi"]) {
+    if (!Array.isArray(a?.[axis]) || !Array.isArray(b?.[axis]) || a[axis].length !== b[axis].length) return false;
+    for (let i = 0; i < a[axis].length; i++) {
+      const av = a[axis][i], bv = b[axis][i];
+      if (!Number.isFinite(av) || !Number.isFinite(bv)
+        || Math.abs(av - bv) > 1e-10 + 1e-8 * Math.max(Math.abs(av), Math.abs(bv))) return false;
+    }
+  }
+  return true;
+}
+
+function samePlaybackGrid(a, b, aCoords, bCoords) {
   if (!sameGridSignature(a, b)) return false;
+  if (!sameCoordinateArrays(aCoords, bCoords)) return false;
   const keys = ["r_inner", "r_outer", "r_icb", "icb_radius", "icb_index"];
   for (const key of keys) {
     const av = Number(a?.[key]);
@@ -2989,17 +3159,20 @@ async function resolveDatasetBasePath(rootPath) {
 }
 
 async function loadSecondaryDatasetFromParams() {
+  const request = beginRenderRequest("secondary");
   try {
     const root = normaliseDatasetRoot(params.secondaryDatasetPath);
     const basePath = await resolveDatasetBasePath(root);
     const meta2 = await loadMetadataForBase(basePath);
+    validateDatasetMetadata(meta2, "secondary metadata.json");
     const coords2 = await loadCoordinatesForBase(basePath, meta2);
+    if (!renderRequestIsCurrent(request)) return;
 
-    if (!sameGridSignature(metadata, meta2)) {
+    if (!sameGridSignature(metadata, meta2) || !sameCoordinateArrays(coords, coords2)) {
       const a = primaryGridSignature(metadata);
       const b = primaryGridSignature(meta2);
       throw new Error(
-        `Secondary grid does not match primary grid. ` +
+        `Secondary grid dimensions or coordinates do not match the primary grid. ` +
         `Primary nr/ntheta/nphi=${a.nr}/${a.ntheta}/${a.nphi}; ` +
         `secondary=${b.nr}/${b.ntheta}/${b.nphi}.`
       );
@@ -3019,13 +3192,14 @@ async function loadSecondaryDatasetFromParams() {
     setStatus(`Loaded secondary dataset ${secondaryDataset.label} from ${basePath}.`);
   } catch (err) {
     console.error(err);
-    secondaryDataset = null;
+    if (!renderRequestIsCurrent(request)) return;
     buildGui();
     setStatus(`Could not load secondary dataset: ${err.message}`);
   }
 }
 
 async function clearSecondaryDataset() {
+  invalidateRenderRequests();
   secondaryDataset = null;
   applyDefaultFields();
   buildGui();
@@ -3084,6 +3258,7 @@ function resolveFieldSource(fieldName) {
       displayName: String(fieldName),
       rawName,
       meta: secondaryDataset.metadata,
+      coords: secondaryDataset.coords,
       basePath: secondaryDataset.basePath,
     };
   }
@@ -3093,6 +3268,7 @@ function resolveFieldSource(fieldName) {
     displayName: String(fieldName),
     rawName: String(fieldName),
     meta: metadata,
+    coords,
     basePath: dataBasePath,
   };
 }
@@ -3101,7 +3277,7 @@ async function loadField(fieldName) {
   const ref = resolveFieldSource(fieldName);
   const filename = ref.meta.fields?.[ref.rawName];
   if (!filename) throw new Error(`Field not found: ${fieldName}`);
-  if (!sameGridSignature(metadata, ref.meta)) {
+  if (!sameGridSignature(metadata, ref.meta) || !sameCoordinateArrays(coords, ref.coords)) {
     throw new Error(`Field ${fieldName} is on a grid that does not match the primary dataset.`);
   }
   const expectedLength = ref.meta.nr * ref.meta.ntheta * ref.meta.nphi;
@@ -3116,7 +3292,7 @@ async function loadCmbDisplayField(fieldName) {
     if (surfaceInfo.surface !== "cmb") {
       throw new Error(`Surface field ${fieldName} is not a CMB field.`);
     }
-    if (ref.meta.ntheta !== metadata.ntheta || ref.meta.nphi !== metadata.nphi) {
+    if (ref.meta.ntheta !== metadata.ntheta || ref.meta.nphi !== metadata.nphi || !sameCoordinateArrays(coords, ref.coords)) {
       throw new Error(`CMB surface field ${fieldName} does not match the primary theta/phi grid.`);
     }
 
@@ -3135,7 +3311,7 @@ async function loadEarthDisplayField(fieldName) {
   if (!surfaceInfo || surfaceInfo.surface !== "earth") {
     throw new Error(`Surface field ${fieldName} is not an Earth-surface field.`);
   }
-  if (ref.meta.ntheta !== metadata.ntheta || ref.meta.nphi !== metadata.nphi) {
+  if (ref.meta.ntheta !== metadata.ntheta || ref.meta.nphi !== metadata.nphi || !sameCoordinateArrays(coords, ref.coords)) {
     throw new Error(`Earth surface field ${fieldName} does not match the primary theta/phi grid.`);
   }
   const expectedLength = ref.meta.ntheta * ref.meta.nphi;
@@ -5858,8 +6034,10 @@ function setStatusSummary(lastFieldName = null) {
 }
 
 async function rebuildCMB(options = {}) {
+  const request = beginRenderRequest("cmb");
   const reuseGeometry = Boolean(options.reuseGeometry);
-  const fieldObject = await loadCmbDisplayField(params.cmbField);
+  const fieldObject = await loadForRender(request, () => loadCmbDisplayField(params.cmbField));
+  if (!renderRequestIsCurrent(request)) return;
   const radialIndex = metadata.nr - 1;
   const [vmin, vmax] = cmbDisplayRange(fieldObject, radialIndex, "cmb");
   setColourbarForSlot("cmb", params.cmbField, vmin, vmax);
@@ -5868,23 +6046,27 @@ async function rebuildCMB(options = {}) {
     cmbMesh.visible = params.showCMB;
     applyOpacityAndDepth(cmbMesh.material, params.cmbOpacity);
   } else {
-    disposeObject(cmbMesh);
     const cmbClip = getActiveCmbClipOptions();
-    cmbMesh = makeCmbSurfaceMesh(fieldObject, radialIndex, params.cmbOpacity, vmin, vmax, params.cmbColormap, cmbClip);
+    const replacement = makeCmbSurfaceMesh(fieldObject, radialIndex, params.cmbOpacity, vmin, vmax, params.cmbColormap, cmbClip);
+    disposeObject(cmbMesh);
+    cmbMesh = replacement;
     cmbMesh.visible = params.showCMB;
     scene.add(cmbMesh);
     await updateEarthSurface();
   }
+  if (!renderRequestIsCurrent(request)) return;
   setStatusSummary(`CMB:${params.cmbField}`);
 }
 
 async function rebuildICB(options = {}) {
+  const request = beginRenderRequest("icb");
   if (!metadata.has_inner_core) {
     hideColourbarForSlot("icb");
     return;
   }
   const reuseGeometry = Boolean(options.reuseGeometry);
-  const field = await loadField(params.icbField);
+  const field = await loadForRender(request, () => loadField(params.icbField));
+  if (!renderRequestIsCurrent(request)) return;
   const radialIndex = icbRadiusIndex();
   const [vmin, vmax] = surfaceRange(field, radialIndex, "icb");
   setColourbarForSlot("icb", params.icbField, vmin, vmax);
@@ -5893,8 +6075,9 @@ async function rebuildICB(options = {}) {
     icbMesh.visible = params.showICB;
     applyOpacityAndDepth(icbMesh.material, params.icbOpacity);
   } else {
+    const replacement = makeSurfaceMesh(field, radialIndex, params.icbOpacity, vmin, vmax, params.icbColormap);
     disposeObject(icbMesh);
-    icbMesh = makeSurfaceMesh(field, radialIndex, params.icbOpacity, vmin, vmax, params.icbColormap);
+    icbMesh = replacement;
     icbMesh.visible = params.showICB;
     scene.add(icbMesh);
   }
@@ -5903,8 +6086,10 @@ async function rebuildICB(options = {}) {
 
 
 async function rebuildRadialSurface(options = {}) {
+  const request = beginRenderRequest("radial");
   const reuseGeometry = Boolean(options.reuseGeometry);
-  const field = await loadField(params.radialField);
+  const field = await loadForRender(request, () => loadField(params.radialField));
+  if (!renderRequestIsCurrent(request)) return;
   const sampling = radialSurfaceSampling();
   const [vmin, vmax] = radialSurfaceRange(field, sampling, "radial");
   setColourbarForSlot("radial", params.radialField, vmin, vmax);
@@ -5924,8 +6109,7 @@ async function rebuildRadialSurface(options = {}) {
     radialSurfaceMesh.visible = params.showRadialSurface;
     applyOpacityAndDepth(radialSurfaceMesh.material, params.radialOpacity);
   } else {
-    disposeObject(radialSurfaceMesh);
-    radialSurfaceMesh = makeRadialSurfaceMesh(
+    const replacement = makeRadialSurfaceMesh(
       field,
       sampling,
       params.radialOpacity,
@@ -5933,6 +6117,8 @@ async function rebuildRadialSurface(options = {}) {
       vmax,
       params.radialColormap
     );
+    disposeObject(radialSurfaceMesh);
+    radialSurfaceMesh = replacement;
     radialSurfaceMesh.visible = params.showRadialSurface;
     scene.add(radialSurfaceMesh);
   }
@@ -5946,8 +6132,10 @@ async function rebuildRadialSurface(options = {}) {
 }
 
 async function rebuildEquator(options = {}) {
+  const request = beginRenderRequest("equator");
   const reuseGeometry = Boolean(options.reuseGeometry);
-  const field = await loadField(params.equatorField);
+  const field = await loadForRender(request, () => loadField(params.equatorField));
+  if (!renderRequestIsCurrent(request)) return;
   const [vmin, vmax] = horizontalSliceRange(field, 0.0, "equator");
   setColourbarForSlot("equator", params.equatorField, vmin, vmax);
 
@@ -5955,18 +6143,22 @@ async function rebuildEquator(options = {}) {
     equatorMesh.visible = params.showEquator;
     applyOpacityAndDepth(equatorMesh.material, params.equatorOpacity);
   } else {
+    const replacement = makeHorizontalSliceMesh(field, 0.0, params.equatorOpacity, vmin, vmax, params.equatorColormap);
     disposeObject(equatorMesh);
-    equatorMesh = makeHorizontalSliceMesh(field, 0.0, params.equatorOpacity, vmin, vmax, params.equatorColormap);
+    equatorMesh = replacement;
     equatorMesh.visible = params.showEquator;
     scene.add(equatorMesh);
     await rebuildGapFillers();
   }
+  if (!renderRequestIsCurrent(request)) return;
   setStatusSummary(`Equator:${params.equatorField}`);
 }
 
 async function rebuildEquator2(options = {}) {
+  const request = beginRenderRequest("equator2");
   const reuseGeometry = Boolean(options.reuseGeometry);
-  const field = await loadField(params.equator2Field);
+  const field = await loadForRender(request, () => loadField(params.equator2Field));
+  if (!renderRequestIsCurrent(request)) return;
   const z = params.equator2Z * metadata.r_outer;
   const [vmin, vmax] = horizontalSliceRange(field, z, "equator2");
   setColourbarForSlot("equator2", params.equator2Field, vmin, vmax);
@@ -5977,18 +6169,22 @@ async function rebuildEquator2(options = {}) {
     equator2Mesh.visible = params.showEquator2;
     applyOpacityAndDepth(equator2Mesh.material, params.equator2Opacity);
   } else {
+    const replacement = makeHorizontalSliceMesh(field, z, params.equator2Opacity, vmin, vmax, params.equator2Colormap);
     disposeObject(equator2Mesh);
-    equator2Mesh = makeHorizontalSliceMesh(field, z, params.equator2Opacity, vmin, vmax, params.equator2Colormap);
+    equator2Mesh = replacement;
     equator2Mesh.visible = params.showEquator2;
     scene.add(equator2Mesh);
     await rebuildGapFillers();
   }
+  if (!renderRequestIsCurrent(request)) return;
   setStatusSummary(`Equator2:${params.equator2Field}`);
 }
 
 async function rebuildMeridian(options = {}) {
+  const request = beginRenderRequest("meridian");
   const reuseGeometry = Boolean(options.reuseGeometry);
-  const field = await loadField(params.meridianField);
+  const field = await loadForRender(request, () => loadField(params.meridianField));
+  if (!renderRequestIsCurrent(request)) return;
   const [vmin, vmax] = meridianRange(field, params.meridianPhiDeg, "meridian");
   setColourbarForSlot("meridian", params.meridianField, vmin, vmax);
 
@@ -5998,18 +6194,22 @@ async function rebuildMeridian(options = {}) {
     meridianMesh.visible = params.showMeridian;
     applyOpacityAndDepth(meridianMesh.material, params.meridianOpacity);
   } else {
+    const replacement = makeMeridionalSliceMesh(field, params.meridianPhiDeg, params.meridianOpacity, vmin, vmax, params.meridianColormap);
     disposeObject(meridianMesh);
-    meridianMesh = makeMeridionalSliceMesh(field, params.meridianPhiDeg, params.meridianOpacity, vmin, vmax, params.meridianColormap);
+    meridianMesh = replacement;
     meridianMesh.visible = params.showMeridian;
     scene.add(meridianMesh);
     await rebuildGapFillers();
   }
+  if (!renderRequestIsCurrent(request)) return;
   setStatusSummary(`Meridian:${params.meridianField}`);
 }
 
 async function rebuildMeridian2(options = {}) {
+  const request = beginRenderRequest("meridian2");
   const reuseGeometry = Boolean(options.reuseGeometry);
-  const field = await loadField(params.meridian2Field);
+  const field = await loadForRender(request, () => loadField(params.meridian2Field));
+  if (!renderRequestIsCurrent(request)) return;
   const [vmin, vmax] = meridianRange(field, params.meridian2PhiDeg, "meridian2");
   setColourbarForSlot("meridian2", params.meridian2Field, vmin, vmax);
 
@@ -6019,57 +6219,81 @@ async function rebuildMeridian2(options = {}) {
     meridian2Mesh.visible = params.showMeridian2;
     applyOpacityAndDepth(meridian2Mesh.material, params.meridian2Opacity);
   } else {
+    const replacement = makeMeridionalSliceMesh(field, params.meridian2PhiDeg, params.meridian2Opacity, vmin, vmax, params.meridian2Colormap);
     disposeObject(meridian2Mesh);
-    meridian2Mesh = makeMeridionalSliceMesh(field, params.meridian2PhiDeg, params.meridian2Opacity, vmin, vmax, params.meridian2Colormap);
+    meridian2Mesh = replacement;
     meridian2Mesh.visible = params.showMeridian2;
     scene.add(meridian2Mesh);
     await rebuildGapFillers();
   }
+  if (!renderRequestIsCurrent(request)) return;
   setStatusSummary(`Meridian2:${params.meridian2Field}`);
 }
 
 async function rebuildIsosurfaces() {
-  detachActiveIsosurfaces();
+  const request = beginRenderRequest("isosurface");
 
-  if (!params.showIsosurfaces) return;
+  if (!params.showIsosurfaces) {
+    detachActiveIsosurfaces();
+    return;
+  }
 
   const volumeFields = getVolumeFieldNames();
   if (!volumeFields.includes(params.isoField)) return;
 
-  const entry = await ensureIsosurfaceObjectCacheEntry();
-  isoPositiveMesh = entry.positive || null;
-  isoNegativeMesh = entry.negative || null;
+  const release = pinHeavyCacheEntry("isosurface", request.signature);
+  try {
+    const entry = await loadForRender(request, () => ensureIsosurfaceObjectCacheEntry(request.context));
+    if (!renderRequestIsCurrent(request) || !params.showIsosurfaces) return;
+    const positive = entry.positive ? new THREE.Mesh(entry.positive, makeIsoMaterial(params.isoPositiveColor, params.isoOpacity)) : null;
+    const negative = entry.negative ? new THREE.Mesh(entry.negative, makeIsoMaterial(params.isoNegativeColor, params.isoOpacity)) : null;
+    detachActiveIsosurfaces();
+    isoPositiveMesh = positive;
+    isoNegativeMesh = negative;
 
-  if (isoPositiveMesh) {
-    isoPositiveMesh.visible = params.showIsosurfaces && params.showIsoPositive;
-    scene.add(isoPositiveMesh);
-  }
-  if (isoNegativeMesh) {
-    isoNegativeMesh.visible = params.showIsosurfaces && params.showIsoNegative;
-    scene.add(isoNegativeMesh);
-  }
+    if (isoPositiveMesh) {
+      isoPositiveMesh.visible = params.showIsosurfaces && params.showIsoPositive;
+      scene.add(isoPositiveMesh);
+    }
+    if (isoNegativeMesh) {
+      isoNegativeMesh.visible = params.showIsosurfaces && params.showIsoNegative;
+      scene.add(isoNegativeMesh);
+    }
 
-  setStatusSummary(
-    `Isosurfaces:${params.isoField}, triangles=${Math.round(entry.triangleCount || 0)}`
-    + `${entry.clipped ? ", clipped" : ""}`
-  );
+    setStatusSummary(
+      `Isosurfaces:${params.isoField}, triangles=${Math.round(entry.triangleCount || 0)}`
+      + `${entry.clipped ? ", clipped" : ""}`
+    );
+  } finally {
+    release();
+  }
 }
 
 async function rebuildAllMeshes(options = {}) {
+  const context = captureRenderContext();
   const visibleOnly = options.visibleOnly !== false;
   const reuseGeometry = Boolean(options.reuseGeometry);
   const includeHeavy = options.includeHeavy !== false;
   setStatus(reuseGeometry ? "Updating visible fields..." : "Loading selected fields...");
 
   if (!visibleOnly || params.showCMB) await rebuildCMB({ reuseGeometry });
+  if (!renderContextIsCurrent(context)) return;
   if ((!visibleOnly || params.showICB) && metadata.has_inner_core) await rebuildICB({ reuseGeometry });
+  if (!renderContextIsCurrent(context)) return;
   if (!visibleOnly || params.showRadialSurface) await rebuildRadialSurface({ reuseGeometry });
+  if (!renderContextIsCurrent(context)) return;
   if (!visibleOnly || params.showEquator) await rebuildEquator({ reuseGeometry });
+  if (!renderContextIsCurrent(context)) return;
   if (!visibleOnly || params.showEquator2) await rebuildEquator2({ reuseGeometry });
+  if (!renderContextIsCurrent(context)) return;
   if (!visibleOnly || params.showMeridian) await rebuildMeridian({ reuseGeometry });
+  if (!renderContextIsCurrent(context)) return;
   if (!visibleOnly || params.showMeridian2) await rebuildMeridian2({ reuseGeometry });
+  if (!renderContextIsCurrent(context)) return;
   if (!visibleOnly || params.showEarthSurface) await updateEarthSurface({ reuseGeometry });
+  if (!renderContextIsCurrent(context)) return;
   if (includeHeavy && (!visibleOnly || params.showIsosurfaces)) await rebuildIsosurfaces();
+  if (!renderContextIsCurrent(context)) return;
 
   updateVisibility();
   setStatusSummary();
@@ -6143,21 +6367,20 @@ function updateOpacities() {
   if (meridian2FillerMesh) applyOpacityAndDepth(meridian2FillerMesh.material, params.sliceGapFillerOpacity);
 }
 
-async function fetchFieldLineFile(filename) {
+async function fetchFieldLineFile(filename, basePath = dataBasePath) {
   if (!filename) return [];
 
-  const cacheKey = `${dataBasePath}/${filename}`;
+  const cacheKey = `${basePath}/${filename}`;
   if (fieldLineDataCache.has(cacheKey)) {
     const info = fieldLineDataCacheMeta.get(cacheKey);
     if (info) info.last = ++cacheAccessCounter;
     return fieldLineDataCache.get(cacheKey);
   }
 
-  const response = await fetchDatasetResource(dataUrl(filename));
+  const response = await fetchDatasetResource(dataUrlForBase(basePath, filename));
   if (!response.ok) {
     releaseDatasetResponse(response);
-    console.warn(`Could not load field lines: ${filename}`);
-    return [];
+    throw new Error(`Could not load field lines: ${filename} (HTTP ${response.status}).`);
   }
 
   const raw = await readDatasetResponse(response, "text");
@@ -6185,8 +6408,8 @@ function inferLineType(line) {
   return "unknown";
 }
 
-function getFieldLineFilename(mode) {
-  const fl = metadata?.field_lines || {};
+function getFieldLineFilename(mode, meta = metadata) {
+  const fl = meta?.field_lines || {};
 
   if (mode === "shell") {
     return fl.shell || fl.B_lines_shell || fl.B_lines || fl.B_from_cmb || null;
@@ -6199,8 +6422,8 @@ function getFieldLineFilename(mode) {
   return fl.B_lines || fl.B_from_cmb || null;
 }
 
-function getAvailableFieldLineModes() {
-  const fl = metadata?.field_lines || {};
+function getAvailableFieldLineModes(meta = metadata) {
+  const fl = meta?.field_lines || {};
   const modes = [];
 
   if (fl.shell || fl.B_lines_shell || fl.mode === "shell" || fl.mode === "both") modes.push("shell");
@@ -6216,14 +6439,14 @@ function getAvailableFieldLineModes() {
   return modes;
 }
 
-async function loadLinesForMode(mode) {
-  const filename = getFieldLineFilename(mode);
+async function loadLinesForMode(mode, context = captureRenderContext()) {
+  const filename = getFieldLineFilename(mode, context.metadata);
   if (!filename) return [];
 
-  const lines = await fetchFieldLineFile(filename);
+  const lines = await fetchFieldLineFile(filename, context.basePath);
 
   // If shell and exterior are stored in separate files, no filtering is needed.
-  const fl = metadata?.field_lines || {};
+  const fl = context.metadata?.field_lines || {};
   const hasSeparateFiles = Boolean(fl.shell || fl.exterior || fl.exterior_poloidal || fl.B_lines_shell || fl.B_lines_exterior || fl.B_lines_exterior_poloidal);
   if (hasSeparateFiles) return lines;
 
@@ -6275,9 +6498,10 @@ function makeFieldLineGroup(lines, mode) {
 }
 
 async function loadFieldLines() {
-  detachActiveFieldLineGroups();
+  const request = beginRenderRequest("field-lines");
 
   if (!params.showFieldLines) {
+    detachActiveFieldLineGroups();
     hideFieldLineColourbar();
     setStatusSummary();
     return;
@@ -6285,31 +6509,43 @@ async function loadFieldLines() {
 
   const availableModes = getAvailableFieldLineModes();
   if (availableModes.length === 0) {
+    detachActiveFieldLineGroups();
     hideFieldLineColourbar();
     setStatusSummary();
     return;
   }
 
-  const entry = await ensureFieldLineObjectCacheEntry();
-  fieldLineGroups = { shell: null, exterior: null };
-
-  for (const [mode, group] of Object.entries(entry.groups || {})) {
-    if (!group) continue;
-    group.visible = params.showFieldLines;
-    fieldLineGroups[mode] = group;
-    scene.add(group);
+  if (!availableModes.includes(params.fieldLineDisplay)) {
+    params.fieldLineDisplay = availableModes[0];
+    return await loadFieldLines();
   }
+  const release = pinHeavyCacheEntry("field-lines", request.signature);
+  try {
+    const entry = await loadForRender(request, () => ensureFieldLineObjectCacheEntry(request.context));
+    if (!renderRequestIsCurrent(request) || !params.showFieldLines) return;
+    detachActiveFieldLineGroups();
+    fieldLineGroups = { shell: null, exterior: null };
 
-  if (params.lineColourMode === "strength" && Array.isArray(entry.strengthRange)) {
-    const [vmin, vmax] = entry.strengthRange;
-    setFieldLineColourbar(vmin, vmax);
-  } else {
-    hideFieldLineColourbar();
+    for (const [mode, group] of Object.entries(entry.groups || {})) {
+      if (!group) continue;
+      group.visible = params.showFieldLines;
+      fieldLineGroups[mode] = group;
+      scene.add(group);
+    }
+
+    if (params.lineColourMode === "strength" && Array.isArray(entry.strengthRange)) {
+      const [vmin, vmax] = entry.strengthRange;
+      setFieldLineColourbar(vmin, vmax);
+    } else {
+      hideFieldLineColourbar();
+    }
+
+    setLineLegendMode(params.lineColourMode);
+    updateFieldLineVisuals();
+    setStatusSummary();
+  } finally {
+    release();
   }
-
-  setLineLegendMode(params.lineColourMode);
-  updateFieldLineVisuals();
-  setStatusSummary();
 }
 
 async function onFieldLineVisibilityChanged() {
@@ -6441,6 +6677,20 @@ const VIEW_STATE_EXCLUDED_PARAMS = new Set([
   "sequencePngBackgroundExport",
 ]);
 
+const VIEW_STATE_PARAM_TYPES = Object.freeze(Object.fromEntries(
+  Object.entries(params).filter(([, value]) => typeof value !== "function")
+    .map(([key, value]) => [key, typeof value])
+));
+const VIEW_STATE_SCALE_KEYS = new Set([
+  "cmbScale", "icbScale", "radialScale", "earthScale", "equatorScale", "equator2Scale",
+  "meridianScale", "meridian2Scale", "lineScale",
+]);
+const VIEW_STATE_NUMBER_LIMITS = {
+  earthRadiusScale: [1, Infinity], isoResolution: [8, 96], lineStride: [1, 1000],
+  cameraDistance: [1e-12, Infinity], cameraFovDeg: [1, 179],
+  radialSurfaceRadiusRo: [0, 1],
+};
+
 function getAvailableColormapNames() {
   return colourMapNames;
 }
@@ -6471,17 +6721,22 @@ function decodeViewState(code) {
 }
 
 function validFieldForState(key, value) {
-  if (!["cmbField", "earthField", "icbField", "radialField", "equatorField", "equator2Field", "meridianField", "meridian2Field"].includes(key)) return true;
+  if (!["cmbField", "earthField", "icbField", "radialField", "equatorField", "equator2Field", "meridianField", "meridian2Field", "isoField"].includes(key)) return true;
   if (key === "cmbField") return getCmbFieldNames().includes(value);
   if (key === "earthField") return getEarthFieldNames().includes(value);
   return getVolumeFieldNames().includes(value);
 }
 
 function applySnapshotParam(key, value) {
-  if (!(key in params) || VIEW_STATE_EXCLUDED_PARAMS.has(key)) return false;
+  if (!Object.prototype.hasOwnProperty.call(VIEW_STATE_PARAM_TYPES, key) || VIEW_STATE_EXCLUDED_PARAMS.has(key)) return false;
+  if (typeof value !== VIEW_STATE_PARAM_TYPES[key]) return false;
+  if (typeof value === "number" && !Number.isFinite(value)) return false;
+  if (key.endsWith("Opacity") && (value < 0 || value > 1)) return false;
+  const limits = VIEW_STATE_NUMBER_LIMITS[key];
+  if (limits && (value < limits[0] || value > limits[1])) return false;
   if (typeof params[key] === "function") return false;
   if (key.endsWith("Colormap") && !getAvailableColormapNames().includes(value)) return false;
-  if (key.endsWith("Scale") && !["symmetric", "minmax", "manual"].includes(value)) return false;
+  if (VIEW_STATE_SCALE_KEYS.has(key) && !["symmetric", "minmax", "manual"].includes(value)) return false;
   if (!validFieldForState(key, value)) return false;
   if (key === "fieldLineDisplay" && !getAvailableFieldLineModes().includes(value)) return false;
   if (key === "earthDisplayMode" && !["texture", "magnetic"].includes(value)) return false;
@@ -6492,7 +6747,13 @@ function applySnapshotParam(key, value) {
 }
 
 async function applyViewState(snapshot) {
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)
+    || (snapshot.params !== undefined && (!snapshot.params || typeof snapshot.params !== "object" || Array.isArray(snapshot.params)))) {
+    throw new Error("View state must contain a parameter object.");
+  }
+  pauseSequence(false);
   cancelPendingViewerTasks();
+  const context = captureRenderContext();
   const snap = snapshot?.params ? snapshot : { params: snapshot || {} };
   const skippedFields = [];
   for (const [key, value] of Object.entries(snap.params || {})) {
@@ -6507,8 +6768,11 @@ async function applyViewState(snapshot) {
   applyExportPanelLayout();
   buildGui();
   await rebuildAllMeshes();
+  if (!renderContextIsCurrent(context)) return;
   await loadFieldLines();
+  if (!renderContextIsCurrent(context)) return;
   await updateEarthSurface();
+  if (!renderContextIsCurrent(context)) return;
   updateFieldLineVisuals();
   updateOpacities();
   updateVisibility();
@@ -6594,6 +6858,10 @@ function validateDatasetMetadata(meta, label) {
       throw new Error(`${label} has an invalid ${key} value: ${meta[key]}.`);
     }
   }
+  if (!Number.isFinite(meta.r_inner) || !Number.isFinite(meta.r_outer)
+    || meta.r_inner < 0 || meta.r_outer <= meta.r_inner) {
+    throw new Error(`${label} must define finite radii with 0 <= r_inner < r_outer.`);
+  }
   const fields = Object.entries(meta.fields || {}).filter(
     ([name, filename]) => Boolean(name) && typeof filename === "string" && filename.trim()
   );
@@ -6603,15 +6871,38 @@ function validateDatasetMetadata(meta, label) {
   return fields;
 }
 
+function uniformDatasetCoordinates(meta) {
+  const linear = (a, b, n, periodic = false) => Array.from({ length: n }, (_, i) => a + (b - a) * i / (periodic ? n : n - 1));
+  return {
+    r: linear(Number(meta.r_inner), Number(meta.r_outer), Number(meta.nr)),
+    theta: linear(Number(meta.theta_min ?? 0), Number(meta.theta_max ?? Math.PI), Number(meta.ntheta)),
+    phi: linear(Number(meta.phi_min ?? 0), Number(meta.phi_min ?? 0) + 2 * Math.PI, Number(meta.nphi), true),
+  };
+}
+
 function validateDatasetCoordinates(candidateCoords, meta, label) {
   const expected = { r: Number(meta.nr), theta: Number(meta.ntheta), phi: Number(meta.nphi) };
   for (const [axis, length] of Object.entries(expected)) {
     const values = candidateCoords?.[axis];
-    if (values && values.length !== length) {
+    if (!Array.isArray(values) || values.length !== length) {
       throw new Error(
-        `${label} has ${values.length} ${axis} coordinates but metadata expects ${length}.`
+        `${label} must contain ${length} ${axis} coordinates (received ${values?.length ?? "none"}).`
       );
     }
+    if (values.some((value, i) => typeof value !== "number" || !Number.isFinite(value)
+      || (i > 0 && value <= values[i - 1]))) {
+      throw new Error(`${label}: ${axis} coordinates must be finite and strictly increasing.`);
+    }
+  }
+  const { r, theta, phi } = candidateCoords;
+  const last = (values) => values[values.length - 1];
+  if (r[0] < 0 || theta[0] < -1e-6 || last(theta) > Math.PI + 1e-6
+    || last(phi) - phi[0] >= 2 * Math.PI - 1e-10) {
+    throw new Error(`${label}: coordinates are outside the spherical domain or duplicate the longitude seam.`);
+  }
+  const tolerance = 1e-8 * Math.max(1, Math.abs(meta.r_outer));
+  if (Math.abs(r[0] - meta.r_inner) > tolerance || Math.abs(last(r) - meta.r_outer) > tolerance) {
+    throw new Error(`${label}: radial endpoints do not match metadata.r_inner/r_outer.`);
   }
 }
 

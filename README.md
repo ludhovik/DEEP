@@ -304,6 +304,17 @@ binary lengths must match the declared grid, a broken sequence frame stops
 playback cleanly, and the viewer attempts to restore the last working dataset
 or frame after a rendering failure.
 
+Only the latest asynchronous request may replace a surface or field-line set.
+A failed replacement leaves the preceding mesh displayed. Isosurface geometry
+is cached independently of its colour, opacity, and transparency mode.
+
+Frames and secondary datasets are checked against the actual `r`, `theta`, and
+`phi` arrays, not just their dimensions. If metadata declares a coordinates
+file, that file is required. Uniform-grid fallback is only for legacy bundles
+that do not declare one. A transferred view code validates field availability
+(including the isosurface field) and restores numeric options such as the Earth
+radius scale without loading a dataset or changing the selected frame.
+
 ## Export
 
 The export panel and **Export** folder provide:
@@ -419,6 +430,11 @@ spectral transforms. Geometry can be detected or set explicitly. Optional
 outputs include scalar gradients, azimuthal means and fluctuations, magnetic
 field continuation, internal/exterior field lines, motional EMF, and induction.
 
+Converter version 3.3 corrects the Leeds longitude coordinates to match SHTns:
+`phi[j] = 2*pi*j/nphi`, with no duplicate endpoint. Regenerate older Leeds
+bundles to apply this correction; updating the viewer alone cannot repair
+coordinates and field-line geometry already exported into a bundle.
+
 ## XSHELLS converter
 
 Discover conventional files from a run folder and tag:
@@ -510,6 +526,38 @@ Not every option applies to every source format. A converter writes only fields
 supported by its input and does not invent absent magnetic or compositional
 quantities.
 
+### Sampling and output safety
+
+Radial downsampling retains both radial endpoints and the CMB/ICB. Angular
+downsampling applies a Gaussian low-pass in physical colatitude and Fourier
+resampling in longitude. Longitudes remain uniformly spaced around the full
+period even when the requested stride does not divide the native sample count.
+Surface maps use the same angular sampling as volumes. These filters reduce
+aliasing; they are not a replacement for checking resolution convergence.
+Diagnostics and field lines still use the native grids, not the reduced viewer
+grid. Leave the strides at 1 when no viewer-grid filtering is wanted.
+
+`Cnol0` and `Compnol0` are no longer exported. The `m=0`-removed diagnostics
+(`Cnom0`, `Compnom0` and their `_nom0` aliases) are unchanged. Existing bundles
+with the retired fields remain readable.
+
+All three converter CLIs build into a staging directory and validate the
+complete bundle before replacing `--out`. A failed conversion or sequence frame
+leaves the previous output intact. The old output is retained at the printed
+backup path: `.deepscope-backups/` at the Git checkout root when on the same
+filesystem, otherwise a sibling `.deepscope-backup-*` directory. Backups consume
+disk space; keep them out of published datasets and remove them manually only
+after checking the new output. Unrelated files in the output are preserved.
+Use a dedicated output subdirectory, not the current directory or repository
+root. `--sequence-clear` remains accepted for compatibility; a new sequence is
+always staged in full and published only after every selected frame succeeds.
+
+NaN, infinity, and float32 overflow now stop conversion instead of becoming
+zeros or invalid binary values. The explicitly reported XSHELLS singular
+`r=0` spherical-component regularization is retained. A failed second publish
+rename is rolled back; an abrupt process interruption between the two renames
+may require restoring the printed backup manually.
+
 ## Validation
 
 Run the converter test suite:
@@ -518,12 +566,16 @@ Run the converter test suite:
 npm run test-converters
 ```
 
-Validate JavaScript syntax and the production bundle:
+Run viewer logic regressions, then validate syntax and the production bundle:
 
 ```bash
+node --test tests/test_viewer_regressions.mjs
 node --check src/main.js
 npm run build
 ```
+
+The viewer regressions use test doubles for rendering and networking. They do
+not replace a browser/GPU check of the demo, remote loading, and exports.
 
 Additional scientific and release checks are documented in:
 

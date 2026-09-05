@@ -48,12 +48,17 @@ from typing import Any
 
 import numpy as np
 
+try:
+    from viewer_bundle import ViewerSampling, bundle_path, staged_bundle_output, write_f32
+except ImportError:
+    from tools.viewer_bundle import ViewerSampling, bundle_path, staged_bundle_output, write_f32
+
 
 EARTH_RADIUS_KM = 6371.0
 CMB_RADIUS_KM = 3480.0
 DEFAULT_EARTH_RADIUS_SCALE = EARTH_RADIUS_KM / CMB_RADIUS_KM
 DEFAULT_EARTH_BR_LMAX = 13
-CONVERTER_PACKAGE_VERSION = "3.2.0"
+CONVERTER_PACKAGE_VERSION = "3.3.0"
 
 
 # -----------------------------------------------------------------------------
@@ -722,10 +727,6 @@ def regularize_scalar_gradient_center(
     return gr, gt, gp
 
 
-def remove_global_mean(arr: np.ndarray) -> np.ndarray:
-    return arr - np.mean(arr, axis=(0, 1, 2))
-
-
 def phi_average_volume(arr: np.ndarray, name: str = "field") -> np.ndarray:
     """
     Phi-average a 3-D field and broadcast it back to full (r,theta,phi) shape.
@@ -780,29 +781,6 @@ def json_number(x: Any) -> float | None:
 def format_param(x: Any, fmt: str, missing: str = "NA") -> str:
     y = json_number(x)
     return missing if y is None else format(y, fmt)
-
-
-def write_f32(path: Path, arr: np.ndarray) -> dict[str, float | None]:
-    arr32 = np.asarray(arr, dtype="<f4", order="C")
-    arr32.tofile(path)
-
-    finite = np.isfinite(arr32)
-    if not np.any(finite):
-        return {"min": None, "max": None, "mean": None, "absmax": None}
-
-    good = arr32[finite]
-    amin = float(np.min(good))
-    amax = float(np.max(good))
-    return {
-        "min": amin,
-        "max": amax,
-        "mean": float(np.mean(good)),
-        "absmax": max(abs(amin), abs(amax)),
-    }
-
-
-def downsample_3d(arr: np.ndarray, dr: int, dt: int, dp: int) -> np.ndarray:
-    return np.ascontiguousarray(arr[::dr, ::dt, ::dp])
 
 
 def truncate_lsd_coefficients(
@@ -1691,7 +1669,7 @@ def external_potential_field_from_BP(
     nlat, nphi = sh.set_grid()
 
     theta_ext = np.arccos(sh.cos_theta)
-    phi_ext = np.linspace(0.0, 2.0 * np.pi, nphi + 2)[1:-1]
+    phi_ext = np.linspace(0.0, 2.0 * np.pi, nphi, endpoint=False)
 
     BP_shtns = user_modules.lsd_to_shtns(BP_lsd, sh)
     P_cmb = BP_shtns[:, -1]
@@ -1751,7 +1729,7 @@ def synthesize_cmb_Br_ltrunc(
     nlat, nphi = sh.set_grid()
 
     theta = np.arccos(sh.cos_theta)
-    phi = np.linspace(0.0, 2.0 * np.pi, nphi + 2)[1:-1]
+    phi = np.linspace(0.0, 2.0 * np.pi, nphi, endpoint=False)
 
     BP_shtns = user_modules.lsd_to_shtns(BP_lsd, sh)
     P_cmb = BP_shtns[:, -1].copy()
@@ -1801,7 +1779,7 @@ def synthesize_potential_Br_surface_ltrunc(
     sh = shtns.sht(int(lmax), int(mmax), 1, shtns.sht_schmidt | shtns.SHT_NO_CS_PHASE)
     nlat, nphi = sh.set_grid()
     theta = np.arccos(sh.cos_theta)
-    phi = np.linspace(0.0, 2.0 * np.pi, nphi + 2)[1:-1]
+    phi = np.linspace(0.0, 2.0 * np.pi, nphi, endpoint=False)
 
     BP_shtns = user_modules.lsd_to_shtns(BP_lsd, sh)
     P_cmb = BP_shtns[:, -1].copy()
@@ -2284,9 +2262,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "before creating the theta/phi grid."
         ),
     )
-    p.add_argument("--downsample-r", type=int, default=1, help="Keep every Nth radial point.")
-    p.add_argument("--downsample-theta", type=int, default=1, help="Keep every Nth theta point after spectral synthesis. Usually leave at 1 when using --spectral-lmax.")
-    p.add_argument("--downsample-phi", type=int, default=1, help="Keep every Nth phi point after spectral synthesis. Usually leave at 1 when using --spectral-lmax.")
+    p.add_argument("--downsample-r", type=int, default=1, help="Keep every Nth radial point, plus CMB/ICB and radial endpoints.")
+    p.add_argument("--downsample-theta", type=int, default=1, help="Low-pass in colatitude, then reduce theta samples. Usually leave at 1 when using --spectral-lmax.")
+    p.add_argument("--downsample-phi", type=int, default=1, help="Fourier-resample to about 1/N of the longitude samples. Usually leave at 1 when using --spectral-lmax.")
 
     p.add_argument("--skip-field-lines", action="store_true", help="Do not compute magnetic field lines.")
     p.add_argument(
@@ -2352,7 +2330,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--sequence-last", type=int, default=None, help="Last state number to convert in a multi-frame sequence.")
     p.add_argument("--sequence-step", type=int, default=1, help="State-number interval for multi-frame conversion.")
     p.add_argument("--sequence-subdir", default="frames", help="Subdirectory under --out where sequence frames are written.")
-    p.add_argument("--sequence-clear", action="store_true", help="Delete the existing sequence frame directory before converting.")
+    p.add_argument("--sequence-clear", action="store_true", help="Compatibility option: sequences are always rebuilt in staging; previous output is backed up only after success.")
 
     return p
 
@@ -2387,9 +2365,7 @@ def run_sequence_conversion(args: argparse.Namespace) -> None:
         setattr(args, PARAMETER_SPECS[name]["arg"], value)
 
     outdir = Path(args.out)
-    frames_root = outdir / str(args.sequence_subdir)
-    if args.sequence_clear and frames_root.exists():
-        shutil.rmtree(frames_root)
+    frames_root = bundle_path(outdir, str(args.sequence_subdir))
     frames_root.mkdir(parents=True, exist_ok=True)
 
     script_path = Path(__file__).resolve()
@@ -2399,7 +2375,6 @@ def run_sequence_conversion(args: argparse.Namespace) -> None:
         state_number = parse_state_number(state_path)
         frame_name = f"state{state_number:05d}"
         frame_out = frames_root / frame_name
-        frame_out.mkdir(parents=True, exist_ok=True)
 
         cmd = [
             sys.executable,
@@ -2511,8 +2486,7 @@ def run_sequence_conversion(args: argparse.Namespace) -> None:
 
 
 
-def main() -> None:
-    args = build_arg_parser().parse_args()
+def convert_state(args: argparse.Namespace) -> None:
 
     if not math.isfinite(float(args.center_tolerance)) or float(args.center_tolerance) <= 0.0:
         raise ValueError("--center-tolerance must be finite and > 0.")
@@ -3019,8 +2993,6 @@ def main() -> None:
                     center_vector_diagnostics["induction"] = induction_center_diag
                 Iz = Ir * np.cos(THETA) - It * np.sin(THETA)
 
-    Cspatnol0 = remove_global_mean(Cspat)
-    Compspatnol0 = remove_global_mean(Compspat)
 
     print("Computing full 3-D scalar gradients, N2 fluctuations, and helicity...")
     if has_inner_core:
@@ -3102,8 +3074,6 @@ def main() -> None:
         "Comp_nom0": Compspatnom0,
         "C_phiavg": phi_average_volume(Cspat, "C"),
         "Comp_phiavg": phi_average_volume(Compspat, "Comp"),
-        "Cnol0": Cspatnol0,
-        "Compnol0": Compspatnol0,
         "N2": N2_volume,
         "N2_full": N2_full,
     }
@@ -3171,24 +3141,13 @@ def main() -> None:
     dt = max(1, int(args.downsample_theta))
     dp = max(1, int(args.downsample_phi))
 
-    if (dr, dt, dp) != (1, 1, 1):
-        print(f"Downsampling fields by r/theta/phi strides: {dr}/{dt}/{dp}")
-        fields = {name: downsample_3d(arr, dr, dt, dp) for name, arr in fields.items()}
-        r_out = r[::dr]
-        theta_out = theta[::dt]
-        phi_out = phi[::dp]
-        N2_profile_out = N2_profile[::dr]
-        N2_fluct_rms_out = N2_fluct_rms[::dr]
-        grad_rC_mean_r_out = grad_rC_mean_r[::dr]
-        grad_rComp_mean_r_out = grad_rComp_mean_r[::dr]
-    else:
-        r_out = r
-        theta_out = theta
-        phi_out = phi
-        N2_profile_out = N2_profile
-        N2_fluct_rms_out = N2_fluct_rms
-        grad_rC_mean_r_out = grad_rC_mean_r
-        grad_rComp_mean_r_out = grad_rComp_mean_r
+    sampling = ViewerSampling(r, theta, phi, dr, dt, dp, required_radii=[r_icb])
+    fields = {name: sampling.volume(arr) for name, arr in fields.items()}
+    r_out, theta_out, phi_out = sampling.r, sampling.theta, sampling.phi
+    N2_profile_out = sampling.radial(N2_profile)
+    N2_fluct_rms_out = sampling.radial(N2_fluct_rms)
+    grad_rC_mean_r_out = sampling.radial(grad_rC_mean_r)
+    grad_rComp_mean_r_out = sampling.radial(grad_rComp_mean_r)
 
     nr_out = len(r_out)
     ntheta_out = len(theta_out)
@@ -3238,8 +3197,8 @@ def main() -> None:
                 user_modules,
             )
 
-            # If the main viewer output was downsampled, use the same angular stride.
-            Br_cmb_lcut = np.ascontiguousarray(Br_cmb_lcut[::dt, ::dp])
+            # Use the same angular low-pass/resampling as the volume output.
+            Br_cmb_lcut = sampling.angular(Br_cmb_lcut)
             if Br_cmb_lcut.shape != (ntheta_out, nphi_out):
                 raise ValueError(
                     f"Truncated CMB Br shape {Br_cmb_lcut.shape} does not match viewer angular grid "
@@ -3284,7 +3243,7 @@ def main() -> None:
                 earth_radius,
                 user_modules,
             )
-            Br_earth = np.ascontiguousarray(Br_earth[::dt, ::dp])
+            Br_earth = sampling.angular(Br_earth)
             if Br_earth.shape != (ntheta_out, nphi_out):
                 raise ValueError(
                     f"Earth-surface Br shape {Br_earth.shape} does not match viewer angular grid "
@@ -3507,6 +3466,8 @@ def main() -> None:
             "RaC": json_number(RaC),
         },
         "spectral": spectral_meta,
+        "sampling": sampling.description(),
+        "invalid_value_policy": "reject_nonfinite_and_float32_overflow",
         "optional_magnetic_diagnostics": {
             "emf_requested": bool(args.emf),
             "emf_exported": bool(args.emf and Er is not None),
@@ -3594,6 +3555,13 @@ def main() -> None:
     print(f"Viewer data written to: {outdir.resolve()}")
     print(f"Grid written: nr={nr_out}, ntheta={ntheta_out}, nphi={nphi_out}")
     print(f"Fields: {', '.join(field_files.keys())}")
+
+
+def main() -> None:
+    args = build_arg_parser().parse_args()
+    with staged_bundle_output(args.out) as output:
+        args.out = str(output)
+        convert_state(args)
 
 
 if __name__ == "__main__":

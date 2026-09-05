@@ -102,6 +102,18 @@ When their source quantities exist, the MagIC converter writes:
 Fields absent from a MagIC run are skipped; the converter does not invent a
 magnetic, compositional, pressure, or phase field.
 
+From converter version 3.3, `Cnol0` and `Compnol0` are deliberately omitted;
+the azimuthal (`m=0`) mean and fluctuation fields remain available. Exterior
+`Btheta` and `Bphi` are evaluated with analytic spherical-harmonic derivatives,
+including the finite `m=1` pole limits, rather than finite differences of the
+reconstructed potential. `--ivar 1` matches `G_1.*`, never `G_10.*`.
+
+Downsampling preserves radial boundaries and low-passes angular fields before
+reducing their sample counts. The CLI validates a staged bundle (or complete
+sequence) before publishing and retains the previous output as a backup. See
+[sampling and output safety](README.md#sampling-and-output-safety) for the
+backup locations, invalid-value policy, and unchanged native-grid line tracing.
+
 Useful options include:
 
 ```bash

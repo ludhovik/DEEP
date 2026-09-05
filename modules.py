@@ -508,7 +508,7 @@ def PolTor_to_spat_fullsphere(Pol, Tor, r, lmax, mmax,
     )
     nlat, nphi = sh.set_grid()
     theta = np.arccos(sh.cos_theta)
-    phi = np.linspace(0.0, 2.0 * np.pi, nphi + 2)[1:-1]
+    phi = np.linspace(0.0, 2.0 * np.pi, nphi, endpoint=False)
 
     pol_lsd = np.asarray(Pol)
     tor_lsd = np.asarray(Tor)
@@ -574,7 +574,7 @@ def PolTor_to_curl_spat_fullsphere(Pol, Tor, r, lmax, mmax,
     )
     nlat, nphi = sh.set_grid()
     theta = np.arccos(sh.cos_theta)
-    phi = np.linspace(0.0, 2.0 * np.pi, nphi + 2)[1:-1]
+    phi = np.linspace(0.0, 2.0 * np.pi, nphi, endpoint=False)
 
     pol_lsd = np.asarray(Pol)
     tor_lsd = np.asarray(Tor)
@@ -612,7 +612,7 @@ def SH_to_spat_fullsphere(clm, r, lmax, mmax, power_offset=0,
     )
     nlat, nphi = sh.set_grid()
     theta = np.arccos(sh.cos_theta)
-    phi = np.linspace(0.0, 2.0 * np.pi, nphi + 2)[1:-1]
+    phi = np.linspace(0.0, 2.0 * np.pi, nphi, endpoint=False)
 
     coeffs_lsd = np.asarray(clm)
     if bool(regular_coefficients):
@@ -643,7 +643,7 @@ def SH_to_spat_nom0_fullsphere(clm, r, lmax, mmax, power_offset=0,
     )
     nlat, nphi = sh.set_grid()
     theta = np.arccos(sh.cos_theta)
-    phi = np.linspace(0.0, 2.0 * np.pi, nphi + 2)[1:-1]
+    phi = np.linspace(0.0, 2.0 * np.pi, nphi, endpoint=False)
 
     coeffs_lsd = np.asarray(clm)
     if bool(regular_coefficients):
@@ -807,7 +807,7 @@ def PolTor_to_spat(Pol, Tor, r, lmax, mmax, alpha_map=-1,
     )
     nlat, nphi = sh.set_grid()
     tta = np.arccos(sh.cos_theta)
-    phi = np.linspace(0, 2*np.pi, nphi+2)[1:-1]
+    phi = np.linspace(0.0, 2.0 * np.pi, nphi, endpoint=False)
 
     Pol_shtns = lsd_to_shtns(Pol, sh)
     Tor_shtns = lsd_to_shtns(Tor, sh)
@@ -831,7 +831,7 @@ def _PolTor_to_curl_spat_shell(Pol, Tor, r, lmax, mmax, alpha_map):
     sh = shtns.sht(int(lmax), int(mmax), 1, shtns.sht_schmidt | shtns.SHT_NO_CS_PHASE)
     nlat, nphi = sh.set_grid()
     tta = np.arccos(sh.cos_theta)
-    phi = np.linspace(0, 2*np.pi, nphi+2)[1:-1]
+    phi = np.linspace(0.0, 2.0 * np.pi, nphi, endpoint=False)
 
     Pol_shtns = lsd_to_shtns(Pol, sh)
     Tor_shtns = lsd_to_shtns(Tor, sh)
@@ -1099,7 +1099,7 @@ def SH_to_spat(clm, lmax, mmax, r=None, full_sphere=None,
     )
     nlat, nphi = sh.set_grid()
     tta = np.arccos(sh.cos_theta)
-    phi = np.linspace(0, 2*np.pi, nphi+2)[1:-1]
+    phi = np.linspace(0.0, 2.0 * np.pi, nphi, endpoint=False)
     clm_shtns = lsd_to_shtns(clm, sh)
     A = np.zeros((clm_shtns.shape[1], nlat, nphi))
     for k in range(clm_shtns.shape[1]):
@@ -1118,7 +1118,7 @@ def SH_to_spat_nom0(clm, lmax, mmax):
     nlat, nphi = sh.set_grid()
 
     tta = np.arccos(sh.cos_theta)
-    phi = np.linspace(0, 2*np.pi, nphi+2)[1:-1]
+    phi = np.linspace(0.0, 2.0 * np.pi, nphi, endpoint=False)
 
     clm_shtns = lsd_to_shtns(clm, sh)
 

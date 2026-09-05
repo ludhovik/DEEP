@@ -23,6 +23,11 @@ import numpy as np
 from scipy.special import gammaln, lpmv
 
 try:
+    from viewer_bundle import ViewerSampling, bundle_path, staged_bundle_output, write_f32
+except ImportError:
+    from tools.viewer_bundle import ViewerSampling, bundle_path, staged_bundle_output, write_f32
+
+try:
     from convert_state_to_viewer import (
         choose_regular_seed_grid,
         compute_emf,
@@ -49,7 +54,7 @@ CMB_RADIUS_KM = 3480.0
 DEFAULT_EARTH_RADIUS_SCALE = EARTH_RADIUS_KM / CMB_RADIUS_KM
 DEFAULT_EARTH_BR_LMAX = 13
 RADIAL_ATOL = 1.0e-10
-CONVERTER_PACKAGE_VERSION = "3.2.0"
+CONVERTER_PACKAGE_VERSION = "3.3.0"
 
 
 def json_number(value: Any, default: float | None = None) -> float | None:
@@ -72,13 +77,6 @@ def finite_range(arr: np.ndarray) -> dict[str, float]:
         "mean": float(np.mean(good)),
         "absmax": max(abs(amin), abs(amax)),
     }
-
-
-def write_f32(path: Path, arr: np.ndarray) -> dict[str, float]:
-    values = np.nan_to_num(np.asarray(arr), nan=0.0, posinf=0.0, neginf=0.0)
-    values = np.ascontiguousarray(values.astype("<f4", copy=False))
-    values.tofile(path)
-    return finite_range(values)
 
 
 def remove_m0_phi(arr: np.ndarray) -> np.ndarray:
@@ -187,6 +185,8 @@ def discover_graph(folder: Path, tag: str | None, ivar: int | None, average: boo
     else:
         pattern = f"G_[0-9]*.{tag}" if tag else "G_[0-9]*"
     candidates = [p for p in folder.glob(pattern) if p.is_file() and GRAPH_RE.match(p.name)]
+    if ivar is not None and not average:
+        candidates = [p for p in candidates if parse_graph_filename(p)[0] == ivar]
     if not candidates:
         raise FileNotFoundError(f"No MagIC graphic file matching {pattern!r} in {folder}")
     if ivar is None and not average:
@@ -396,17 +396,55 @@ def exterior_potential_field(
     coeff = analyse_real_surface(field, theta, lmax)
     shape = (len(r_ext), len(theta), len(phi))
     br, bt, bp = (np.empty(shape, dtype=np.float64) for _ in range(3))
-    sin_theta = np.sin(theta)[:, None]
     for ir, radius in enumerate(r_ext):
         decay = {l: (r_cmb / radius) ** (l + 2) for l in range(lmax + 1)}
         br[ir] = synthesize_real_surface(coeff, theta, phi, decay)
         potential_factors = {l: decay[l] / (l + 1.0) for l in range(lmax + 1)}
-        angular_potential = synthesize_real_surface(coeff, theta, phi, potential_factors)
-        bt[ir] = -np.gradient(angular_potential, theta, axis=0, edge_order=2)
-        dphi = 2.0 * np.pi / len(phi)
-        dp = (np.roll(angular_potential, -1, axis=1) - np.roll(angular_potential, 1, axis=1)) / (2.0 * dphi)
-        bp[ir] = -dp / np.where(np.abs(sin_theta) > 1.0e-12, sin_theta, np.inf)
+        grad_theta, grad_phi = synthesize_angular_gradient(coeff, theta, phi, potential_factors)
+        bt[ir], bp[ir] = -grad_theta, -grad_phi
     return br, bt, bp
+
+
+def synthesize_angular_gradient(coeff, theta, phi, factors=None):
+    """Analytic (d_theta V, d_phi V/sin(theta)) in the same Y_lm basis.
+
+    Radial factors here already include 1/r from the exterior potential.
+    Explicit m=1 pole limits avoid dividing by zero at either pole.
+    """
+    theta, phi = np.asarray(theta), np.asarray(phi)
+    x, sine = np.cos(theta), np.sin(theta)
+    poles = np.abs(sine) < 1e-12
+    safe_sine = np.where(poles, 1.0, sine)
+    gt = np.zeros((len(theta), len(phi)), dtype=np.float64)
+    gp = np.zeros_like(gt)
+    factors = factors or {}
+    for (ell, m), coefficient in coeff.items():
+        value = coefficient * factors.get(ell, 1.0)
+        if value == 0 or ell == 0:
+            continue
+        norm = math.exp(0.5 * (math.log(2 * ell + 1) - math.log(4 * math.pi)
+                              + gammaln(ell - m + 1) - gammaln(ell + m + 1)))
+        plm = lpmv(m, ell, x)
+        previous = lpmv(m, ell - 1, x) if m < ell else np.zeros_like(x)
+        derivative = norm * (ell * x * plm - (ell + m) * previous) / safe_sine
+        divided = norm * plm / safe_sine
+        derivative[poles], divided[poles] = 0.0, 0.0
+        if m == 1:
+            limit = norm * ell * (ell + 1) / 2.0
+            north = poles & (x > 0)
+            south = poles & (x < 0)
+            derivative[north] = divided[north] = -limit
+            derivative[south] = (-1.0) ** (ell + 1) * limit
+            divided[south] = (-1.0) ** ell * limit
+        if m == 0:
+            gt += value.real * derivative[:, None]
+        else:
+            phase = value * np.exp(1j * m * phi)[None, :]
+            gt += 2.0 * np.real(derivative[:, None] * phase)
+            gp += 2.0 * np.real(divided[:, None] * (1j * m) * phase)
+    if not np.isfinite(gt).all() or not np.isfinite(gp).all():
+        raise ValueError("Non-finite spherical-harmonic gradient; reduce the harmonic truncation.")
+    return gt, gp
 
 
 def parameter_value(args: argparse.Namespace, graph: Any, cli: str, attrs: tuple[str, ...]) -> float:
@@ -516,7 +554,6 @@ def convert_graph(path: Path, outdir: Path, args: argparse.Namespace) -> dict[st
         register("T", C, r_shell, "entropy")
         register("Cnom0", remove_m0_phi(C), r_shell, "entropy")
         register("C_nom0", remove_m0_phi(C), r_shell, "entropy")
-        register("Cnol0", C - np.mean(C), r_shell, "entropy")
         register("C_phiavg", phi_average_volume(C), r_shell, "entropy")
         if not args.no_m0_fields:
             register("T_nom0", remove_m0_phi(C), r_shell, "entropy")
@@ -527,7 +564,6 @@ def convert_graph(path: Path, outdir: Path, args: argparse.Namespace) -> dict[st
         register("Comp", Comp, r_shell, "composition")
         register("Compnom0", remove_m0_phi(Comp), r_shell, "composition")
         register("Comp_nom0", remove_m0_phi(Comp), r_shell, "composition")
-        register("Compnol0", Comp - np.mean(Comp), r_shell, "composition")
         register("Comp_phiavg", phi_average_volume(Comp), r_shell, "composition")
     for optional in ("Phase", "P"):
         if optional in raw:
@@ -623,8 +659,9 @@ def convert_graph(path: Path, outdir: Path, args: argparse.Namespace) -> dict[st
     dr = max(1, int(args.downsample_r))
     dt = max(1, int(args.downsample_theta))
     dp = max(1, int(args.downsample_phi))
-    fields = {name: np.ascontiguousarray(arr[::dr, ::dt, ::dp]) for name, arr in fields.items()}
-    r_out, theta_out, phi_out = r_master[::dr], theta[::dt], phi[::dp]
+    sampling = ViewerSampling(r_master, theta, phi, dr, dt, dp, required_radii=[r_icb, r_cmb])
+    fields = {name: sampling.volume(arr) for name, arr in fields.items()}
+    r_out, theta_out, phi_out = sampling.r, sampling.theta, sampling.phi
 
     clean_output_directory(outdir)
     field_files: dict[str, str] = {}
@@ -643,7 +680,7 @@ def convert_graph(path: Path, outdir: Path, args: argparse.Namespace) -> dict[st
     if args.cmb_br_ltrunc is not None and Br_cmb is not None:
         requested = max(0, int(args.cmb_br_ltrunc))
         effective = min(requested, lmax)
-        surface = truncated_surface(Br_cmb, theta, phi, effective)[::dt, ::dp]
+        surface = sampling.angular(truncated_surface(Br_cmb, theta, phi, effective))
         name = f"Br_CMB_lmax{requested}"
         filename = f"{name}_cmb.f32"
         ranges[name] = write_f32(outdir / filename, surface)
@@ -658,7 +695,7 @@ def convert_graph(path: Path, outdir: Path, args: argparse.Namespace) -> dict[st
         scale = float(args.earth_radius_scale)
         if not math.isfinite(scale) or scale < 1.0:
             raise ValueError("--earth-radius-scale must be finite and >= 1.")
-        surface = earth_surface_br(Br_cmb, theta, phi, effective, scale)[::dt, ::dp]
+        surface = sampling.angular(earth_surface_br(Br_cmb, theta, phi, effective, scale))
         name = f"Br_Earth_lmax{requested}"
         filename = f"{name}_earth.f32"
         ranges[name] = write_f32(outdir / filename, surface)
@@ -679,7 +716,8 @@ def convert_graph(path: Path, outdir: Path, args: argparse.Namespace) -> dict[st
         json.dump(coordinates, stream, allow_nan=False)
     profiles: dict[str, Any] = {"r": coordinates["r"]}
     if N2_full is not None:
-        profiles["N2"] = [json_number(x) for x in np.mean(N2_full, axis=(1, 2))[::dr]]
+        n2_master = radial_remap_to_master(N2_full, r_shell, r_master)
+        profiles["N2"] = [json_number(x) for x in sampling.radial(np.mean(n2_master, axis=(1, 2)))]
     with open(outdir / "profiles.json", "w", encoding="utf-8") as stream:
         json.dump(profiles, stream, allow_nan=False)
 
@@ -752,6 +790,8 @@ def convert_graph(path: Path, outdir: Path, args: argparse.Namespace) -> dict[st
         "description": "Converted physical-space quantities from a MagIC graphic snapshot using MagicGraph.",
         "source_format": "magic_graph",
         "converter_version": CONVERTER_PACKAGE_VERSION,
+        "sampling": sampling.description(),
+        "invalid_value_policy": "reject_nonfinite_and_float32_overflow",
         "viewer_field_contract": "dynamo-three-viewer-v2-common",
         "source_fields": {"graphic": str(path)},
         "time": time,
@@ -842,7 +882,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--sequence-last", type=int)
     p.add_argument("--sequence-step", type=int, default=1)
     p.add_argument("--sequence-subdir", default="frames")
-    p.add_argument("--sequence-clear", action="store_true")
+    p.add_argument("--sequence-clear", action="store_true", help="Compatibility option: sequences are always rebuilt in staging; previous output is backed up only after success.")
     return p
 
 
@@ -866,9 +906,7 @@ def run_sequence(args: argparse.Namespace) -> None:
     folder = Path(args.folder).expanduser()
     selected = [discover_graph(folder, args.tag, ivar, False) for ivar in range(first, last + 1, step)]
     root = Path(args.out)
-    frames_root = root / args.sequence_subdir
-    if args.sequence_clear and frames_root.exists():
-        shutil.rmtree(frames_root)
+    frames_root = bundle_path(root, args.sequence_subdir)
     frames_root.mkdir(parents=True, exist_ok=True)
     frames: list[dict[str, Any]] = []
     first_out: Path | None = None
@@ -899,12 +937,14 @@ def main() -> None:
     if args.line_seeds is not None:
         args.line_seed_theta, args.line_seed_phi = choose_regular_seed_grid(args.line_seeds)
     sequence_requested = args.sequence_first is not None or args.sequence_last is not None
-    if sequence_requested:
-        if args.sequence_first is None or args.sequence_last is None:
-            raise ValueError("Both --sequence-first and --sequence-last are required.")
-        run_sequence(args)
-    else:
-        convert_graph(resolve_single_path(args), Path(args.out), args)
+    with staged_bundle_output(args.out) as output:
+        args.out = str(output)
+        if sequence_requested:
+            if args.sequence_first is None or args.sequence_last is None:
+                raise ValueError("Both --sequence-first and --sequence-last are required.")
+            run_sequence(args)
+        else:
+            convert_graph(resolve_single_path(args), output, args)
 
 
 if __name__ == "__main__":
