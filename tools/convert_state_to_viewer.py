@@ -53,7 +53,7 @@ EARTH_RADIUS_KM = 6371.0
 CMB_RADIUS_KM = 3480.0
 DEFAULT_EARTH_RADIUS_SCALE = EARTH_RADIUS_KM / CMB_RADIUS_KM
 DEFAULT_EARTH_BR_LMAX = 13
-CONVERTER_PACKAGE_VERSION = "3.0.0"
+CONVERTER_PACKAGE_VERSION = "3.2.0"
 
 
 # -----------------------------------------------------------------------------
@@ -1592,12 +1592,14 @@ def trace_exterior_cmb_to_cmb_arc(
     """
     r_outer = float(r_grid[0])
     r_max_allowed = float(r_grid[-1])
-    x = np.asarray(seed, dtype=np.float64).copy()
+    # Begin exactly on the supplied CMB footpoint.  The caller chooses the
+    # sign of B that points out of the sphere, so all intermediate RK4 stages
+    # lie in the exterior interpolation domain.  This avoids the artificial
+    # radial segment introduced by the former r_cmb + seed_offset launch.
+    _, theta_seed, phi_seed = cart_to_sph(np.asarray(seed, dtype=np.float64))
+    x = sph_to_cart(r_outer, theta_seed, phi_seed)
 
     points: list[list[float]] = []
-    _, theta_seed, phi_seed = cart_to_sph(x)
-    start_foot = sph_to_cart(r_outer, theta_seed, phi_seed)
-    append_point(points, start_foot)
     append_point(points, x)
 
     r0 = radius_of(x)
@@ -1668,7 +1670,7 @@ def external_potential_field_from_BP(
     lmax: int,
     mmax: int,
     user_modules: Any,
-    btheta_sign: float = 1.0,
+    btheta_sign: float = -1.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Build a potential magnetic field outside the CMB from the surface poloidal
@@ -1709,10 +1711,10 @@ def external_potential_field_from_BP(
         P = P_cmb * factor
 
         Qlm = (ell * (ell + 1.0) / rr) * P
-        # SHTns vector-spherical-harmonic sign conventions can differ between
-        # codes. The physically expected exterior potential field has
-        # |S_lm| = l P_lm / r. btheta_sign lets the converter choose the sign
-        # that produces the expected CMB-to-CMB potential-field arcs.
+        # SHTns defines the tangential spheroidal field as r*grad(S).  Since
+        # P_lm is proportional to r^(-l-1) outside the CMB, its divergence-free
+        # relation S_lm = r^(-1) d(r P_lm)/dr gives S_lm = -l P_lm/r.
+        # The override is retained only for explicit diagnostic comparisons.
         Slm = float(btheta_sign) * (ell / rr) * P
         Tlm = zero
 
@@ -1829,89 +1831,124 @@ def compute_external_field_lines_from_cmb(
     nphi_seed: int,
     max_steps: int,
     step_size: float,
-    seed_offset: float,
     min_points: int = 8,
     closed_only: bool = True,
+    seed_records: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Trace exterior potential/poloidal field lines as CMB-to-CMB arcs.
 
-    For each seed just outside the CMB, both +/-B directions are tried; the
-    direction that returns to the CMB after moving outward is kept.
+    With ``seed_records``, each line starts at the exact ``cmb_seed`` recorded
+    for a shell line, so the interior and exterior segments meet geometrically.
+    Without it, a regular CMB grid is used.  The integration direction is the
+    sign of B_r at the starting footpoint, which always selects the branch that
+    initially points out of the CMB.
     """
     r_outer = float(r_ext[0])
-    seed_r = r_outer + seed_offset
 
-    theta_seeds = np.linspace(0.08 * math.pi, 0.92 * math.pi, ntheta_seed)
-    phi_seeds = np.linspace(0.0, 2.0 * math.pi, nphi_seed, endpoint=False)
+    seeds: list[dict[str, Any]] = []
+    if seed_records is None:
+        theta_seeds = np.linspace(0.08 * math.pi, 0.92 * math.pi, ntheta_seed)
+        phi_seeds = np.linspace(0.0, 2.0 * math.pi, nphi_seed, endpoint=False)
+        for itheta, theta in enumerate(theta_seeds):
+            for iphi, phi in enumerate(phi_seeds):
+                seeds.append(
+                    {
+                        "theta": float(theta),
+                        "phi": float(phi),
+                        "line_id": f"cmb-grid-{itheta:04d}-{iphi:04d}",
+                        "seed_source": "regular_cmb_grid",
+                    }
+                )
+    else:
+        for record in seed_records:
+            if record.get("cmb_seed_source") != "traced_cmb_intersection":
+                continue
+            raw_seed = np.asarray(record.get("cmb_seed", []), dtype=np.float64)
+            if raw_seed.shape != (3,) or not np.isfinite(raw_seed).all():
+                continue
+            _, theta, phi = cart_to_sph(raw_seed)
+            seeds.append(
+                {
+                    "theta": float(theta),
+                    "phi": float(phi),
+                    "line_id": record.get("line_id"),
+                    "seed_source": "paired_shell_cmb_intersection",
+                    "source_cmb_br_seed": record.get("cmb_br_seed"),
+                    "source_polarity": record.get("polarity"),
+                }
+            )
 
     lines: list[dict[str, Any]] = []
     status_counts: dict[str, int] = {}
 
-    for theta in theta_seeds:
-        for phi in phi_seeds:
-            # Use the CMB value for polarity/coherence with shell lines, but
-            # use the slightly offset seed only for numerical integration.
-            br_cmb = interp_spherical_field(Br_ext, r_ext, theta_grid, phi_grid, r_outer, theta, phi)
-            br_seed = interp_spherical_field(Br_ext, r_ext, theta_grid, phi_grid, seed_r, theta, phi)
-            if not math.isfinite(br_seed) or abs(br_seed) <= 1.0e-300:
-                continue
-            if not math.isfinite(br_cmb) or abs(br_cmb) <= 1.0e-300:
-                br_cmb = br_seed
+    for seed_record in seeds:
+        theta = float(seed_record["theta"])
+        phi = float(seed_record["phi"])
+        br_cmb = interp_spherical_field(Br_ext, r_ext, theta_grid, phi_grid, r_outer, theta, phi)
+        if not math.isfinite(br_cmb) or abs(br_cmb) <= 1.0e-300:
+            continue
 
-            seed = sph_to_cart(seed_r, float(theta), float(phi))
-            cmb_seed = sph_to_cart(r_outer, float(theta), float(phi))
-            candidates = []
+        cmb_seed = sph_to_cart(r_outer, theta, phi)
+        # dx/ds = direction*B/|B|.  Choosing direction=sign(Br) makes
+        # direction*Br positive, hence the first step is into r > r_cmb.
+        direction = 1.0 if br_cmb > 0.0 else -1.0
+        points, status, max_r_seen = trace_exterior_cmb_to_cmb_arc(
+            cmb_seed,
+            direction,
+            Br_ext,
+            Bt_ext,
+            Bp_ext,
+            r_ext,
+            theta_grid,
+            phi_grid,
+            step_size,
+            max_steps,
+            min_points,
+        )
+        status_counts[status] = status_counts.get(status, 0) + 1
+        if closed_only and (status != "returned_cmb" or len(points) < min_points):
+            continue
 
-            for direction in (1.0, -1.0):
-                pts, status, max_r_seen = trace_exterior_cmb_to_cmb_arc(
-                    seed,
-                    direction,
-                    Br_ext,
-                    Bt_ext,
-                    Bp_ext,
-                    r_ext,
-                    theta_grid,
-                    phi_grid,
-                    step_size,
-                    max_steps,
-                    min_points,
-                )
-                status_counts[status] = status_counts.get(status, 0) + 1
-                candidates.append((status, max_r_seen, pts, direction))
-
-            returned = [c for c in candidates if c[0] == "returned_cmb" and len(c[2]) >= min_points]
-            if returned:
-                status, max_r_seen, points, direction = max(returned, key=lambda c: len(c[2]))
-            elif not closed_only:
-                status, max_r_seen, points, direction = max(candidates, key=lambda c: len(c[2]))
-            else:
-                continue
-
-            polarity = 1 if br_cmb >= 0.0 else -1
-            start_r = radius_of(np.asarray(points[0], dtype=np.float64)) if points else float("nan")
-            end_r = radius_of(np.asarray(points[-1], dtype=np.float64)) if points else float("nan")
-            strengths = sample_line_strengths(points, Br_ext, Bt_ext, Bp_ext, r_ext, theta_grid, phi_grid)
-            lines.append(
-                {
-                    "seed": [float(seed[0]), float(seed[1]), float(seed[2])],
-                    "cmb_seed": [float(cmb_seed[0]), float(cmb_seed[1]), float(cmb_seed[2])],
-                    "polarity": polarity,
-                    "cmb_br_seed": float(br_cmb),
-                    "region": "outside_cmb_potential_poloidal",
-                    "mode": "exterior_potential_poloidal_cmb_to_cmb_rk4",
-                    "integrator": "boundary-aware RK4 with exact spherical-boundary event endpoints",
-                    "status": status,
-                    "direction": float(direction),
-                    "max_r": float(max_r_seen),
-                    "start_r": float(start_r),
-                    "end_r": float(end_r),
-                    "end_r_error": float(abs(end_r - r_outer)) if math.isfinite(end_r) else None,
-                    "strength_kind": "Babs",
-                    "strength": strengths,
-                    "points": points,
-                }
-            )
+        polarity = 1 if br_cmb > 0.0 else -1
+        source_br = seed_record.get("source_cmb_br_seed")
+        source_polarity = seed_record.get("source_polarity")
+        polarity_matches_source = (
+            None if source_polarity is None else bool(int(source_polarity) == polarity)
+        )
+        start_r = radius_of(np.asarray(points[0], dtype=np.float64)) if points else float("nan")
+        end_r = radius_of(np.asarray(points[-1], dtype=np.float64)) if points else float("nan")
+        strengths = sample_line_strengths(points, Br_ext, Bt_ext, Bp_ext, r_ext, theta_grid, phi_grid)
+        lines.append(
+            {
+                "line_id": seed_record.get("line_id"),
+                "paired_shell_line_id": (
+                    seed_record.get("line_id")
+                    if seed_record.get("seed_source") == "paired_shell_cmb_intersection"
+                    else None
+                ),
+                "seed": [float(cmb_seed[0]), float(cmb_seed[1]), float(cmb_seed[2])],
+                "cmb_seed": [float(cmb_seed[0]), float(cmb_seed[1]), float(cmb_seed[2])],
+                "seed_source": seed_record.get("seed_source"),
+                "polarity": polarity,
+                "polarity_definition": "sign of exterior Br at the starting CMB footpoint: +1 outward, -1 inward",
+                "cmb_br_seed": float(br_cmb),
+                "source_cmb_br_seed": float(source_br) if source_br is not None else None,
+                "polarity_matches_source": polarity_matches_source,
+                "region": "outside_cmb_potential_poloidal",
+                "mode": "exterior_potential_poloidal_cmb_to_cmb_rk4",
+                "integrator": "boundary-aware RK4 launched exactly at the CMB footpoint",
+                "status": status,
+                "direction": float(direction),
+                "max_r": float(max_r_seen),
+                "start_r": float(start_r),
+                "end_r": float(end_r),
+                "end_r_error": float(abs(end_r - r_outer)) if math.isfinite(end_r) else None,
+                "strength_kind": "Babs",
+                "strength": strengths,
+                "points": points,
+            }
+        )
 
     compute_external_field_lines_from_cmb.last_status_counts = status_counts
     return lines
@@ -1953,8 +1990,8 @@ def compute_shell_field_lines_from_cmb(
 
     lines: list[dict[str, Any]] = []
 
-    for theta in theta_seeds:
-        for phi in phi_seeds:
+    for itheta, theta in enumerate(theta_seeds):
+        for iphi, phi in enumerate(phi_seeds):
             # Use the CMB value for polarity so shell and exterior lines seeded
             # at the same (theta, phi) use the same colour convention.
             br_cmb = interp_spherical_field(Br, r_grid, theta_grid, phi_grid, r_outer, theta, phi)
@@ -1964,9 +2001,8 @@ def compute_shell_field_lines_from_cmb(
             if not math.isfinite(br_cmb) or abs(br_cmb) <= 1.0e-300:
                 br_cmb = br_seed
 
-            polarity = 1 if br_cmb >= 0.0 else -1
             seed = sph_to_cart(seed_r, float(theta), float(phi))
-            cmb_seed = sph_to_cart(r_outer, float(theta), float(phi))
+            nominal_cmb_seed = sph_to_cart(r_outer, float(theta), float(phi))
 
             forward = trace_one_line(
                 seed,
@@ -2013,13 +2049,49 @@ def compute_shell_field_lines_from_cmb(
 
             start_r = radius_of(np.asarray(points[0], dtype=np.float64)) if points else float("nan")
             end_r = radius_of(np.asarray(points[-1], dtype=np.float64)) if points else float("nan")
+            outer_tolerance = max(1.0e-10 * max(abs(r_outer), 1.0), 1.0e-8 * step_size)
+            cmb_candidates = [
+                (index, point)
+                for index, point in ((0, p0), (len(points) - 1, p1))
+                if abs(radius_of(point) - r_outer) <= outer_tolerance
+            ]
+            if cmb_candidates:
+                cmb_point_index, cmb_point = min(
+                    cmb_candidates,
+                    key=lambda item: float(np.linalg.norm(item[1] - nominal_cmb_seed)),
+                )
+                _, cmb_theta, cmb_phi = cart_to_sph(cmb_point)
+                cmb_seed = sph_to_cart(r_outer, cmb_theta, cmb_phi)
+                cmb_seed_source = "traced_cmb_intersection"
+            else:
+                cmb_point_index = None
+                cmb_seed = nominal_cmb_seed
+                cmb_seed_source = "nominal_radial_projection"
+
+            _, cmb_theta, cmb_phi = cart_to_sph(cmb_seed)
+            br_at_cmb_seed = interp_spherical_field(
+                Br, r_grid, theta_grid, phi_grid, r_outer, cmb_theta, cmb_phi
+            )
+            if not math.isfinite(br_at_cmb_seed) or abs(br_at_cmb_seed) <= 1.0e-300:
+                br_at_cmb_seed = br_cmb
+            polarity = 1 if br_at_cmb_seed >= 0.0 else -1
             strengths = sample_line_strengths(points, Br, Bt, Bp, r_grid, theta_grid, phi_grid)
             lines.append(
                 {
+                    "line_id": f"cmb-grid-{itheta:04d}-{iphi:04d}",
                     "seed": [float(seed[0]), float(seed[1]), float(seed[2])],
                     "cmb_seed": [float(cmb_seed[0]), float(cmb_seed[1]), float(cmb_seed[2])],
+                    "nominal_cmb_seed": [
+                        float(nominal_cmb_seed[0]),
+                        float(nominal_cmb_seed[1]),
+                        float(nominal_cmb_seed[2]),
+                    ],
+                    "cmb_seed_source": cmb_seed_source,
+                    "cmb_seed_point_index": cmb_point_index,
+                    "cmb_seed_offset_from_nominal": float(np.linalg.norm(cmb_seed - nominal_cmb_seed)),
                     "polarity": polarity,
-                    "cmb_br_seed": float(br_cmb),
+                    "polarity_definition": "sign of actual simulation Br at the traced CMB footpoint: +1 outward, -1 inward",
+                    "cmb_br_seed": float(br_at_cmb_seed),
                     "region": "full_fluid_sphere" if full_sphere else "fluid_shell_outside_inner_core",
                     "mode": "full_sphere_bidirectional_actual_B_rk4" if full_sphere else "shell_bidirectional_actual_B_rk4",
                     "integrator": "boundary-aware RK4 with exact inner/outer spherical-boundary endpoints",
@@ -2242,7 +2314,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="auto",
         help=(
             "Sign convention for the exterior poloidal B_theta coefficient. "
-            "auto tries both signs and keeps the one producing more CMB-to-CMB arcs."
+            "auto uses the analytic SHTns potential-field sign (minus). plus/minus "
+            "are retained only for explicit diagnostic comparisons."
         ),
     )
 
@@ -3275,6 +3348,7 @@ def main() -> None:
         }
 
         combined_lines: list[dict[str, Any]] = []
+        shell_lines: list[dict[str, Any]] = []
 
         if args.field_line_mode in ("shell", "both"):
             print("Computing shell magnetic field lines from the actual simulation B field...")
@@ -3329,9 +3403,7 @@ def main() -> None:
                 if args.line_step_size is not None
                 else 0.5 * float(np.mean(np.abs(np.diff(r_ext))))
             )
-            exterior_seed_offset = 0.75 * exterior_step_size
-
-            sign_choices = {"plus": [1.0], "minus": [-1.0], "auto": [1.0, -1.0]}[args.external_btheta_sign]
+            sign_choices = {"plus": [1.0], "minus": [-1.0], "auto": [-1.0]}[args.external_btheta_sign]
             best_choice = None
 
             for btheta_sign in sign_choices:
@@ -3356,8 +3428,8 @@ def main() -> None:
                     nphi_seed=args.line_seed_phi,
                     max_steps=args.line_max_steps,
                     step_size=exterior_step_size,
-                    seed_offset=exterior_seed_offset,
                     closed_only=args.external_closed_only,
+                    seed_records=shell_lines if args.field_line_mode == "both" else None,
                 )
                 trial_counts = getattr(compute_external_field_lines_from_cmb, "last_status_counts", {})
                 returned = int(trial_counts.get("returned_cmb", 0))
@@ -3383,6 +3455,14 @@ def main() -> None:
             field_lines_meta["exterior_btheta_sign"] = float(exterior_btheta_sign)
             field_lines_meta["exterior_status_counts"] = exterior_status_counts
             field_lines_meta["exterior_closed_only"] = bool(args.external_closed_only)
+            field_lines_meta["exterior_seed_policy"] = (
+                "paired_actual_shell_cmb_intersections"
+                if args.field_line_mode == "both"
+                else "regular_cmb_grid"
+            )
+            field_lines_meta["polarity_definition"] = (
+                "sign of Br at each line's starting CMB footpoint: +1 outward, -1 inward"
+            )
             print(
                 f"  wrote {exterior_count} exterior potential/poloidal CMB-to-CMB arcs "
                 f"to B_lines_exterior_poloidal.json using Btheta sign {exterior_btheta_sign:+.0f}"

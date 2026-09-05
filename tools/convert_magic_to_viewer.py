@@ -49,7 +49,7 @@ CMB_RADIUS_KM = 3480.0
 DEFAULT_EARTH_RADIUS_SCALE = EARTH_RADIUS_KM / CMB_RADIUS_KM
 DEFAULT_EARTH_BR_LMAX = 13
 RADIAL_ATOL = 1.0e-10
-CONVERTER_PACKAGE_VERSION = "3.1.0"
+CONVERTER_PACKAGE_VERSION = "3.2.0"
 
 
 def json_number(value: Any, default: float | None = None) -> float | None:
@@ -686,22 +686,23 @@ def convert_graph(path: Path, outdir: Path, args: argparse.Namespace) -> dict[st
     field_lines_meta: dict[str, Any] = {}
     if not args.skip_field_lines and Br_cmb is not None:
         combined: list[dict[str, Any]] = []
+        shell_lines: list[dict[str, Any]] = []
         field_lines_meta = {"mode": args.field_line_mode, "counts": {}}
         shell_mask = (r_magnetic >= r_icb - RADIAL_ATOL) & (r_magnetic <= r_cmb + RADIAL_ATOL)
         r_b_shell = r_magnetic[shell_mask]
         shell_step = args.line_step_size or 0.5 * float(np.median(np.diff(r_b_shell)))
         if args.field_line_mode in ("shell", "both"):
-            lines = compute_shell_field_lines_from_cmb(
+            shell_lines = compute_shell_field_lines_from_cmb(
                 Br[shell_mask], Bt[shell_mask], Bp[shell_mask], r_b_shell, theta, phi,
                 ntheta_seed=args.line_seed_theta, nphi_seed=args.line_seed_phi,
                 max_steps=args.line_max_steps, step_size=shell_step,
                 seed_offset=1.5 * shell_step, full_sphere=not has_inner_core,
             )
-            combined.extend(lines)
+            combined.extend(shell_lines)
             with open(outdir / "B_lines_shell.json", "w", encoding="utf-8") as stream:
-                json.dump(lines, stream, allow_nan=False)
+                json.dump(shell_lines, stream, allow_nan=False)
             field_lines_meta.update({"shell": "B_lines_shell.json", "B_lines_shell": "B_lines_shell.json"})
-            field_lines_meta["counts"]["shell"] = len(lines)
+            field_lines_meta["counts"]["shell"] = len(shell_lines)
         if args.field_line_mode in ("exterior", "both"):
             rmax = args.external_rmax or 2.5 * r_cmb
             if rmax <= r_cmb:
@@ -716,7 +717,8 @@ def convert_graph(path: Path, outdir: Path, args: argparse.Namespace) -> dict[st
                 Br_ext, Bt_ext, Bp_ext, r_ext, theta, phi,
                 ntheta_seed=args.line_seed_theta, nphi_seed=args.line_seed_phi,
                 max_steps=args.line_max_steps, step_size=ext_step,
-                seed_offset=0.75 * ext_step, closed_only=args.external_closed_only,
+                closed_only=args.external_closed_only,
+                seed_records=shell_lines if args.field_line_mode == "both" else None,
             )
             combined.extend(lines)
             with open(outdir / "B_lines_exterior_poloidal.json", "w", encoding="utf-8") as stream:
@@ -728,6 +730,14 @@ def convert_graph(path: Path, outdir: Path, args: argparse.Namespace) -> dict[st
                 "external_lmax": ext_lmax,
             })
             field_lines_meta["counts"]["exterior"] = len(lines)
+            field_lines_meta["exterior_seed_policy"] = (
+                "paired_actual_shell_cmb_intersections"
+                if args.field_line_mode == "both"
+                else "regular_cmb_grid"
+            )
+            field_lines_meta["polarity_definition"] = (
+                "sign of Br at each line's starting CMB footpoint: +1 outward, -1 inward"
+            )
         with open(outdir / "B_lines.json", "w", encoding="utf-8") as stream:
             json.dump(combined, stream, allow_nan=False)
         field_lines_meta["B_lines"] = "B_lines.json"

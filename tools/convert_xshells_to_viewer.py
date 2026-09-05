@@ -69,7 +69,7 @@ EARTH_RADIUS_KM = 6371.0
 CMB_RADIUS_KM = 3480.0
 DEFAULT_EARTH_RADIUS_SCALE = EARTH_RADIUS_KM / CMB_RADIUS_KM
 DEFAULT_EARTH_BR_LMAX = 13
-CONVERTER_PACKAGE_VERSION = "3.0.0"
+CONVERTER_PACKAGE_VERSION = "3.2.0"
 
 
 def json_number(value: Any, default: float | None = None) -> float | None:
@@ -437,15 +437,15 @@ def external_potential_field_from_cmb_br(
     r_cmb: float,
     r_ext: np.ndarray,
     *,
-    btheta_sign: float = 1.0,
+    btheta_sign: float = -1.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Reconstruct the current-free exterior field from physical CMB Br.
 
     If Q_lm are the radial-field coefficients at the CMB, then outside the
     sphere Q_lm(r) = Q_lm(r_cmb) (r_cmb/r)^(l+2). In the SHTns vector basis the
-    corresponding potential-field spheroidal coefficient has magnitude
-    |S_lm| = |Q_lm|/(l+1); the sign switch is retained to accommodate the same
-    convention selection used by the Leeds converter.
+    corresponding SHTns potential-field spheroidal coefficient is
+    S_lm = -Q_lm/(l+1). The sign switch is retained only for explicit
+    diagnostic comparisons with older output.
     """
     r_cmb = float(r_cmb)
     rr = np.asarray(r_ext, dtype=np.float64)
@@ -589,7 +589,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--external-btheta-sign",
         choices=["auto", "plus", "minus"],
         default="auto",
-        help="Exterior SHTns Btheta convention; auto tests both signs and keeps the better CMB-to-CMB result.",
+        help=(
+            "Exterior SHTns Btheta convention; auto uses the analytic potential-field "
+            "sign (minus). plus/minus are retained for diagnostic comparisons."
+        ),
     )
     p.add_argument("--line-seeds", type=int, default=None, help="Approximate total regular CMB seed count; overrides the two seed dimensions.")
     p.add_argument("--line-seed-theta", type=int, default=9, help="Number of CMB seed colatitudes.")
@@ -1092,6 +1095,7 @@ def main() -> None:
             "counts": {},
         }
         combined_lines: list[dict[str, Any]] = []
+        shell_lines: list[dict[str, Any]] = []
         shell_count = 0
         exterior_count = 0
 
@@ -1155,11 +1159,10 @@ def main() -> None:
                 if args.line_step_size is not None
                 else 0.5 * float(np.mean(np.abs(np.diff(r_ext))))
             )
-            exterior_seed_offset = 0.75 * exterior_step
             sign_choices = {
                 "plus": [1.0],
                 "minus": [-1.0],
-                "auto": [1.0, -1.0],
+                "auto": [-1.0],
             }[args.external_btheta_sign]
             best_choice = None
 
@@ -1182,8 +1185,8 @@ def main() -> None:
                     nphi_seed=args.line_seed_phi,
                     max_steps=args.line_max_steps,
                     step_size=exterior_step,
-                    seed_offset=exterior_seed_offset,
                     closed_only=args.external_closed_only,
+                    seed_records=shell_lines if args.field_line_mode == "both" else None,
                 )
                 statuses = getattr(compute_external_field_lines_from_cmb, "last_status_counts", {})
                 returned = int(statuses.get("returned_cmb", 0))
@@ -1209,6 +1212,14 @@ def main() -> None:
             field_lines_meta["exterior_btheta_sign"] = float(selected_sign)
             field_lines_meta["exterior_status_counts"] = exterior_statuses
             field_lines_meta["exterior_closed_only"] = bool(args.external_closed_only)
+            field_lines_meta["exterior_seed_policy"] = (
+                "paired_actual_shell_cmb_intersections"
+                if args.field_line_mode == "both"
+                else "regular_cmb_grid"
+            )
+            field_lines_meta["polarity_definition"] = (
+                "sign of Br at each line's starting CMB footpoint: +1 outward, -1 inward"
+            )
             print(
                 f"  wrote {exterior_count} exterior field-line traces using Btheta sign "
                 f"{selected_sign:+.0f}"

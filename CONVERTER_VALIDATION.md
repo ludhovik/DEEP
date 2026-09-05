@@ -4,13 +4,15 @@
 
 ### Syntax and CLI
 
-- Python compilation succeeded for both converters, `modules.py`, and the test suite.
-- `--help` was exercised for both converters using import-only `shtns`/`pyxshells` stubs.
-- Both CLIs expose `--emf`, `--induction`, `--geometry`, and `--fluid-inner-radius`.
+- Python compilation succeeded for all three converters, `modules.py`, and the test suite.
+- `--help` was exercised using import-only dependency stubs where needed.
+- The Leeds and XSHELLS CLIs expose the common `--emf`, `--induction`,
+  `--geometry`, and `--fluid-inner-radius` options; MagIC exposes the equivalent
+  field-line and geometry controls appropriate to native `G_*.tag` files.
 
 ### Regression tests
 
-`tests/test_converter_package.py` completed with 9/9 tests passing:
+`tests/test_converter_package.py` completed with 15/15 tests passing:
 
 - full-fluid-sphere geometry;
 - conducting-inner-core geometry;
@@ -21,6 +23,30 @@
 - direct comparison of `modules.curl_spat` with an independent spherical-curl implementation;
 - common viewer-field contract;
 - common CLI options and metadata contract.
+
+### Magnetic field-line validation
+
+The common field-line integrator and all three exterior reconstructions were
+tested against the analytic axial dipole
+
+```text
+Br     = 2 M cos(theta) / r^3
+Btheta = M sin(theta) / r^3
+Bphi   = 0
+```
+
+For this field, `div(B)=0`, `curl(B)=0`, and each line obeys
+`r/sin(theta)^2 = constant`. The tests verify:
+
+- Leeds, XSHELLS, and MagIC reproduce the analytic exterior components;
+- the SHTns spheroidal coefficient uses the required negative sign;
+- positive/negative polarity is respectively outward/inward `Br` at the CMB;
+- integration starts exactly at the requested CMB point;
+- the first exterior integration step moves outward from the CMB;
+- closed exterior traces return exactly to the CMB;
+- the return footpoint has the opposite radial polarity for the test dipole;
+- the dipole line invariant has relative spread below `2e-5`;
+- paired internal/exterior JSON records use the same CMB coordinate exactly.
 
 ### Curl comparison
 
@@ -76,6 +102,12 @@ has_conducting_inner_core = true
 ```
 
 The complete common velocity, magnetic, scalar, gradient, N2, EMF, and induction outputs were written on the magnetic master grid, with fluid-only fields zero below the ICB.
+
+### MagIC smoke conversion
+
+A synthetic MagIC `MagicGraph` backend verified native descending-radius and
+azimuthal-symmetry layout adaptation, low-degree surface reconstruction, and an
+end-to-end binary/metadata output contract compatible with the viewer.
 
 ## Environment limitation
 

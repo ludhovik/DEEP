@@ -1,5 +1,20 @@
 # Changelog
 
+## 3.2.0
+
+- Fixed the exterior SHTns spheroidal sign analytically to
+  `S_lm = -Q_lm/(l+1)` for current-free potential continuation.
+- Removed appearance-based automatic sign selection; `auto` now means the
+  documented analytic minus sign.
+- Launch exterior integration exactly on the CMB instead of adding a radial
+  offset segment.
+- In `--field-line-mode both`, pair exterior seeds with the actual traced CMB
+  intersections of internal lines and record shared line identifiers.
+- Define polarity as the sign of `Br` at the starting CMB footpoint: positive is
+  outward and negative is inward.
+- Add analytic axial-dipole tests for all three continuations, the RK4 field-line
+  invariant, exact CMB endpoints, polarity, and internal/exterior seed pairing.
+
 ## 3.0.0
 
 - Aligned Leeds and XSHELLS canonical viewer fields and metadata contract.

@@ -204,6 +204,42 @@ shell lines, exterior potential/poloidal lines, or both. Lines can be coloured
 by strength or CMB seed polarity, with configurable width, opacity, stride, and
 range.
 
+All three converters trace a line in Cartesian coordinates with arclength-like
+parameter `s`:
+
+```text
+dx/ds = +/- B(x) / |B(x)|
+```
+
+Spherical field components are trilinearly interpolated (periodically in
+longitude), transformed to Cartesian components, and integrated with
+boundary-aware fourth-order Runge–Kutta steps. Boundary events are projected
+exactly onto the ICB or CMB.
+
+Inside the fluid, `B` is the field reconstructed from the simulation output.
+Outside the CMB there are no imposed currents, so the converter solves
+`B = -grad(V)` and `laplacian(V) = 0`. If
+`Br(R,theta,phi) = sum(q_lm Y_lm)` at CMB radius `R`, then
+
+```text
+Br_lm(r)     = q_lm (R/r)^(l+2) Y_lm
+Btheta_lm(r) = -q_lm (R/r)^(l+2)/(l+1) dY_lm/dtheta
+Bphi_lm(r)   = -q_lm (R/r)^(l+2)/(l+1)/sin(theta) dY_lm/dphi
+```
+
+This field is divergence-free and curl-free. Leeds obtains `q_lm` from its CMB
+poloidal coefficients, while XSHELLS and MagIC analyse the physical CMB `Br`.
+The SHTns spheroidal coefficient is fixed analytically to
+`S_lm = -Q_lm/(l+1)`; it is no longer selected from line appearance.
+
+In `--field-line-mode both`, every exterior line begins at the exact traced CMB
+intersection stored for its corresponding internal line. Their JSON records
+share a `line_id`; the exterior record also contains `paired_shell_line_id`.
+Positive polarity means `Br > 0` (field directed outward) at that starting CMB
+footpoint, and negative means `Br < 0` (field directed inward). An exterior arc
+connects one positive and one negative footpoint, so its colour describes only
+the selected starting footpoint—not a sign attached to the entire curve.
+
 ### Two datasets
 
 Use **Dataset → Secondary path / URL** to load a second converted dataset. Its
