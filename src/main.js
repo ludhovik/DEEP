@@ -206,6 +206,7 @@ const params = {
   isoNegativeValue: -0.10,
   isoResolution: 36,
   isoOpacity: 0.45,
+  isoTransparencyMode: "stable",
   isoClipWithMeridian: false,
   isoClipOffsetMeridian1: 0.0,
   isoClipOffsetMeridian2: 0.0,
@@ -2254,6 +2255,7 @@ function getIsosurfaceObjectCacheKey(basePath = dataBasePath) {
     negativeValue: roundedCacheNumber(params.isoNegativeValue),
     negativeColor: params.isoNegativeColor,
     opacity: roundedCacheNumber(params.isoOpacity),
+    transparencyMode: params.isoTransparencyMode,
     clip,
     grid: [
       Number(metadata?.nr),
@@ -3169,15 +3171,17 @@ function isEffectivelyOpaque(opacity) {
   return Number(opacity) >= OPAQUE_OPACITY;
 }
 
-function applyOpacityAndDepth(material, opacity) {
+function applyOpacityAndDepth(material, opacity, transparencyMode = "smooth") {
   const alpha = clamp(Number(opacity), 0.0, 1.0);
   const opaque = isEffectivelyOpaque(alpha);
+  const alphaHashed = !opaque && transparencyMode === "stable";
 
   material.opacity = alpha;
-  material.transparent = !opaque;
+  material.alphaHash = alphaHashed;
+  material.transparent = !opaque && !alphaHashed;
   material.depthTest = true;
-  material.depthWrite = opaque;
-  material.blending = opaque ? THREE.NoBlending : THREE.NormalBlending;
+  material.depthWrite = opaque || alphaHashed;
+  material.blending = material.transparent ? THREE.NormalBlending : THREE.NoBlending;
   material.needsUpdate = true;
 }
 
@@ -3351,7 +3355,7 @@ function makeIsoMaterial(color, opacity) {
     shininess: 25,
     transparent: true,
   });
-  applyOpacityAndDepth(material, opacity);
+  applyOpacityAndDepth(material, opacity, params.isoTransparencyMode);
   return material;
 }
 
@@ -6131,8 +6135,8 @@ function updateOpacities() {
   if (meridianMesh) applyOpacityAndDepth(meridianMesh.material, params.meridianOpacity);
   if (meridian2Mesh) applyOpacityAndDepth(meridian2Mesh.material, params.meridian2Opacity);
   if (earthMesh) applyOpacityAndDepth(earthMesh.material, params.earthOpacity);
-  if (isoPositiveMesh) applyOpacityAndDepth(isoPositiveMesh.material, params.isoOpacity);
-  if (isoNegativeMesh) applyOpacityAndDepth(isoNegativeMesh.material, params.isoOpacity);
+  if (isoPositiveMesh) applyOpacityAndDepth(isoPositiveMesh.material, params.isoOpacity, params.isoTransparencyMode);
+  if (isoNegativeMesh) applyOpacityAndDepth(isoNegativeMesh.material, params.isoOpacity, params.isoTransparencyMode);
   if (equatorFillerMesh) applyOpacityAndDepth(equatorFillerMesh.material, params.sliceGapFillerOpacity);
   if (equator2FillerMesh) applyOpacityAndDepth(equator2FillerMesh.material, params.sliceGapFillerOpacity);
   if (meridianFillerMesh) applyOpacityAndDepth(meridianFillerMesh.material, params.sliceGapFillerOpacity);
@@ -6481,6 +6485,7 @@ function applySnapshotParam(key, value) {
   if (!validFieldForState(key, value)) return false;
   if (key === "fieldLineDisplay" && !getAvailableFieldLineModes().includes(value)) return false;
   if (key === "earthDisplayMode" && !["texture", "magnetic"].includes(value)) return false;
+  if (key === "isoTransparencyMode" && !["stable", "smooth"].includes(value)) return false;
   if (["legendPosition", "titlePosition", "exportPanelPosition"].includes(key) && !PANEL_POSITIONS.has(value)) return false;
   params[key] = value;
   return true;
@@ -6992,6 +6997,10 @@ function buildGui() {
   isoFolder.add(params, "isoNegativeValue").name("Negative value").onFinishChange(refreshIsosurfaces);
   isoFolder.addColor(params, "isoNegativeColor").name("Negative color").onChange(() => { if (isoNegativeMesh) isoNegativeMesh.material.color.set(params.isoNegativeColor); });
   isoFolder.add(params, "isoOpacity", 0.05, 1.0, 0.01).name("Opacity").onChange(updateOpacities);
+  isoFolder.add(params, "isoTransparencyMode", {
+    "Stable (dithered)": "stable",
+    "Smooth (may reorder)": "smooth",
+  }).name("Transparency").onChange(refreshIsosurfaces);
 
   const earthFolder = gui.addFolder("Earth surface");
   const rebuildEarth = debouncedViewerTask("Earth surface update", () => updateEarthSurface({ reuseGeometry: false }));

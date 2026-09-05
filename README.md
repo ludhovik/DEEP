@@ -199,7 +199,11 @@ Legend width and position also carry into PNG/PDF legend layout.
 ### Isosurfaces and field lines
 
 Isosurfaces support positive and negative levels, independent colours,
-opacity, resolution, and optional meridional clipping.
+opacity, resolution, optional meridional clipping, and two transparency modes.
+**Stable (dithered)** uses depth-aware alpha hashing so transparent components
+do not disappear when the camera moves. **Smooth (may reorder)** retains
+conventional alpha blending for users who prefer a grain-free image and do not
+have overlapping transparent geometry.
 
 When the converter wrote magnetic field lines, the viewer can display internal
 shell lines, exterior potential/poloidal lines, or both. Lines can be coloured
