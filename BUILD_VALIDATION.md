@@ -1,5 +1,18 @@
 # Integrated package validation
 
+## Exterior tracing (2026-09-06)
+
+- Converter suite: 41 passing tests (33 package tests, eight exterior tests).
+  New coverage includes CMB rounding, short-loop refinement, long dipole arcs,
+  radial convergence of a mixed dipole/quadrupole field, termination/seed
+  accounting, and a synthetic MagIC export with paired exterior lines.
+- The correction applies to Leeds, XSHELLS and MagIC. Python syntax checks
+  pass. The viewer, workflow, volume reconstruction and polarity convention
+  are unchanged; no new viewer build was needed for this Python correction.
+- The production Leeds snapshot from the reported run was not available.
+  Analytic checks and native-backend limitations are detailed in
+  `CONVERTER_VALIDATION.md`; test a single native frame before a long sequence.
+
 ## Planet and moon images (2026-09-06)
 
 - `npm run test-viewer`: 46 passing tests. Seven new regressions exercise body

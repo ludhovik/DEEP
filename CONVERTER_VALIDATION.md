@@ -1,5 +1,43 @@
 # Validation report
 
+## Exterior tracing correction (3.3.1, 2026-09-06)
+
+All three converters use the corrected common exterior grid and tracer.
+`bash run_converter_tests.sh` runs 33 package tests and eight dedicated
+exterior-tracing tests. `npm run test-converters` discovers both suites.
+
+The new tests exercise the numerical interpolation and RK4 implementation on
+analytic arrays, without replacing the integrator or interpolator:
+
+- `rmax=40`, 96 radial points and degree 128: the automatic CMB step is the
+  same as for `rmax=2.5`, with monotonically increasing radial samples clustered
+  near the CMB. Doubling radial resolution reduces the tested degree-128
+  near-surface radial interpolation error by more than a factor of three.
+- Dipole arcs from colatitudes 10, 60, 70, 89.5 and 120 degrees return to the
+  CMB. The 10-degree arc extends beyond 33 CMB radii. The 89.5-degree loop rises
+  only about `7.6e-5` CMB radii, and is retained even with an explicitly coarse
+  requested step after short-arc refinement. Relative variation in
+  `r/sin(theta)^2` is below `2e-5` for the tested arcs.
+- A paired seed whose norm rounds just below the CMB is accepted, with its
+  original Cartesian coordinates preserved exactly in the exported first
+  point. Real boundary crossings remain rejected by the interpolator.
+- For the mixed potential `V=cos(theta)/r^2 + 0.4*P2(cos(theta))/r^3`, the
+  analytic flux function `sin(theta)^2*(1/r + 0.6*cos(theta)/r^2)` varies by
+  less than 0.2% along the tested trace. Increasing exterior radial samples
+  from 96 to 192 reduces this error by more than a factor of two.
+- Outer-radius termination, step-budget exhaustion, successful closure, and
+  skipped seeds are distinguished. Input seed counts reconcile with actual
+  traced and skipped counts.
+- An end-to-end synthetic MagIC conversion with `both` mode and `rmax=40`
+  writes a validated bundle with paired shell/exterior coordinates and
+  consistent diagnostics in its JSON files.
+
+These checks establish regression and analytic consistency, not accuracy for
+every simulation spectrum. The reported Leeds `state04086.cdf.dat` was not
+available for this correction, so its new retained-line count has not been
+measured. Use the native converter on one frame, inspect termination counts,
+and compare radial/step refinement before reconverting a complete sequence.
+
 ## Completed checks
 
 ### Syntax and CLI

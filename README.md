@@ -280,6 +280,39 @@ footpoint, and negative means `Br < 0` (field directed inward). An exterior arc
 connects one positive and one negative footpoint, so its colour describes only
 the selected starting footpoint—not a sign attached to the entire curve.
 
+Exterior tracing clusters radial samples near the CMB, where higher spherical
+harmonic degrees decay most rapidly. The automatic CMB step depends on the CMB
+radius and retained degree; it grows with radius and shrinks again on return.
+Short loops are retried with smaller steps instead of requiring an excursion
+of two integration steps above the CMB. Boundary checks tolerate floating-point
+roundoff while retaining the exact paired shell starting point.
+
+`--external-rmax` is an **absolute radius in the input file's length units**.
+Omitting it uses `2.5 * r_cmb`. Keep a larger value such as `40` when long arcs
+are wanted: the automatic CMB step no longer grows with this outer limit.
+The default `--external-closed-only` exports only arcs returning to the CMB
+within that domain and the step budget. Reducing the outer limit can therefore
+exclude valid long loops; a line reaching that limit is not proof of a
+physically open field line. `--no-external-closed-only` also exports incomplete
+traces with their termination status.
+
+For high-degree fields or a large exterior domain, compare
+`--external-nr 192` with `--external-nr 256` to check radial convergence.
+This changes exterior interpolation resolution, not the volume-field grid.
+If many traces report `max_steps`, increase `--line-max-steps`; the automatic
+step is deliberately smaller near the CMB than in older converters.
+`--line-step-size` supplies a fixed requested step for both shell and exterior
+traces, subject to boundary and short-arc refinement.
+
+The console and `metadata.json` report exterior sampling, termination counts,
+and input/traced/retained/skipped seed counts. In `both` mode, shell segments
+without an actual CMB intersection cannot seed a paired exterior arc, so the
+two exported line counts need not match. Remaining `immediate_cmb`,
+`short_arc`, or `interpolation_stop` results warrant inspection; increasing the
+seed count alone does not establish convergence. Test one frame into a
+separate output folder before regenerating a long sequence. Existing bundles
+need reconversion to receive the corrected line coordinates.
+
 ### Two datasets
 
 Use **Dataset → Secondary path / URL** to load a second converted dataset. Its

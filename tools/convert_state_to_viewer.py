@@ -58,7 +58,7 @@ EARTH_RADIUS_KM = 6371.0
 CMB_RADIUS_KM = 3480.0
 DEFAULT_EARTH_RADIUS_SCALE = EARTH_RADIUS_KM / CMB_RADIUS_KM
 DEFAULT_EARTH_BR_LMAX = 13
-CONVERTER_PACKAGE_VERSION = "3.3.0"
+CONVERTER_PACKAGE_VERSION = "3.3.1"
 
 
 # -----------------------------------------------------------------------------
@@ -1158,6 +1158,61 @@ def compute_induction(
 # -----------------------------------------------------------------------------
 
 
+def prepare_exterior_tracing(
+    r_cmb: float, rmax: float, nr: int, lmax: int,
+    step_size: float | None = None,
+) -> tuple[np.ndarray, float, dict[str, Any]]:
+    """Resolve a surface-clustered grid and a CMB-scale integration step.
+
+    A degree-l potential field decays on a radial scale approximately R/(l+1).
+    Resolve that layer with r=R+a*expm1(q), a=R/(lmax+1), uniform in q.
+    This avoids coupling the CMB resolution and step to a distant outer limit.
+    """
+    R, limit = float(r_cmb), float(rmax)
+    if not math.isfinite(R) or not math.isfinite(limit) or R <= 0.0 or limit <= R:
+        raise ValueError("Exterior radii must be finite with 0 < r_cmb < external_rmax.")
+    count, degree = max(8, int(nr)), max(1, int(lmax))
+    scale = R / (degree + 1)
+    qmax = math.log1p((limit - R) / scale)
+    grid = R + scale * np.expm1(np.linspace(0.0, qmax, count))
+    grid[0], grid[-1] = R, limit
+    if not np.all(np.isfinite(grid)) or not np.all(np.diff(grid) > 0.0):
+        raise ValueError("Exterior radial grid must be finite and strictly increasing.")
+    step = float(step_size) if step_size is not None else min(0.01 * R, 0.4 * scale)
+    if not math.isfinite(step) or step <= 0.0:
+        raise ValueError("--line-step-size must be finite and strictly positive.")
+    info = {
+        "radial_grid": "exponential_surface_cluster",
+        "nr": count, "r_cmb": R, "rmax": limit, "lmax": degree,
+        "first_radial_spacing": float(grid[1] - grid[0]),
+        "last_radial_spacing": float(grid[-1] - grid[-2]),
+        "cmb_step_size": step,
+        "step_policy": "fixed" if step_size is not None else "grows_with_radius_capped_at_2_percent",
+    }
+    print(
+        f"  Exterior grid: nr={count}, r_cmb={R:.8g}, rmax={limit:.8g}, "
+        f"first dr={info['first_radial_spacing']:.6g}; CMB step={step:.6g} "
+        f"({info['step_policy']})"
+    )
+    return grid, step, info
+
+
+def radial_boundary_tolerance(radius: float) -> float:
+    """A local rounding tolerance; a distant outer radius must not enlarge it."""
+    return 64.0 * np.finfo(np.float64).eps * max(abs(float(radius)), np.finfo(np.float64).tiny)
+
+
+def radial_coordinate_in_domain(r: float, rmin: float, rmax: float) -> float | None:
+    """Clamp roundoff at a boundary, while rejecting genuinely exterior points."""
+    if not math.isfinite(r):
+        return None
+    if r < rmin:
+        return float(rmin) if rmin - r <= radial_boundary_tolerance(rmin) else None
+    if r > rmax:
+        return float(rmax) if r - rmax <= radial_boundary_tolerance(rmax) else None
+    return float(r)
+
+
 def sph_to_cart(r: float, theta: float, phi: float) -> np.ndarray:
     st = math.sin(theta)
     return np.array(
@@ -1198,7 +1253,8 @@ def interp_spherical_field(
     """Trilinear interpolation for arr[ir, itheta, iphi], periodic in phi."""
     nr, nt, np_ = arr.shape
 
-    if r < r_grid[0] or r > r_grid[-1]:
+    r = radial_coordinate_in_domain(r, float(r_grid[0]), float(r_grid[-1]))
+    if r is None:
         return float("nan")
 
     theta = max(float(theta_grid[0]), min(float(theta_grid[-1]), theta))
@@ -1263,7 +1319,8 @@ def interpolate_B_cartesian(
 ) -> np.ndarray | None:
     r, theta, phi = cart_to_sph(x)
 
-    if r < r_grid[0] or r > r_grid[-1]:
+    r = radial_coordinate_in_domain(r, float(r_grid[0]), float(r_grid[-1]))
+    if r is None:
         return None
 
     br = interp_spherical_field(Br, r_grid, theta_grid, phi_grid, r, theta, phi)
@@ -1402,7 +1459,12 @@ def boundary_limited_rk4_step(
     rmin = float(r_grid[0])
     rmax = float(r_grid[-1])
     h_requested = float(step_size)
-    h_min = max(1.0e-8 * max(abs(rmax), 1.0), 1.0e-5 * abs(h_requested))
+    if not math.isfinite(h_requested) or h_requested <= 0.0:
+        raise ValueError("Field-line step size must be finite and strictly positive.")
+    h_min = max(radial_boundary_tolerance(r_now), 1.0e-7 * h_requested)
+    r_now = radial_coordinate_in_domain(r_now, rmin, rmax)
+    if r_now is None:
+        return None, "interpolation_stop", None
 
     k1 = interpolate_B_cartesian(x, Br, Bt, Bp, r_grid, theta_grid, phi_grid)
     if k1 is None:
@@ -1426,12 +1488,12 @@ def boundary_limited_rk4_step(
                 boundary_radius = rmin
                 boundary_status = "hit_inner"
     elif boundary_mode == "exterior":
-        if drds < 0.0 and r_now > rmin:
+        if drds < 0.0 and r_now >= rmin:
             h_to_cmb = (rmin - r_now) / drds
             if 0.0 <= h_to_cmb <= h_requested:
                 boundary_radius = rmin
                 boundary_status = "hit_cmb"
-        elif drds > 0.0 and r_now < rmax:
+        elif drds > 0.0 and r_now <= rmax:
             h_to_outer = (rmax - r_now) / drds
             if 0.0 <= h_to_outer <= h_requested:
                 boundary_radius = rmax
@@ -1559,6 +1621,31 @@ def trace_exterior_cmb_to_cmb_arc(
     step_size: float,
     max_steps: int,
     min_points: int,
+    adaptive_step: bool = False,
+) -> tuple[list[list[float]], str, float]:
+    """Trace an exterior arc, refining short returns instead of deleting them.
+
+    Closure requires a resolved excursion above rounding noise, independent of
+    the step and of rmax. Retry under-sampled short arcs with smaller steps so
+    min_points controls curve sampling rather than a minimum physical height.
+    """
+    if not math.isfinite(step_size) or step_size <= 0.0 or max_steps < 1:
+        raise ValueError("Exterior tracing requires a positive step and max_steps >= 1.")
+    for refinement in range(9):
+        result = _trace_exterior_arc(
+            seed, direction, Br, Bt, Bp, r_grid, theta_grid, phi_grid,
+            step_size * 0.5**refinement, max_steps, max(3, int(min_points)), adaptive_step,
+        )
+        if result[1] not in ("short_arc", "immediate_cmb"):
+            return result
+    return result
+
+
+def _trace_exterior_arc(
+    seed: np.ndarray, direction: float,
+    Br: np.ndarray, Bt: np.ndarray, Bp: np.ndarray,
+    r_grid: np.ndarray, theta_grid: np.ndarray, phi_grid: np.ndarray,
+    step_size: float, max_steps: int, min_points: int, adaptive_step: bool,
 ) -> tuple[list[list[float]], str, float]:
     """
     Trace one exterior potential-field arc as a CMB-to-CMB segment.
@@ -1570,12 +1657,13 @@ def trace_exterior_cmb_to_cmb_arc(
     """
     r_outer = float(r_grid[0])
     r_max_allowed = float(r_grid[-1])
-    # Begin exactly on the supplied CMB footpoint.  The caller chooses the
-    # sign of B that points out of the sphere, so all intermediate RK4 stages
-    # lie in the exterior interpolation domain.  This avoids the artificial
-    # radial segment introduced by the former r_cmb + seed_offset launch.
-    _, theta_seed, phi_seed = cart_to_sph(np.asarray(seed, dtype=np.float64))
-    x = sph_to_cart(r_outer, theta_seed, phi_seed)
+    # Preserve the paired shell footpoint bit for bit. Its computed norm may
+    # differ from R by a few ulps; only project seeds genuinely off the sphere.
+    x = np.asarray(seed, dtype=np.float64).copy()
+    r_seed, theta_seed, phi_seed = cart_to_sph(x)
+    tolerance = radial_boundary_tolerance(r_outer)
+    if abs(r_seed - r_outer) > tolerance:
+        x = sph_to_cart(r_outer, theta_seed, phi_seed)
 
     points: list[list[float]] = []
     append_point(points, x)
@@ -1583,24 +1671,30 @@ def trace_exterior_cmb_to_cmb_arc(
     r0 = radius_of(x)
     max_r_seen = float(r0)
     moved_outward = False
-    outward_threshold = r_outer + max(2.0 * step_size, 1.0e-6 * r_outer)
-    min_sep = 1.0e-6 * max(abs(r_max_allowed), 1.0)
+    outward_threshold = r_outer + 4.0 * tolerance
+    min_sep = tolerance
 
     for _ in range(max_steps):
         r_now = radius_of(x)
         max_r_seen = max(max_r_seen, r_now)
 
-        if r_now > r_max_allowed:
+        if r_now > r_max_allowed + radial_boundary_tolerance(r_max_allowed):
             return points, "hit_external_rmax", max_r_seen
 
-        if r_now < r_outer:
-            if moved_outward and len(points) >= min_points:
+        if r_now < r_outer - tolerance:
+            if moved_outward:
                 _, tt, pp = cart_to_sph(x)
                 foot = sph_to_cart(r_outer, tt, pp)
                 append_point(points, foot, min_sep)
-                return points, "returned_cmb", max_r_seen
+                return points, "returned_cmb" if len(points) >= min_points else "short_arc", max_r_seen
             return points, "immediate_cmb", max_r_seen
 
+        # Potential fields become smoother far from the CMB. Growing steps
+        # allow long arcs within the step budget, then shrink again on return.
+        # Explicit --line-step-size retains fixed requested steps.
+        local_step = step_size
+        if adaptive_step:
+            local_step = min(step_size * max(1.0, r_now / r_outer)**2, 0.02 * r_now)
         x_new, status, hit_radius = boundary_limited_rk4_step(
             x,
             direction,
@@ -1610,7 +1704,7 @@ def trace_exterior_cmb_to_cmb_arc(
             r_grid,
             theta_grid,
             phi_grid,
-            step_size,
+            local_step,
             boundary_mode="exterior",
         )
 
@@ -1627,13 +1721,13 @@ def trace_exterior_cmb_to_cmb_arc(
             append_point(points, x_new, min_sep)
             return points, "hit_external_rmax", max_r_seen
 
-        if status == "hit_cmb" or r_new <= r_outer:
-            if moved_outward and len(points) >= min_points:
+        if status == "hit_cmb" or r_new < r_outer - tolerance:
+            if moved_outward:
                 # x_new is already projected exactly to r_cmb by the event handler.
                 _, tt, pp = cart_to_sph(x_new)
                 foot = sph_to_cart(r_outer, tt, pp)
                 append_point(points, foot, min_sep)
-                return points, "returned_cmb", max_r_seen
+                return points, "returned_cmb" if len(points) >= min_points else "short_arc", max_r_seen
             return points, "immediate_cmb", max_r_seen
 
         append_point(points, x_new, min_sep)
@@ -1812,6 +1906,7 @@ def compute_external_field_lines_from_cmb(
     min_points: int = 8,
     closed_only: bool = True,
     seed_records: list[dict[str, Any]] | None = None,
+    adaptive_step: bool = False,
 ) -> list[dict[str, Any]]:
     """
     Trace exterior potential/poloidal field lines as CMB-to-CMB arcs.
@@ -1825,6 +1920,7 @@ def compute_external_field_lines_from_cmb(
     r_outer = float(r_ext[0])
 
     seeds: list[dict[str, Any]] = []
+    skipped: dict[str, int] = {}
     if seed_records is None:
         theta_seeds = np.linspace(0.08 * math.pi, 0.92 * math.pi, ntheta_seed)
         phi_seeds = np.linspace(0.0, 2.0 * math.pi, nphi_seed, endpoint=False)
@@ -1841,9 +1937,11 @@ def compute_external_field_lines_from_cmb(
     else:
         for record in seed_records:
             if record.get("cmb_seed_source") != "traced_cmb_intersection":
+                skipped["no_traced_cmb_intersection"] = skipped.get("no_traced_cmb_intersection", 0) + 1
                 continue
             raw_seed = np.asarray(record.get("cmb_seed", []), dtype=np.float64)
             if raw_seed.shape != (3,) or not np.isfinite(raw_seed).all():
+                skipped["invalid_cmb_seed"] = skipped.get("invalid_cmb_seed", 0) + 1
                 continue
             _, theta, phi = cart_to_sph(raw_seed)
             seeds.append(
@@ -1854,6 +1952,7 @@ def compute_external_field_lines_from_cmb(
                     "seed_source": "paired_shell_cmb_intersection",
                     "source_cmb_br_seed": record.get("cmb_br_seed"),
                     "source_polarity": record.get("polarity"),
+                    "point": raw_seed.copy(),
                 }
             )
 
@@ -1865,9 +1964,10 @@ def compute_external_field_lines_from_cmb(
         phi = float(seed_record["phi"])
         br_cmb = interp_spherical_field(Br_ext, r_ext, theta_grid, phi_grid, r_outer, theta, phi)
         if not math.isfinite(br_cmb) or abs(br_cmb) <= 1.0e-300:
+            skipped["zero_or_invalid_br"] = skipped.get("zero_or_invalid_br", 0) + 1
             continue
 
-        cmb_seed = sph_to_cart(r_outer, theta, phi)
+        cmb_seed = np.asarray(seed_record["point"], dtype=np.float64).copy() if "point" in seed_record else sph_to_cart(r_outer, theta, phi)
         # dx/ds = direction*B/|B|.  Choosing direction=sign(Br) makes
         # direction*Br positive, hence the first step is into r > r_cmb.
         direction = 1.0 if br_cmb > 0.0 else -1.0
@@ -1883,9 +1983,12 @@ def compute_external_field_lines_from_cmb(
             step_size,
             max_steps,
             min_points,
+            adaptive_step=adaptive_step,
         )
         status_counts[status] = status_counts.get(status, 0) + 1
         if closed_only and (status != "returned_cmb" or len(points) < min_points):
+            continue
+        if len(points) < 2:
             continue
 
         polarity = 1 if br_cmb > 0.0 else -1
@@ -1915,7 +2018,7 @@ def compute_external_field_lines_from_cmb(
                 "polarity_matches_source": polarity_matches_source,
                 "region": "outside_cmb_potential_poloidal",
                 "mode": "exterior_potential_poloidal_cmb_to_cmb_rk4",
-                "integrator": "boundary-aware RK4 launched exactly at the CMB footpoint",
+                "integrator": "boundary-aware RK4 with CMB roundoff tolerance and short-arc refinement",
                 "status": status,
                 "direction": float(direction),
                 "max_r": float(max_r_seen),
@@ -1929,6 +2032,10 @@ def compute_external_field_lines_from_cmb(
         )
 
     compute_external_field_lines_from_cmb.last_status_counts = status_counts
+    compute_external_field_lines_from_cmb.last_seed_counts = {
+        "input": len(seed_records) if seed_records is not None else int(ntheta_seed * nphi_seed),
+        "traced": sum(status_counts.values()), "retained": len(lines), "skipped": skipped,
+    }
     return lines
 
 
@@ -2243,13 +2350,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--external-rmax",
         type=float,
         default=None,
-        help="Maximum radius for external potential-field line tracing. Default is 2.5 * r_outer.",
+        help="Absolute maximum exterior radius in state-file length units; default 2.5 * r_outer.",
     )
     p.add_argument(
         "--external-nr",
         type=int,
         default=96,
-        help="Number of radial points in the exterior potential-field grid used for field lines.",
+        help="Number of exterior radial points, exponentially clustered near the CMB.",
     )
     p.add_argument(
         "--spectral-lmax",
@@ -2305,7 +2412,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--line-step-size",
         type=float,
         default=None,
-        help="Field-line RK4 step length. Default is 0.5 * median radial spacing for shell lines or 0.5 * exterior radial spacing for exterior lines.",
+        help="Fixed requested RK4 step. Default: half the median shell spacing; exterior steps use the CMB radius and degree, growing farther out.",
     )
 
     magnetic_diagnostics = p.add_argument_group("optional magnetic diagnostics")
@@ -3354,14 +3461,10 @@ def convert_state(args: argparse.Namespace) -> None:
             if external_rmax <= r_outer:
                 raise ValueError("--external-rmax must be larger than r_outer for exterior field-line tracing.")
 
-            external_nr = max(8, int(args.external_nr))
-            r_ext = np.linspace(r_outer, external_rmax, external_nr, dtype=np.float64)
-
-            exterior_step_size = (
-                float(args.line_step_size)
-                if args.line_step_size is not None
-                else 0.5 * float(np.mean(np.abs(np.diff(r_ext))))
+            r_ext, exterior_step_size, exterior_sampling = prepare_exterior_tracing(
+                r_outer, external_rmax, args.external_nr, lmax_transform, args.line_step_size,
             )
+            field_lines_meta["exterior_sampling"] = exterior_sampling
             sign_choices = {"plus": [1.0], "minus": [-1.0], "auto": [-1.0]}[args.external_btheta_sign]
             best_choice = None
 
@@ -3389,6 +3492,7 @@ def convert_state(args: argparse.Namespace) -> None:
                     step_size=exterior_step_size,
                     closed_only=args.external_closed_only,
                     seed_records=shell_lines if args.field_line_mode == "both" else None,
+                    adaptive_step=args.line_step_size is None,
                 )
                 trial_counts = getattr(compute_external_field_lines_from_cmb, "last_status_counts", {})
                 returned = int(trial_counts.get("returned_cmb", 0))
@@ -3413,6 +3517,8 @@ def convert_state(args: argparse.Namespace) -> None:
             field_lines_meta["counts"]["exterior"] = exterior_count
             field_lines_meta["exterior_btheta_sign"] = float(exterior_btheta_sign)
             field_lines_meta["exterior_status_counts"] = exterior_status_counts
+            field_lines_meta["exterior_seed_counts"] = compute_external_field_lines_from_cmb.last_seed_counts
+            print(f"  Exterior seeds: {field_lines_meta['exterior_seed_counts']}")
             field_lines_meta["exterior_closed_only"] = bool(args.external_closed_only)
             field_lines_meta["exterior_seed_policy"] = (
                 "paired_actual_shell_cmb_intersections"

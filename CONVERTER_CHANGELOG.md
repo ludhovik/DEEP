@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.3.1
+
+- Cluster exterior radial samples near the CMB and choose automatic tracing
+  steps from the CMB radius and retained degree, across all three converters.
+- Grow automatic steps farther from the CMB so long arcs remain practical.
+- Refine short returning arcs instead of rejecting them for insufficient height.
+- Tolerate roundoff at interpolation boundaries and preserve paired CMB seeds
+  exactly, with termination and skipped-seed counts in export metadata.
+- Add large-domain dipole, mixed-degree convergence and synthetic MagIC export
+  regressions. Clarify absolute-radius units and the default `2.5*r_cmb` limit.
+
 ## 3.2.0
 
 - Fixed the exterior SHTns spheroidal sign analytically to

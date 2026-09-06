@@ -53,6 +53,7 @@ try:
         compute_external_field_lines_from_cmb,
         compute_helicity,
         compute_shell_field_lines_from_cmb,
+        prepare_exterior_tracing,
     )
 except ImportError:  # pragma: no cover - package-style invocation
     from tools.convert_state_to_viewer import (
@@ -61,6 +62,7 @@ except ImportError:  # pragma: no cover - package-style invocation
         compute_external_field_lines_from_cmb,
         compute_helicity,
         compute_shell_field_lines_from_cmb,
+        prepare_exterior_tracing,
     )
 
 try:
@@ -74,7 +76,7 @@ EARTH_RADIUS_KM = 6371.0
 CMB_RADIUS_KM = 3480.0
 DEFAULT_EARTH_RADIUS_SCALE = EARTH_RADIUS_KM / CMB_RADIUS_KM
 DEFAULT_EARTH_BR_LMAX = 13
-CONVERTER_PACKAGE_VERSION = "3.3.0"
+CONVERTER_PACKAGE_VERSION = "3.3.1"
 
 
 def json_number(value: Any, default: float | None = None) -> float | None:
@@ -563,13 +565,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--external-rmax",
         type=float,
         default=None,
-        help="Maximum radius for exterior potential-field tracing; default 2.5*r_cmb.",
+        help="Absolute maximum exterior radius in state-file length units; default 2.5*r_cmb.",
     )
     p.add_argument(
         "--external-nr",
         type=int,
         default=96,
-        help="Number of radial points in the exterior potential-field grid.",
+        help="Number of exterior radial points, exponentially clustered near the CMB.",
     )
     p.add_argument(
         "--external-closed-only",
@@ -594,7 +596,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--line-step-size",
         type=float,
         default=None,
-        help="RK4 step length; defaults to half the median shell or exterior radial spacing.",
+        help="Fixed requested RK4 step. Default: half the median shell spacing; exterior steps use the CMB radius and degree, growing farther out.",
     )
     return p
 
@@ -1143,13 +1145,10 @@ def convert_xshells(args: argparse.Namespace) -> None:
             )
             if external_rmax <= r_cmb:
                 raise ValueError("--external-rmax must be greater than the CMB radius.")
-            external_nr = max(8, int(args.external_nr))
-            r_ext = np.linspace(r_cmb, external_rmax, external_nr, dtype=np.float64)
-            exterior_step = (
-                float(args.line_step_size)
-                if args.line_step_size is not None
-                else 0.5 * float(np.mean(np.abs(np.diff(r_ext))))
+            r_ext, exterior_step, exterior_sampling = prepare_exterior_tracing(
+                r_cmb, external_rmax, args.external_nr, magnetic.lmax, args.line_step_size,
             )
+            field_lines_meta["exterior_sampling"] = exterior_sampling
             sign_choices = {
                 "plus": [1.0],
                 "minus": [-1.0],
@@ -1178,6 +1177,7 @@ def convert_xshells(args: argparse.Namespace) -> None:
                     step_size=exterior_step,
                     closed_only=args.external_closed_only,
                     seed_records=shell_lines if args.field_line_mode == "both" else None,
+                    adaptive_step=args.line_step_size is None,
                 )
                 statuses = getattr(compute_external_field_lines_from_cmb, "last_status_counts", {})
                 returned = int(statuses.get("returned_cmb", 0))
@@ -1202,6 +1202,8 @@ def convert_xshells(args: argparse.Namespace) -> None:
             field_lines_meta["counts"]["exterior"] = exterior_count
             field_lines_meta["exterior_btheta_sign"] = float(selected_sign)
             field_lines_meta["exterior_status_counts"] = exterior_statuses
+            field_lines_meta["exterior_seed_counts"] = compute_external_field_lines_from_cmb.last_seed_counts
+            print(f"  Exterior seeds: {field_lines_meta['exterior_seed_counts']}")
             field_lines_meta["exterior_closed_only"] = bool(args.external_closed_only)
             field_lines_meta["exterior_seed_policy"] = (
                 "paired_actual_shell_cmb_intersections"

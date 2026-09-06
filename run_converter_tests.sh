@@ -2,3 +2,4 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 python3 tests/test_converter_package.py
+python3 tests/test_exterior_tracing.py

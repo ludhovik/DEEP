@@ -36,6 +36,7 @@ try:
         compute_induction_from_emf,
         compute_shell_field_lines_from_cmb,
         gradient_scalar_3d,
+        prepare_exterior_tracing,
     )
 except ImportError:  # pragma: no cover - package-style invocation
     from tools.convert_state_to_viewer import (
@@ -46,6 +47,7 @@ except ImportError:  # pragma: no cover - package-style invocation
         compute_induction_from_emf,
         compute_shell_field_lines_from_cmb,
         gradient_scalar_3d,
+        prepare_exterior_tracing,
     )
 
 
@@ -54,7 +56,7 @@ CMB_RADIUS_KM = 3480.0
 DEFAULT_EARTH_RADIUS_SCALE = EARTH_RADIUS_KM / CMB_RADIUS_KM
 DEFAULT_EARTH_BR_LMAX = 13
 RADIAL_ATOL = 1.0e-10
-CONVERTER_PACKAGE_VERSION = "3.3.0"
+CONVERTER_PACKAGE_VERSION = "3.3.1"
 
 
 def json_number(value: Any, default: float | None = None) -> float | None:
@@ -742,21 +744,24 @@ def convert_graph(path: Path, outdir: Path, args: argparse.Namespace) -> dict[st
             field_lines_meta.update({"shell": "B_lines_shell.json", "B_lines_shell": "B_lines_shell.json"})
             field_lines_meta["counts"]["shell"] = len(shell_lines)
         if args.field_line_mode in ("exterior", "both"):
-            rmax = args.external_rmax or 2.5 * r_cmb
+            rmax = float(args.external_rmax) if args.external_rmax is not None else 2.5 * r_cmb
             if rmax <= r_cmb:
                 raise ValueError("--external-rmax must exceed the CMB radius.")
-            r_ext = np.linspace(r_cmb, rmax, max(8, int(args.external_nr)))
             ext_lmax = min(lmax, max(1, int(args.external_lmax)))
+            r_ext, ext_step, exterior_sampling = prepare_exterior_tracing(
+                r_cmb, rmax, args.external_nr, ext_lmax, args.line_step_size,
+            )
+            field_lines_meta["exterior_sampling"] = exterior_sampling
             Br_ext, Bt_ext, Bp_ext = exterior_potential_field(
                 Br_cmb, theta, phi, r_cmb, r_ext, ext_lmax
             )
-            ext_step = args.line_step_size or 0.5 * float(np.mean(np.diff(r_ext)))
             lines = compute_external_field_lines_from_cmb(
                 Br_ext, Bt_ext, Bp_ext, r_ext, theta, phi,
                 ntheta_seed=args.line_seed_theta, nphi_seed=args.line_seed_phi,
                 max_steps=args.line_max_steps, step_size=ext_step,
                 closed_only=args.external_closed_only,
                 seed_records=shell_lines if args.field_line_mode == "both" else None,
+                adaptive_step=args.line_step_size is None,
             )
             combined.extend(lines)
             with open(outdir / "B_lines_exterior_poloidal.json", "w", encoding="utf-8") as stream:
@@ -768,6 +773,11 @@ def convert_graph(path: Path, outdir: Path, args: argparse.Namespace) -> dict[st
                 "external_lmax": ext_lmax,
             })
             field_lines_meta["counts"]["exterior"] = len(lines)
+            field_lines_meta["exterior_status_counts"] = compute_external_field_lines_from_cmb.last_status_counts
+            field_lines_meta["exterior_closed_only"] = bool(args.external_closed_only)
+            field_lines_meta["exterior_seed_counts"] = compute_external_field_lines_from_cmb.last_seed_counts
+            print(f"  Exterior statuses: {field_lines_meta['exterior_status_counts']}")
+            print(f"  Exterior seeds: {field_lines_meta['exterior_seed_counts']}")
             field_lines_meta["exterior_seed_policy"] = (
                 "paired_actual_shell_cmb_intersections"
                 if args.field_line_mode == "both"
@@ -867,8 +877,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-earth-br", action="store_true")
     p.add_argument("--skip-field-lines", action="store_true")
     p.add_argument("--field-line-mode", choices=["shell", "exterior", "both"], default="shell")
-    p.add_argument("--external-rmax", type=float)
-    p.add_argument("--external-nr", type=int, default=96)
+    p.add_argument("--external-rmax", type=float, help="Absolute maximum exterior radius in source length units; default 2.5*r_cmb.")
+    p.add_argument("--external-nr", type=int, default=96, help="Number of exterior radial points, exponentially clustered near the CMB.")
     p.add_argument("--external-lmax", type=int, default=32, help="Maximum degree used for exterior field-line reconstruction.")
     p.add_argument("--external-closed-only", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--external-btheta-sign", choices=["auto", "plus", "minus"], default="auto",
@@ -877,7 +887,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--line-seed-theta", type=int, default=9)
     p.add_argument("--line-seed-phi", type=int, default=18)
     p.add_argument("--line-max-steps", type=int, default=1000)
-    p.add_argument("--line-step-size", type=float)
+    p.add_argument("--line-step-size", type=float, help="Fixed requested RK4 step; default exterior steps use the CMB scale and grow farther out.")
     p.add_argument("--sequence-first", type=int)
     p.add_argument("--sequence-last", type=int)
     p.add_argument("--sequence-step", type=int, default=1)

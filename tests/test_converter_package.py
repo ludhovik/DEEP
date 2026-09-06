@@ -446,6 +446,37 @@ class ConverterPackageTests(unittest.TestCase):
             self.assertAlmostEqual(metadata["r_outer"], 1.0)
             self.assertAlmostEqual(metadata["r_inner"], 0.35)
 
+    def test_magic_large_exterior_domain_exports_paired_lines_and_diagnostics(self):
+        import json
+        from tools.viewer_bundle import validate_bundle
+        graph = self.fake_magic_graph()
+        args = self.magic.build_arg_parser().parse_args([
+            "--graph", "G_1.test", "--field-line-mode", "both",
+            "--external-rmax", "40", "--line-seed-theta", "4", "--line-seed-phi", "4",
+            "--no-earth-br", "--no-gradients", "--no-m0-fields",
+        ])
+        with tempfile.TemporaryDirectory() as folder:
+            output = pathlib.Path(folder)
+            with mock.patch.object(self.magic, "load_graph", return_value=graph):
+                metadata = self.magic.convert_graph(pathlib.Path("G_1.test"), output, args)
+            validate_bundle(output)
+            diagnostics = metadata["field_lines"]
+            counts = diagnostics["exterior_seed_counts"]
+            self.assertEqual(diagnostics["exterior_sampling"]["rmax"], 40.0)
+            self.assertEqual(counts["input"], diagnostics["counts"]["shell"])
+            self.assertEqual(counts["traced"], sum(diagnostics["exterior_status_counts"].values()))
+            self.assertEqual(counts["input"], counts["traced"] + sum(counts["skipped"].values()))
+            exterior = json.loads((output / diagnostics["exterior"]).read_text())
+            shell = {line["line_id"]: line for line in json.loads((output / diagnostics["shell"]).read_text())}
+            self.assertGreater(len(exterior), 0)
+            self.assertEqual(len(exterior), counts["retained"])
+            for line in exterior:
+                self.assertEqual(line["status"], "returned_cmb")
+                self.assertEqual(line["points"][0], shell[line["paired_shell_line_id"]]["cmb_seed"])
+                self.assertLess(line["end_r_error"], 1e-12)
+            published = json.loads((output / "metadata.json").read_text())
+            self.assertEqual(published["field_lines"], diagnostics)
+
     def test_removed_diagnostics_are_not_exported(self):
         for path in (LEEDS_PATH, XSHELLS_PATH, MAGIC_PATH):
             self.assertFalse({"Cnol0", "Compnol0"} & literal_output_names(path))

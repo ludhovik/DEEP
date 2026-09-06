@@ -11,7 +11,7 @@
     "convert-state": "python tools/convert_state_to_viewer.py",
     "convert-xshells": "python tools/convert_xshells_to_viewer.py",
     "convert-magic": "python tools/convert_magic_to_viewer.py",
-    "test-converters": "python tests/test_converter_package.py",
+    "test-converters": "python -m unittest discover -s tests -p 'test_*.py'",
     "test-viewer": "node --test tests/test_viewer_regressions.mjs tests/test_earth_surface.mjs"
   },
   "dependencies": {
