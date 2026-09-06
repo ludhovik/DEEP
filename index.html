@@ -13,14 +13,15 @@
     <div id="dataset-launcher" class="dataset-launcher">
       <div class="dataset-launcher-card">
         <div class="dataset-launcher-kicker">DEEPscope</div>
-        <h1>Open a converted dynamo dataset</h1>
+        <h1>Explore a 3D full sphere or spherical shell</h1>
+        <small class="dataset-converter-note"><a href="https://github.com/ludhovik/DEEP#converter-setup" target="_blank" rel="noopener">Converters on GitHub</a> support Leeds Dynamo Code, XSHELLS and MagIC.</small>
         <p>The viewer runs in your browser. Local files are read directly from the folder you select and are <strong>not uploaded</strong>.</p>
         <div class="dataset-launcher-actions">
           <button id="open-local-dataset" class="primary" type="button">Open local dataset folder</button>
           <button id="open-demo-dataset" type="button">Open bundled demonstration</button>
         </div>
         <div class="dataset-url-row">
-          <label for="dataset-url-input">Or load a converted dataset from a URL</label>
+          <label for="dataset-url-input">Or load a dataset from a URL</label>
           <div class="dataset-url-controls"><input id="dataset-url-input" type="url" placeholder="https://example.org/viewer-data" /><button id="open-url-dataset" type="button">Load URL</button></div>
           <small>Remote servers must allow CORS access.</small>
         </div>

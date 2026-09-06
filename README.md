@@ -174,6 +174,17 @@ The CMB can be clipped by one or two meridional planes or by an explicit
 eight-quarter mask. The Earth surface can show a texture or an available
 extrapolated magnetic field.
 
+The bundled Earth image is a complete 2:1 latitude-longitude map from
+[NASA's Blue Marble](https://svs.gsfc.nasa.gov/2915/). The longitude seam is
+closed and both poles are capped. North is +z; with **Texture longitude = 0**,
+Greenwich lies along +x and 90 degrees east along +y. Older versions placed
+Greenwich half a turn away, so adjust a previously saved texture longitude by
+180 degrees if you need its former continent orientation. Texture longitude
+changes the image only; the dataset coordinates and clipping planes stay fixed.
+For a sharper replacement image, use a complete equirectangular PNG such as
+4096 x 2048, including both poles. See
+[Earth texture requirements and credits](public/assets/README_EARTH_TEXTURE.txt).
+
 ### Custom appearance
 
 Open **Appearance and legends** to set:

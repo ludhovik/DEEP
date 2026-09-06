@@ -452,6 +452,17 @@ canvas {
   opacity: 0.62;
 }
 
+.dataset-converter-note {
+  display: block;
+  color: #b7c3d0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.dataset-converter-note a {
+  color: #a9c8ee;
+  text-underline-offset: 2px;
+}
+
 .dataset-launcher button:disabled,
 .dataset-url-controls input:disabled {
   cursor: progress;

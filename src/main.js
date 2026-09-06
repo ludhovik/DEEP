@@ -430,8 +430,9 @@ let fieldLineDataCacheBytes = 0;
 let heavyObjectCacheBytes = 0;
 let cacheAccessCounter = 0;
 
-const EARTH_TEXTURE_URL = appPublicUrl("assets/earth_blue_marble.jpg");
-const EARTH_TEXTURE_ATTRIBUTION = "Earth texture: local file public/assets/earth_blue_marble.jpg."; 
+const EARTH_TEXTURE_URL = appPublicUrl("assets/earth_blue_marble.png");
+const EARTH_TEXTURE_SOURCE_URL = "https://svs.gsfc.nasa.gov/2915/";
+const EARTH_TEXTURE_ATTRIBUTION = "Earth imagery: NASA/Goddard Space Flight Center Scientific Visualization Studio.";
 
 const dataCache = new Map();
 const dataCacheMeta = new Map();
@@ -1168,12 +1169,14 @@ async function ensureEarthTexture() {
   texture.wrapS = THREE.RepeatWrapping;
   texture.wrapT = THREE.ClampToEdgeWrapping;
   texture.colorSpace = THREE.SRGBColorSpace;
+  // Keep coastlines legible where the globe turns away from the camera.
+  texture.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
 
   let attrib = document.getElementById("earth-attribution");
   if (!attrib) {
     attrib = document.createElement("div");
     attrib.id = "earth-attribution";
-    attrib.innerHTML = '<div>' + EARTH_TEXTURE_ATTRIBUTION + '</div><div><a href="' + EARTH_TEXTURE_URL + '" target="_blank" rel="noopener">Open texture source</a></div>';
+    attrib.innerHTML = '<div>' + EARTH_TEXTURE_ATTRIBUTION + '</div><div><a href="' + EARTH_TEXTURE_SOURCE_URL + '" target="_blank" rel="noopener">NASA Blue Marble source and credits</a></div>';
     document.body.appendChild(attrib);
   }
   return earthTexture;
@@ -1352,8 +1355,8 @@ function triangleCentroidPhi(p0, p1, p2) {
 }
 
 function makeEarthSurfaceMesh(radius, opacity, texture, longitudeDeg, clipOptions = null) {
-  const nTheta = 96;
-  const nPhi = 192;
+  const nTheta = 128;
+  const nPhi = 256;
   const positions = [];
   const normals = [];
   const uvs = [];
@@ -1364,19 +1367,26 @@ function makeEarthSurfaceMesh(radius, opacity, texture, longitudeDeg, clipOption
 
   for (let it = 0; it <= nTheta; it++) {
     const theta = Math.PI * it / nTheta;
+    const sinTheta = it === 0 || it === nTheta ? 0.0 : Math.sin(theta);
+    const cosTheta = Math.cos(theta);
+    // Centre each pole's UV on its triangle, avoiding a skewed polar fan.
+    const poleUOffset = it === 0 ? -0.5 / nPhi : it === nTheta ? 0.5 / nPhi : 0.0;
     for (let ip = 0; ip <= nPhi; ip++) {
-      const phi = 2.0 * Math.PI * ip / nPhi;
+      // Duplicate the seam position exactly, but keep distinct u=0 and u=1.
+      const phi = ip === nPhi ? 0.0 : 2.0 * Math.PI * ip / nPhi;
       positions.push(
-        radius * Math.sin(theta) * Math.cos(phi),
-        radius * Math.sin(theta) * Math.sin(phi),
-        radius * Math.cos(theta)
+        radius * sinTheta * Math.cos(phi),
+        radius * sinTheta * Math.sin(phi),
+        radius * cosTheta
       );
       normals.push(
-        Math.sin(theta) * Math.cos(phi),
-        Math.sin(theta) * Math.sin(phi),
-        Math.cos(theta)
+        sinTheta * Math.cos(phi),
+        sinTheta * Math.sin(phi),
+        cosTheta
       );
-      const u = normalizePhi(phi) / (2.0 * Math.PI);
+      // Never wrap vertex UVs: interpolation from almost 1 back to 0
+      // stretches the entire map into the last longitude strip.
+      const u = ip / nPhi + poleUOffset;
       const v = 1.0 - theta / Math.PI;
       uvs.push(u, v);
     }
@@ -1394,7 +1404,9 @@ function makeEarthSurfaceMesh(radius, opacity, texture, longitudeDeg, clipOption
       const b = it * row + (ip + 1);
       const c = (it + 1) * row + ip;
       const d = (it + 1) * row + (ip + 1);
-      indices.push(a, c, b, b, c, d);
+      // Each pole is capped by one non-degenerate triangle per longitude cell.
+      if (it > 0) indices.push(a, c, b);
+      if (it < nTheta - 1) indices.push(b, c, d);
     }
   }
 
@@ -1408,7 +1420,9 @@ function makeEarthSurfaceMesh(radius, opacity, texture, longitudeDeg, clipOption
   textureMap.wrapS = THREE.RepeatWrapping;
   textureMap.wrapT = THREE.ClampToEdgeWrapping;
   textureMap.colorSpace = THREE.SRGBColorSpace;
-  textureMap.offset.x = -Number(longitudeDeg) / 360.0;
+  // A standard world map has Greenwich at u=0.5, north at v=1.
+  // At zero offset Greenwich lies along +x; east longitude increases toward +y.
+  textureMap.offset.x = 0.5 - Number(longitudeDeg) / 360.0;
   textureMap.offset.y = 0.0;
   textureMap.repeat.set(1.0, 1.0);
   textureMap.needsUpdate = true;

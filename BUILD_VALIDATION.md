@@ -1,5 +1,21 @@
 # Integrated package validation
 
+## Earth image and dataset launcher (2026-09-06)
+
+- `npm ci --no-audit --no-fund` and `npm run build` pass using the lockfile.
+- `npm run test-viewer`: 39 passing tests, including six Earth tests using real
+  Three.js geometry, materials and ray intersections without a WebGL renderer.
+  These verify closed sphere topology, outward faces, non-degenerate polar caps,
+  continuous texture coordinates, geographic orientation and intentional clipping.
+- The NASA PNG was visually inspected and matches the downloaded source bytes:
+  2048 x 1024, with a complete latitude-longitude extent and no graticule/border.
+- The launcher now describes a 3D full sphere or spherical shell and links to the
+  three converters in a small-font note.
+- No browser/GPU rendering test was completed: the browser executable download
+  timed out. Check the north/south poles, longitude seam and clipped Earth image
+  in the browser after applying the patch. The build retains its existing
+  advisory about a JavaScript chunk exceeding 500 kB.
+
 ## Dataset default view (2026-09-06)
 
 The `view.DTV2` feature adds optional automatic view loading and saving to a
@@ -33,7 +49,7 @@ Run locally before pushing:
 
 ```bash
 python3 tests/test_converter_package.py
-node --test tests/test_viewer_regressions.mjs
+npm run test-viewer
 npm run build
 ```
 
