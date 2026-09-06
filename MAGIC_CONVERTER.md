@@ -99,6 +99,18 @@ When their source quantities exist, the MagIC converter writes:
 - explicit shell, full-sphere, and conducting-inner-core metadata;
 - spatial downsampling and sequence playback metadata.
 
+`--spectral-lmax L` removes degrees above `L` and synthesizes a smaller angular
+grid before diagnostics and line tracing. The default `0` keeps all native
+samples. Velocity and magnetic fields use vector spherical harmonics; scalar
+means are preserved. This projection requires the native Gauss latitude grid
+and still reads the full graphic snapshot first. See
+[angular spectral truncation](README.md#angular-spectral-truncation) for grid
+sizes, memory limits and the separate exterior/map cutoffs.
+
+With `--field-line-mode both`, closed exterior arcs also seed internal return
+branches at their second CMB footpoint. The viewer retains all three connected
+segments together when changing stride. Regenerate older bundles to add them.
+
 Fields absent from a MagIC run are skipped; the converter does not invent a
 magnetic, compositional, pressure, or phase field.
 
@@ -112,11 +124,12 @@ Downsampling preserves radial boundaries and low-passes angular fields before
 reducing their sample counts. The CLI validates a staged bundle (or complete
 sequence) before publishing and retains the previous output as a backup. See
 [sampling and output safety](README.md#sampling-and-output-safety) for the
-backup locations, invalid-value policy, and unchanged native-grid line tracing.
+backup locations, invalid-value policy, and working-grid line tracing.
 
 Useful options include:
 
 ```bash
+--spectral-lmax 128
 --downsample-r 2 --downsample-theta 2 --downsample-phi 2
 --no-gradients
 --no-m0-fields

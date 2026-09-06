@@ -6524,7 +6524,8 @@ async function loadLinesForMode(mode, context = captureRenderContext()) {
 
 function fieldLinePairKey(line, mode) {
   const candidates = mode === "exterior"
-    ? [line?.paired_shell_line_id, line?.line_id] : [line?.line_id];
+    ? [line?.line_group_id, line?.paired_shell_line_id, line?.line_id]
+    : [line?.line_group_id, line?.line_id];
   for (const value of candidates) {
     if (typeof value === "string" && value.trim()) return value.trim();
     if (typeof value === "number" && Number.isFinite(value)) return String(value);

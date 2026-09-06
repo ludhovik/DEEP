@@ -49,6 +49,11 @@ from typing import Any
 import numpy as np
 
 try:
+    from spectral_truncation import nonnegative_lmax
+except ImportError:
+    from tools.spectral_truncation import nonnegative_lmax
+
+try:
     from viewer_bundle import ViewerSampling, bundle_path, staged_bundle_output, write_f32
 except ImportError:
     from tools.viewer_bundle import ViewerSampling, bundle_path, staged_bundle_output, write_f32
@@ -58,7 +63,7 @@ EARTH_RADIUS_KM = 6371.0
 CMB_RADIUS_KM = 3480.0
 DEFAULT_EARTH_RADIUS_SCALE = EARTH_RADIUS_KM / CMB_RADIUS_KM
 DEFAULT_EARTH_BR_LMAX = 13
-CONVERTER_PACKAGE_VERSION = "3.3.1"
+CONVERTER_PACKAGE_VERSION = "3.4.0"
 
 
 # -----------------------------------------------------------------------------
@@ -1545,7 +1550,7 @@ def trace_one_line(
 
     for _ in range(max_steps):
         r_now = radius_of(x)
-        if r_now < rmin or r_now > rmax:
+        if radial_coordinate_in_domain(r_now, rmin, rmax) is None:
             break
 
         append_point(points, x, min_sep)
@@ -1734,6 +1739,60 @@ def _trace_exterior_arc(
         x = x_new
 
     return points, "max_steps", max_r_seen
+
+def connect_exterior_return_footpoints(
+    shell_lines, exterior_lines, Br, Bt, Bp, r_grid, theta, phi, step_size, max_steps,
+):
+    """Continue closed exterior arcs into the simulated field at their return end.
+
+    One extra internal branch per arc, with no recursive tracing of subsequent
+    CMB crossings. Keep the same oriented +/-B direction across the boundary.
+    A radial-polarity mismatch is reported rather than fabricating continuity.
+    """
+    extra, counts = [], {}
+    R = float(r_grid[-1])
+    source_ids = {line.get("line_id") for line in shell_lines}
+    for arc in exterior_lines:
+        if arc.get("status") != "returned_cmb" or len(arc.get("points", [])) < 2:
+            continue
+        origin_id = arc.get("paired_shell_line_id")
+        if origin_id is None or origin_id not in source_ids:
+            continue
+        arc["line_group_id"] = origin_id
+        seed = np.asarray(arc["points"][-1], dtype=np.float64)
+        radius, th, ph = cart_to_sph(seed)
+        br = interp_spherical_field(Br, r_grid, theta, phi, radius, th, ph)
+        direction = float(arc["direction"])
+        if not math.isfinite(br) or abs(br) <= 1e-300:
+            status = "invalid_or_zero_br"
+        elif direction * br >= 0.0:
+            status = "radial_polarity_mismatch"
+        else:
+            points = trace_one_line(seed, direction, Br, Bt, Bp, r_grid, theta, phi, step_size, max_steps)
+            if len(points) < 2 or min(radius_of(np.asarray(p)) for p in points) >= R - radial_boundary_tolerance(R):
+                status = "no_inward_branch"
+            else:
+                line_id = f"{origin_id}:return"
+                extra.append({
+                    "line_id": line_id, "line_group_id": origin_id,
+                    "paired_exterior_line_id": arc.get("line_id"),
+                    "seed": seed.tolist(), "cmb_seed": seed.tolist(),
+                    "cmb_seed_source": "exterior_return_footpoint", "cmb_seed_point_index": 0,
+                    "cmb_br_seed": float(br), "polarity": 1 if br > 0 else -1,
+                    "polarity_definition": "sign of simulation Br at this returning CMB footpoint",
+                    "region": "fluid_shell", "mode": "shell_from_exterior_return",
+                    "direction": direction, "points": points,
+                    "strength": sample_line_strengths(points, Br, Bt, Bp, r_grid, theta, phi),
+                    "start_r": radius_of(np.asarray(points[0])),
+                    "end_r": radius_of(np.asarray(points[-1])),
+                })
+                arc["paired_shell_return_line_id"] = line_id
+                status = "connected"
+        arc["return_connection_status"] = status
+        counts[status] = counts.get(status, 0) + 1
+    print(f"  Exterior return-footpoint connections: {counts}")
+    return extra, counts
+
 
 def external_potential_field_from_BP(
     BP_lsd: np.ndarray,
@@ -2360,11 +2419,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--spectral-lmax",
-        type=int,
-        default=128,
+        type=nonnegative_lmax,
+        default=0,
         help=(
             "Angular spectral cutoff applied before physical-space synthesis. "
-            "Default is 128. Use --spectral-lmax 0 to disable. "
+            "Default is 0: retain all source degrees. A positive value reduces the angular output grid. "
             "This is preferred over --downsample-theta/--downsample-phi because it removes high-l modes "
             "before creating the theta/phi grid."
         ),
@@ -3533,6 +3592,23 @@ def convert_state(args: argparse.Namespace) -> None:
                 f"to B_lines_exterior_poloidal.json using Btheta sign {exterior_btheta_sign:+.0f}"
             )
 
+        if args.field_line_mode == "both":
+            returns, return_counts = connect_exterior_return_footpoints(
+                shell_lines, exterior_lines, Br_shell_field, Bt_shell_field, Bp_shell_field,
+                r_shell_field, theta, phi, shell_step_size, args.line_max_steps,
+            )
+            field_lines_meta["counts"]["shell_seed_lines"] = len(shell_lines)
+            field_lines_meta["counts"]["shell_return_branches"] = len(returns)
+            field_lines_meta["return_connection_counts"] = return_counts
+            shell_lines.extend(returns)
+            combined_lines.extend(returns)
+            shell_count = len(shell_lines)
+            field_lines_meta["counts"]["shell"] = shell_count
+            for filename, records in (("B_lines_shell.json", shell_lines),
+                                      ("B_lines_exterior_poloidal.json", exterior_lines)):
+                with open(outdir / filename, "w", encoding="utf-8") as stream:
+                    json.dump(records, stream, allow_nan=False)
+
         # Backward-compatible combined file for older viewer versions.  The new
         # viewer reads the separate shell/exterior files when available.
         with open(outdir / "B_lines.json", "w", encoding="utf-8") as f:
@@ -3572,6 +3648,7 @@ def convert_state(args: argparse.Namespace) -> None:
             "RaC": json_number(RaC),
         },
         "spectral": spectral_meta,
+        "spectral_truncation": spectral_meta,
         "sampling": sampling.description(),
         "invalid_value_policy": "reject_nonfinite_and_float32_overflow",
         "optional_magnetic_diagnostics": {

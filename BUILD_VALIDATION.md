@@ -1,5 +1,20 @@
 # Integrated package validation
 
+## Spectral cutoffs and both-end connections (2026-09-06)
+
+- Converter suites: 52 passing tests across package, exterior tracing and new
+  scalar/vector spectral projection coverage. Python syntax checks pass.
+- `npm run test-viewer`: 52 passing tests. The added regression retains or
+  omits original internal lines, exterior arcs and return branches as complete
+  groups at strides 1 through 10. Existing paired geometry tests still pass.
+- `npm run build` passes; the existing large JavaScript chunk advisory remains.
+- No browser/GPU rendering test or native production-snapshot conversion was
+  performed. Converter validation and the real pyxshells class check are
+  detailed in `CONVERTER_VALIDATION.md`.
+- Reconversion is required to create smaller volumes or new return branches.
+  After updating the viewer, use **Line type → Both** and change **Line stride**
+  to verify all three segments remain selected together.
+
 ## Paired field-line stride (2026-09-06)
 
 - `npm run test-viewer`: 51 passing tests. Five new regressions verify paired

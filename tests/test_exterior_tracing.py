@@ -178,6 +178,38 @@ class ExteriorTracingTests(unittest.TestCase):
         self.assertLess(errors[0], 0.002)
         self.assertLess(errors[1], errors[0] / 2.0)
 
+    def test_return_branch_follows_simulated_field_from_exact_exterior_endpoint(self):
+        r, step, _ = exterior_grid(rmax=2.5)
+        br, bt, bp, theta, phi = field_grid(r)
+        origin = seed_record(60.0, 0.2)
+        exterior = converter.compute_external_field_lines_from_cmb(
+            br, bt, bp, r, theta, phi, 1, 1, 1000, step,
+            seed_records=[origin], adaptive_step=True,
+        )
+        shell_r = np.linspace(.35, 1., 181)
+        br, bt, bp, theta, phi = field_grid(shell_r)
+        extra, counts = converter.connect_exterior_return_footpoints(
+            [origin], exterior, br, bt, bp, shell_r, theta, phi, .002, 1500,
+        )
+        self.assertEqual(counts, {"connected": 1})
+        branch = extra[0]
+        self.assertEqual(branch["points"][0], exterior[0]["points"][-1])
+        self.assertEqual(branch["direction"], exterior[0]["direction"])
+        points = np.asarray(branch["points"])
+        radius = np.linalg.norm(points, axis=1)
+        self.assertLess(radius[1], radius[0])
+        self.assertAlmostEqual(radius[-1], .35, places=12)
+        flux = radius / ((points[:,0]**2 + points[:,1]**2) / radius**2)
+        self.assertLess(np.ptp(flux)/np.mean(flux), 2e-5)
+        bad = dict(exterior[0])
+        bad.pop("paired_shell_return_line_id")
+        extra, counts = converter.connect_exterior_return_footpoints(
+            [origin], [bad], -br, -bt, -bp, shell_r, theta, phi, .002, 1500,
+        )
+        self.assertEqual(extra, [])
+        self.assertEqual(counts, {"radial_polarity_mismatch": 1})
+        self.assertNotIn("paired_shell_return_line_id", bad)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

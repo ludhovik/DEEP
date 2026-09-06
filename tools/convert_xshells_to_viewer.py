@@ -29,6 +29,14 @@ from typing import Any
 
 import numpy as np
 
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+try:
+    from spectral_truncation import nonnegative_lmax, cutoff_metadata
+except ImportError:
+    from tools.spectral_truncation import nonnegative_lmax, cutoff_metadata
+
 try:
     from viewer_bundle import ViewerSampling, staged_bundle_output, write_f32
 except ImportError:
@@ -54,6 +62,7 @@ try:
         compute_helicity,
         compute_shell_field_lines_from_cmb,
         prepare_exterior_tracing,
+        connect_exterior_return_footpoints,
     )
 except ImportError:  # pragma: no cover - package-style invocation
     from tools.convert_state_to_viewer import (
@@ -63,12 +72,10 @@ except ImportError:  # pragma: no cover - package-style invocation
         compute_helicity,
         compute_shell_field_lines_from_cmb,
         prepare_exterior_tracing,
+        connect_exterior_return_footpoints,
     )
 
-try:
-    from modules import curl_spat
-except ImportError:  # pragma: no cover - package-style invocation
-    from .modules import curl_spat
+from modules import curl_spat
 
 
 RADIAL_ATOL = 1.0e-11
@@ -76,7 +83,7 @@ EARTH_RADIUS_KM = 6371.0
 CMB_RADIUS_KM = 3480.0
 DEFAULT_EARTH_RADIUS_SCALE = EARTH_RADIUS_KM / CMB_RADIUS_KM
 DEFAULT_EARTH_BR_LMAX = 13
-CONVERTER_PACKAGE_VERSION = "3.3.1"
+CONVERTER_PACKAGE_VERSION = "3.4.0"
 
 
 def json_number(value: Any, default: float | None = None) -> float | None:
@@ -241,13 +248,47 @@ def configure_sht_grid(field: Any, nlat: int | None, nphi: int | None) -> None:
         raise ValueError("Use --nlat and --nphi together, or omit both.")
 
 
+def truncate_xshells_fields(loaded: dict[str, Any], reference_key: str, requested: int):
+    reference = loaded[reference_key]
+    info = cutoff_metadata(requested, reference.lmax, reference.mmax * reference.mres)
+    if not info["enabled"]:
+        return loaded, info
+    lmax = info["lmax_effective"]
+    mmax_index = min(int(reference.mmax), lmax // int(reference.mres))
+    sht = pyxshells.shtns.sht(lmax, mmax_index, int(reference.mres))
+    source_indices = {(int(ell), int(m)): index
+                      for index, (ell, m) in enumerate(zip(reference.l, reference.m))}
+    retained_indices = [source_indices[int(ell), int(m)] for ell, m in zip(sht.l, sht.m)]
+    result = {}
+    for name, source in loaded.items():
+        validate_angular_compatibility(reference, source, name)
+        target = type(source)(source.grid, sht)
+        target.alloc(source.irs, source.ire, dtype=source.data.dtype)
+        # Retain every radial/ghost row and map by (l,m), not packed position.
+        # pyxshells 2.8 copy_data_from uses unqualified min after numpy import *,
+        # which resolves to numpy.min and fails with NumPy 2.
+        target.data[...] = source.data[..., retained_indices]
+        target.BC = source.BC
+        target.time = source.time
+        target.curl = source.curl
+        result[name] = target
+    info.update(mmax_effective=mmax_index * int(reference.mres),
+                method="Native poloidal/toroidal and scalar coefficients remapped before SHTns synthesis")
+    print(f"Angular spectral truncation: lmax {reference.lmax} -> {lmax}, "
+          f"maximum order {reference.mmax * reference.mres} -> {info['mmax_effective']}")
+    return result, info
+
+
 def load_xshells_field(path: Path, angular_reference: Any | None = None) -> Any:
     # Share only the SHTns angular transform.  Do not share the radial grid:
     # fieldB may include a conducting inner core while fieldU/T/C are shell-only.
-    kwargs: dict[str, Any] = {"lazy": True}
+    field = pyxshells.load_field(str(path), lazy=True)
     if angular_reference is not None:
-        kwargs["sht"] = angular_reference.sht
-    return pyxshells.load_field(str(path), **kwargs)
+        # Read the native header first: supplying a different transform during
+        # load can disguise a coefficient-layout mismatch in pyxshells 2.8.
+        validate_angular_compatibility(angular_reference, field, str(path))
+        field.sht = angular_reference.sht
+    return field
 
 
 def field_radii(field: Any) -> np.ndarray:
@@ -485,6 +526,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     source.add_argument("--composition-prefix", default="fieldC")
 
     p.add_argument("--out", default="public/data_xshells", help="Viewer output directory.")
+    p.add_argument("--spectral-lmax", type=nonnegative_lmax, default=0,
+                   help="Maximum spherical-harmonic degree before synthesis; 0 (default) retains all source degrees. Positive cutoffs reduce the default angular grid.")
     p.add_argument("--nlat", type=int, help="Requested SHTns latitude count. Must be used with --nphi.")
     p.add_argument("--nphi", type=int, help="Requested SHTns longitude count. Must be used with --nlat.")
     p.add_argument("--downsample-r", type=int, default=1)
@@ -619,7 +662,6 @@ def convert_xshells(args: argparse.Namespace) -> None:
     load_order = [key for key in ("magnetic", "velocity", "temperature", "composition") if paths[key] is not None]
     angular_key = load_order[0]
     angular_reference = load_xshells_field(paths[angular_key])
-    configure_sht_grid(angular_reference, args.nlat, args.nphi)
 
     loaded: dict[str, Any] = {angular_key: angular_reference}
     for key in load_order[1:]:
@@ -627,6 +669,9 @@ def convert_xshells(args: argparse.Namespace) -> None:
         validate_angular_compatibility(angular_reference, field, key)
         loaded[key] = field
 
+    loaded, spectral_truncation = truncate_xshells_fields(loaded, angular_key, args.spectral_lmax)
+    angular_reference = loaded[angular_key]
+    configure_sht_grid(angular_reference, args.nlat, args.nphi)
     theta = np.asarray(angular_reference.theta_array(), dtype=np.float64)
     phi = np.asarray(angular_reference.phi_array(), dtype=np.float64)
     time_values = [float(getattr(field, "time", np.nan)) for field in loaded.values()]
@@ -1218,6 +1263,22 @@ def convert_xshells(args: argparse.Namespace) -> None:
                 f"{selected_sign:+.0f}"
             )
 
+        if args.field_line_mode == "both":
+            returns, return_counts = connect_exterior_return_footpoints(
+                shell_lines, exterior_lines, Br_b_shell, Bt_b_shell, Bp_b_shell,
+                r_b_shell, theta, phi, shell_step, args.line_max_steps,
+            )
+            field_lines_meta["counts"]["shell_seed_lines"] = len(shell_lines)
+            field_lines_meta["counts"]["shell_return_branches"] = len(returns)
+            field_lines_meta["return_connection_counts"] = return_counts
+            shell_lines.extend(returns)
+            combined_lines.extend(returns)
+            shell_count = len(shell_lines)
+            field_lines_meta["counts"]["shell"] = shell_count
+            for filename, records in (("B_lines_shell.json", shell_lines),
+                                      ("B_lines_exterior_poloidal.json", exterior_lines)):
+                with open(outdir / filename, "w", encoding="utf-8") as stream:
+                    json.dump(records, stream, allow_nan=False)
         with open(outdir / "B_lines.json", "w", encoding="utf-8") as stream:
             json.dump(combined_lines, stream, allow_nan=False)
         field_lines_meta["B_lines"] = "B_lines.json"
@@ -1255,6 +1316,7 @@ def convert_xshells(args: argparse.Namespace) -> None:
             "RaT": json_number(RaT),
             "RaC": json_number(RaC),
         },
+        "spectral_truncation": spectral_truncation,
         "spectral": {
             "lmax": int(angular_reference.lmax),
             "mmax": int(angular_reference.mmax),

@@ -427,6 +427,109 @@ class ConverterPackageTests(unittest.TestCase):
             for filename in metadata["fields"].values():
                 self.assertEqual((output / filename).stat().st_size, expected_size)
 
+    def test_all_converter_cutoffs_default_to_full_resolution_and_reject_negative_values(self):
+        import contextlib, io
+        for converter in (self.leeds, self.xshells, self.magic):
+            parser = converter.build_arg_parser()
+            self.assertEqual(parser.parse_args(["--folder", "unused"]).spectral_lmax, 0)
+            self.assertEqual(parser.parse_args(["--folder", "unused", "--spectral-lmax", "128"]).spectral_lmax, 128)
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                parser.parse_args(["--folder", "unused", "--spectral-lmax", "-1"])
+
+    @staticmethod
+    def spectral_layout(lmax, mmax, mres=1, *unused):
+        pairs = [(l, m) for m in range(0, mmax*mres+1, mres) for l in range(m, lmax+1)]
+        return types.SimpleNamespace(lmax=lmax, mmax=mmax, mres=mres,
+                                     l=np.array([p[0] for p in pairs]), m=np.array([p[1] for p in pairs]))
+
+    def test_leeds_cutoff_preserves_retained_coefficients_and_default_full_representation(self):
+        backend = types.SimpleNamespace(shtns=types.SimpleNamespace(
+            sht=self.spectral_layout, sht_schmidt=0, SHT_NO_CS_PHASE=0))
+        layout = self.spectral_layout(8, 8)
+        coefficients = np.arange(2*len(layout.l)*5).reshape(2, len(layout.l), 5)
+        unchanged = self.leeds.apply_spectral_lmax_to_state(
+            *([coefficients]*6), 8, 8, 0, backend)
+        self.assertIs(unchanged[0], coefficients)
+        self.assertEqual(unchanged[6:8], (8, 8))
+        result = self.leeds.apply_spectral_lmax_to_state(
+            *([coefficients]*6), 8, 8, 3, backend)
+        for field in result[:6]:
+            np.testing.assert_array_equal(field, coefficients[:, layout.l <= 3])
+        self.assertEqual(result[6:8], (3, 3))
+
+    def test_xshells_cutoff_preserves_radial_domains_ghost_data_and_boundary_conditions(self):
+        layout_factory = self.spectral_layout
+        class Field:
+            components = 2
+            def __init__(self, grid, sht):
+                self.grid, self.sht = grid, sht
+                self.lmax, self.mmax, self.mres = sht.lmax, sht.mmax, sht.mres
+                self.l, self.m = sht.l, sht.m
+            def alloc(self, irs, ire, dtype=complex):
+                self.irs, self.ire = irs, ire
+                self.data = np.zeros((ire-irs+3, self.components, len(self.sht.l)), dtype=dtype)
+            def copy_data_from(self, source):
+                raise AssertionError("Do not use pyxshells 2.8's NumPy 2-incompatible copy helper")
+        class Scalar(Field):
+            components = 1
+        for mres in (1, 3):
+            sht = layout_factory(12, 12//mres, mres)
+            loaded = {}
+            for name, cls, inner in (("magnetic",Field,0), ("velocity",Field,2), ("temperature",Scalar,2)):
+                native = cls(types.SimpleNamespace(r=np.linspace(0,1,8)), sht)
+                native.alloc(inner, 7)
+                native.data[:] = np.arange(native.data.size).reshape(native.data.shape) + 1j
+                native.BC, native.curl, native.time = [2,3], 1, 1.25
+                loaded[name] = native
+            unchanged, info = self.xshells.truncate_xshells_fields(loaded, "magnetic", 0)
+            self.assertIs(unchanged, loaded)
+            with mock.patch.object(self.xshells.pyxshells, "shtns", types.SimpleNamespace(sht=layout_factory), create=True):
+                result, info = self.xshells.truncate_xshells_fields(loaded, "magnetic", 4)
+            self.assertEqual(info["mmax_effective"], (4//mres)*mres)
+            for name, target in result.items():
+                native = loaded[name]
+                np.testing.assert_array_equal(target.data, native.data[..., sht.l <= 4])
+                self.assertIs(target.grid, native.grid)
+                self.assertEqual((target.irs,target.ire,target.BC,target.time,target.curl),
+                                 (native.irs,native.ire,native.BC,native.time,native.curl))
+
+    def test_magic_truncation_reduces_every_volume_file_and_retains_scalar_mean(self):
+        from scipy.special import sph_harm_y
+        from tools.viewer_bundle import validate_bundle
+        graph = self.fake_magic_graph()
+        graph.l_max = 20
+        graph.colatitude = np.arccos(np.polynomial.legendre.leggauss(32)[0][::-1])
+        phi = np.arange(64)*2*math.pi/64
+        P,T,R = np.meshgrid(phi, graph.colatitude, graph.radius, indexing="ij")
+        graph.vr, graph.vtheta, graph.vphi = R*np.cos(T), -R*np.sin(T), 0*R
+        graph.Br, graph.Btheta, graph.Bphi = 2*np.cos(T)/R**3, np.sin(T)/R**3, 0*R
+        graph.entropy = 3 + R*np.cos(T) + .2*sph_harm_y(12,3,T,P).real
+        graph.xi = .1*R
+        outputs = []
+        with tempfile.TemporaryDirectory() as folder:
+            for cutoff in (0, 4):
+                root = pathlib.Path(folder)/str(cutoff)
+                root.mkdir()
+                args = self.magic.build_arg_parser().parse_args([
+                    "--graph", "G_1.test", "--spectral-lmax", str(cutoff), "--skip-field-lines",
+                    "--emf", "--induction", "--cmb-br-ltrunc", "3", "--earth-br-ltrunc", "3",
+                ])
+                with mock.patch.object(self.magic, "load_graph", return_value=graph):
+                    meta = self.magic.convert_graph(pathlib.Path("G_1.test"), root, args)
+                validate_bundle(root)
+                outputs.append((root,meta))
+            native, cut = outputs
+            self.assertEqual(set(native[1]["fields"]), set(cut[1]["fields"]))
+            self.assertEqual(cut[1]["nr"], native[1]["nr"])
+            self.assertLess(cut[1]["ntheta"]*cut[1]["nphi"], native[1]["ntheta"]*native[1]["nphi"])
+            for name, file in cut[1]["fields"].items():
+                self.assertLess((cut[0]/file).stat().st_size, (native[0]/native[1]["fields"][name]).stat().st_size)
+            import json
+            coordinates = json.loads((cut[0]/"coordinates.json").read_text())
+            expected = 3 + np.asarray(coordinates["r"])[:,None,None]*np.cos(coordinates["theta"])[None,:,None]
+            values = np.fromfile(cut[0]/cut[1]["fields"]["C"], dtype="<f4").reshape(cut[1]["nr"],cut[1]["ntheta"],cut[1]["nphi"])
+            np.testing.assert_allclose(values, np.broadcast_to(expected,values.shape), atol=3e-7)
+
     def test_magic_downsampled_bundle_passes_publication_validation(self):
         from tools.viewer_bundle import staged_bundle_output, validate_bundle
         graph = self.fake_magic_graph()
@@ -463,7 +566,7 @@ class ConverterPackageTests(unittest.TestCase):
             diagnostics = metadata["field_lines"]
             counts = diagnostics["exterior_seed_counts"]
             self.assertEqual(diagnostics["exterior_sampling"]["rmax"], 40.0)
-            self.assertEqual(counts["input"], diagnostics["counts"]["shell"])
+            self.assertEqual(counts["input"], diagnostics["counts"]["shell_seed_lines"])
             self.assertEqual(counts["traced"], sum(diagnostics["exterior_status_counts"].values()))
             self.assertEqual(counts["input"], counts["traced"] + sum(counts["skipped"].values()))
             exterior = json.loads((output / diagnostics["exterior"]).read_text())
@@ -474,6 +577,13 @@ class ConverterPackageTests(unittest.TestCase):
                 self.assertEqual(line["status"], "returned_cmb")
                 self.assertEqual(line["points"][0], shell[line["paired_shell_line_id"]]["cmb_seed"])
                 self.assertLess(line["end_r_error"], 1e-12)
+                self.assertEqual(line["return_connection_status"], "connected")
+                branch = shell[line["paired_shell_return_line_id"]]
+                self.assertEqual(line["points"][-1], branch["points"][0])
+                self.assertEqual(line["direction"], branch["direction"])
+                self.assertEqual(branch["line_group_id"], line["line_group_id"])
+            self.assertEqual(diagnostics["counts"]["shell_return_branches"], len(exterior))
+            self.assertEqual(diagnostics["counts"]["shell"], len(shell))
             published = json.loads((output / "metadata.json").read_text())
             self.assertEqual(published["field_lines"], diagnostics)
 

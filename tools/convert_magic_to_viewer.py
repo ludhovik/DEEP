@@ -23,6 +23,11 @@ import numpy as np
 from scipy.special import gammaln, lpmv
 
 try:
+    from spectral_truncation import nonnegative_lmax, truncate_graphic_fields
+except ImportError:
+    from tools.spectral_truncation import nonnegative_lmax, truncate_graphic_fields
+
+try:
     from viewer_bundle import ViewerSampling, bundle_path, staged_bundle_output, write_f32
 except ImportError:
     from tools.viewer_bundle import ViewerSampling, bundle_path, staged_bundle_output, write_f32
@@ -37,6 +42,7 @@ try:
         compute_shell_field_lines_from_cmb,
         gradient_scalar_3d,
         prepare_exterior_tracing,
+        connect_exterior_return_footpoints,
     )
 except ImportError:  # pragma: no cover - package-style invocation
     from tools.convert_state_to_viewer import (
@@ -48,6 +54,7 @@ except ImportError:  # pragma: no cover - package-style invocation
         compute_shell_field_lines_from_cmb,
         gradient_scalar_3d,
         prepare_exterior_tracing,
+        connect_exterior_return_footpoints,
     )
 
 
@@ -56,7 +63,7 @@ CMB_RADIUS_KM = 3480.0
 DEFAULT_EARTH_RADIUS_SCALE = EARTH_RADIUS_KM / CMB_RADIUS_KM
 DEFAULT_EARTH_BR_LMAX = 13
 RADIAL_ATOL = 1.0e-10
-CONVERTER_PACKAGE_VERSION = "3.3.1"
+CONVERTER_PACKAGE_VERSION = "3.4.0"
 
 
 def json_number(value: Any, default: float | None = None) -> float | None:
@@ -493,6 +500,13 @@ def convert_graph(path: Path, outdir: Path, args: argparse.Namespace) -> dict[st
     has_cond_ic = bool(adapted["has_conducting_inner_core"])
     magnetic_extends_ic = bool(adapted["magnetic_extends_inner_core"])
     lmax = inferred_lmax(graph, len(theta))
+    raw, theta, phi, spectral_truncation = truncate_graphic_fields(
+        raw, theta, phi, args.spectral_lmax, lmax, adapted["minc"],
+    )
+    lmax = spectral_truncation["lmax_effective"]
+    if spectral_truncation["enabled"]:
+        print(f"Angular spectral truncation: lmax {spectral_truncation['lmax_original']} -> {lmax}; "
+              f"grid {spectral_truncation['original_grid']} -> {spectral_truncation['output_grid']}")
 
     if args.fluid_inner_radius is not None:
         spacing = float(np.median(np.diff(r_shell)))
@@ -786,6 +800,21 @@ def convert_graph(path: Path, outdir: Path, args: argparse.Namespace) -> dict[st
             field_lines_meta["polarity_definition"] = (
                 "sign of Br at each line's starting CMB footpoint: +1 outward, -1 inward"
             )
+        if args.field_line_mode == "both":
+            returns, return_counts = connect_exterior_return_footpoints(
+                shell_lines, lines, Br[shell_mask], Bt[shell_mask], Bp[shell_mask],
+                r_b_shell, theta, phi, shell_step, args.line_max_steps,
+            )
+            field_lines_meta["counts"]["shell_seed_lines"] = len(shell_lines)
+            field_lines_meta["counts"]["shell_return_branches"] = len(returns)
+            field_lines_meta["return_connection_counts"] = return_counts
+            shell_lines.extend(returns)
+            combined.extend(returns)
+            field_lines_meta["counts"]["shell"] = len(shell_lines)
+            for filename, records in (("B_lines_shell.json", shell_lines),
+                                      ("B_lines_exterior_poloidal.json", lines)):
+                with open(outdir / filename, "w", encoding="utf-8") as stream:
+                    json.dump(records, stream, allow_nan=False)
         with open(outdir / "B_lines.json", "w", encoding="utf-8") as stream:
             json.dump(combined, stream, allow_nan=False)
         field_lines_meta["B_lines"] = "B_lines.json"
@@ -809,6 +838,7 @@ def convert_graph(path: Path, outdir: Path, args: argparse.Namespace) -> dict[st
                        "RaT": json_number(RaT), "RaC": json_number(RaC),
                        "PrMag": json_number(getattr(graph, "prmag", None)),
                        "radius_ratio": json_number(getattr(graph, "radratio", None))},
+        "spectral_truncation": spectral_truncation,
         "spectral": {"lmax": lmax, "minc": int(adapted["minc"]),
                      "nlat": len(theta), "nphi": len(phi),
                      "library": "MagIC MagicGraph; SciPy surface harmonic analysis"},
@@ -856,6 +886,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     source.add_argument("--precision", choices=["float32", "float64"], default="float32")
 
     p.add_argument("--out", default="public/data_magic")
+    p.add_argument("--spectral-lmax", type=nonnegative_lmax, default=0,
+                   help="Maximum spherical-harmonic degree; 0 (default) retains all native samples. Positive cutoffs filter scalar/vector harmonics and reduce the angular grid.")
     p.add_argument("--downsample-r", type=int, default=1)
     p.add_argument("--downsample-theta", type=int, default=1)
     p.add_argument("--downsample-phi", type=int, default=1)

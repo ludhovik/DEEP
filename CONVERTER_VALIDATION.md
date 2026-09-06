@@ -1,5 +1,46 @@
 # Validation report
 
+## Spectral truncation and return branches (3.4.0, 2026-09-06)
+
+`bash run_converter_tests.sh` passes 52 tests: 37 package tests, nine exterior
+tracing tests and six spectral projection tests.
+
+- All three CLIs default to `--spectral-lmax 0`, accept positive cutoffs and
+  reject negative degrees. Disabled cutoffs preserve the native data.
+- Leeds tests verify exact retained coefficient remapping. XSHELLS tests cover
+  maximum orders with symmetry factors 1 and 3, distinct fluid/magnetic radial
+  domains, ghost rows, boundary flags, time and curl state.
+- MagIC scalar tests retain the mean and low degrees while removing higher
+  degrees. Vector tests verify coupled radial/spheroidal/toroidal projection,
+  including non-axisymmetric modes and azimuthal symmetry. The normalized
+  harmonic recurrence agrees with SciPy through degree/order 128 without
+  high-order overflow.
+- An end-to-end synthetic MagIC conversion with EMF and induction writes 60
+  valid volume fields. A cutoff of 4 reduces its angular grid from 32 by 64
+  to 6 by 10 while keeping all five radial samples. Every volume is smaller;
+  this particular size ratio is a test case, not a promise for other inputs.
+- Analytic dipole tests trace an inward branch from the exact returning
+  exterior endpoint to the ICB. Its direction matches the exterior arc and
+  variation in the dipole invariant `r/sin(theta)^2` is below `2e-5`.
+  Reversing the simulation field triggers a reported polarity mismatch and
+  produces no fabricated branch.
+- The synthetic MagIC `both` export connects all eight closed exterior arcs
+  to eight new internal return branches with exact matching JSON endpoints.
+
+A separate integration check uses the actual classes from the official
+[pyxshells 2.8 release](https://pypi.org/project/pyxshells/2.8/), with only the
+SHTns coefficient layout substituted. It verifies exact scalar/poloidal/
+toroidal coefficient retention, including radial ghost rows, for symmetry
+factors 1 and 3. This caught the upstream `copy_data_from` NumPy 2 failure;
+the converter instead copies by explicit degree/order indices.
+
+Native production snapshots and a compiled SHTns backend were unavailable
+for this change. These analytic, interface and synthetic checks do not replace
+a complete native Leeds/XSHELLS/MagIC run. Convert one frame into a new output
+folder, inspect `spectral_truncation` and `return_connection_counts`, and check
+the resulting figure before starting a long sequence. A return branch is one
+finite internal trace; later CMB crossings are not recursively extended.
+
 ## Exterior tracing correction (3.3.1, 2026-09-06)
 
 All three converters use the corrected common exterior grid and tracer.

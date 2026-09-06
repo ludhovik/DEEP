@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.4.0
+
+- Support `--spectral-lmax` in Leeds, XSHELLS and MagIC. Default 0 retains all
+  source degrees; the Leeds default changes from 128 to 0.
+- Reduce the angular synthesis grid with the retained degree. Preserve scalar
+  means, radial samples and XSHELLS boundary/ghost coefficients. MagIC projects
+  physical graphic samples using scalar and vector spherical harmonics.
+- Resolve bundled `modules.py` for direct XSHELLS script invocation. Read and
+  validate native angular layouts before sharing transforms; copy retained
+  coefficients directly without pyxshells 2.8's NumPy 2-incompatible copy helper.
+- In `both` mode, trace an additional internal branch from each closed exterior
+  arc's return footpoint, using the actual simulation B in the same direction.
+  Report boundary mismatches instead of fabricating connections.
+- Group each original internal line, exterior arc and return branch for viewer
+  stride selection. Existing bundles require reconversion for return branches.
+- Add harmonic, coefficient-remapping, dipole-connection and synthetic export
+  tests; record effective cutoffs and return-connection counts in metadata.
+
 ## 3.3.1
 
 - Cluster exterior radial samples near the CMB and choose automatic tracing

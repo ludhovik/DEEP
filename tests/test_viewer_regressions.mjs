@@ -645,6 +645,23 @@ test("explicit pairing takes precedence and all segments with one identifier sta
   assert.equal(ctx.selectFieldLinesByStride({ shell, exterior }, 1).exterior.length, 5);
 });
 
+test("stride retains the original internal line, exterior arc and return branch as one group", () => {
+  const ctx = viewer(), fixture = pairedLineFixture();
+  const returns = fixture.exterior.map(arc => ({
+    line_id: `${arc.line_id}:return`, line_group_id: arc.line_id,
+    points: [arc.points.at(-1), arc.points.at(-1).map(x => .7*x)],
+  }));
+  const shell = fixture.shell.concat(returns);
+  for (let stride=1; stride<=10; stride++) {
+    const selected = ctx.selectFieldLinesByStride({ shell, exterior: fixture.exterior }, stride);
+    const ids = new Set(selected.shell.map(line => line.line_id));
+    for (const arc of fixture.exterior) {
+      assert.equal(ids.has(arc.line_id), ids.has(`${arc.line_id}:return`));
+      assert.equal(ids.has(arc.line_id), selected.exterior.includes(arc));
+    }
+  }
+});
+
 test("legacy lines without identifiers and single-domain selections retain ordinary stride", () => {
   const ctx = viewer();
   const shell = Array.from({ length: 5 }, (_, i) => ({ points: [[i, 0, 0], [i, 1, 0]] }));

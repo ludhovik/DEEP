@@ -283,10 +283,31 @@ The SHTns spheroidal coefficient is fixed analytically to
 In `--field-line-mode both`, every exterior line begins at the exact traced CMB
 intersection stored for its corresponding internal line. Their JSON records
 share a `line_id`; the exterior record also contains `paired_shell_line_id`.
+
+From converter version 3.4, a closed exterior arc also seeds an **additional
+internal branch at its returning CMB footpoint**. A regular internal seed grid
+rarely includes that second point, which explains why older bundles showed
+an apparently unconnected return end. The new branch integrates the actual
+simulation field from the exact endpoint, in the same oriented `+B` or `-B`
+direction as the exterior arc. It adds at most one internal branch per arc;
+it does not recursively follow every later boundary crossing or guarantee a
+complete closed loop. The internal trace can stop at the ICB, another CMB
+intersection, a field null, or its step limit.
+
+The exterior record identifies this branch with `paired_shell_return_line_id`.
+A shared `line_group_id` makes **Line stride** retain or omit the original
+internal line, exterior arc and return branch together. Reconversion is needed
+to add return branches to existing bundles. The console and metadata report
+`return_connection_counts`; an incompatible radial polarity or an unresolved
+inward trace is reported without drawing an artificial connection. Using a
+different harmonic cutoff for the exterior reconstruction can cause such a
+boundary mismatch, particularly near a neutral line.
+
 Positive polarity means `Br > 0` (field directed outward) at that starting CMB
 footpoint, and negative means `Br < 0` (field directed inward). An exterior arc
 connects one positive and one negative footpoint, so its colour describes only
-the selected starting footpoint—not a sign attached to the entire curve.
+the selected starting footpoint. The return branch uses the polarity of its
+own CMB footpoint, so polarity colouring can change at a connected endpoint.
 
 Exterior tracing clusters radial samples near the CMB, where higher spherical
 harmonic degrees decay most rapidly. The automatic CMB step depends on the CMB
@@ -517,6 +538,47 @@ python -m pip install -r requirements-magic.txt       # MagIC bridge
 
 Run any converter with `--help` for the complete and current option list.
 
+### Angular spectral truncation
+
+All three converters accept `--spectral-lmax L`. **The default is 0: keep all
+available source degrees.** Omitting the option is equivalent to setting it to
+0. This changes the Leeds converter's previous default of 128; specify 128
+explicitly to retain that cutoff.
+
+For example, add this to a Leeds, XSHELLS or MagIC conversion command:
+
+```bash
+--spectral-lmax 128
+```
+
+When the input contains degrees above 128, this removes those modes and
+constructs a smaller angular grid. Radial samples are unchanged. A float32
+volume occupies `4 * nr * ntheta * nphi` bytes, so reducing the angular
+dimensions reduces every exported volume's size. A requested cutoff at or
+above the available degree leaves the original grid and fields unchanged.
+`metadata.json` records the requested and effective cutoff under
+`spectral_truncation`.
+
+Leeds and XSHELLS truncate their native scalar and poloidal/toroidal
+coefficients before physical-space synthesis. XSHELLS retains radial ghost
+coefficients and each field's radial domain. Omit explicit `--nlat`/`--nphi`
+when you want XSHELLS to choose its smaller grid automatically.
+
+MagIC graphic files contain physical samples. The converter first reads the
+native data, projects it onto scalar/vector spherical harmonics, and
+synthesizes the retained degrees on a smaller grid. Scalars keep their
+degree-zero mean; velocity and magnetic fields use the coupled vector
+components of the [Q/S/T formulation](https://nschaeff.bitbucket.io/shtns/vsh.html).
+This needs the native Gauss colatitude grid but adds no runtime dependency.
+It reduces output size, while the initial native-file read still needs its
+original memory allocation.
+
+Gradients, EMF, induction and field lines are then calculated from the
+truncated source fields. Nonlinear products can contain higher degrees than
+the input cutoff; reduced output grids do not preserve all native nonlinear
+detail. Check convergence for the quantities you use. CMB/Earth map cutoffs
+and MagIC's `--external-lmax` (default 32) remain separate controls.
+
 ## Leeds converter
 
 Convert one state file:
@@ -574,6 +636,8 @@ python tools/convert_xshells_to_viewer.py \
 The converter supports shell and conducting-inner-core geometry, selectable
 SHTns output grids, downsampling, gradients, `N2`, magnetic continuation,
 field lines, EMF, and induction when the source quantities are available.
+Direct script invocation resolves the bundled `modules.py` automatically;
+XSHELLS does not need the Leeds-only `--modules-dir` option.
 
 ## MagIC converter
 
@@ -624,6 +688,7 @@ extraction command, physical parameters, and detailed caveats.
 The three converters intentionally share common controls where possible:
 
 ```text
+--spectral-lmax L
 --downsample-r N --downsample-theta N --downsample-phi N
 --geometry auto|full-sphere|shell|conducting-inner-core
 --skip-field-lines
@@ -648,8 +713,11 @@ resampling in longitude. Longitudes remain uniformly spaced around the full
 period even when the requested stride does not divide the native sample count.
 Surface maps use the same angular sampling as volumes. These filters reduce
 aliasing; they are not a replacement for checking resolution convergence.
-Diagnostics and field lines still use the native grids, not the reduced viewer
-grid. Leave the strides at 1 when no viewer-grid filtering is wanted.
+Diagnostics and field lines use the working grid before these output strides
+are applied. That is the native grid when spectral truncation is disabled,
+or the grid synthesized at the retained degree when `--spectral-lmax` reduces
+the source. Leave the strides at 1 when no further viewer-grid filtering is
+wanted.
 
 `Cnol0` and `Compnol0` are no longer exported. The `m=0`-removed diagnostics
 (`Cnom0`, `Compnom0` and their `_nom0` aliases) are unchanged. Existing bundles
