@@ -2550,10 +2550,14 @@ async function buildFieldLineObjectCacheEntry(context = captureRenderContext()) 
   let allLoadedLines = [];
 
   try {
+    const linesByMode = {};
     for (const mode of modesToLoad) {
       if (!availableModes.includes(mode)) continue;
-      const lines = await loadLinesForMode(mode, context);
-      const group = withCapturedRenderContext(context, () => makeFieldLineGroup(lines, mode));
+      linesByMode[mode] = await loadLinesForMode(mode, context);
+    }
+    const selected = selectFieldLinesByStride(linesByMode, context.params.lineStride);
+    for (const [mode, lines] of Object.entries(linesByMode)) {
+      const group = withCapturedRenderContext(context, () => makeFieldLineGroup(lines, mode, selected[mode]));
       group.visible = false;
       groups[mode] = group;
       allLoadedLines = allLoadedLines.concat(group.userData.lines || []);
@@ -6518,21 +6522,50 @@ async function loadLinesForMode(mode, context = captureRenderContext()) {
   return typed.length > 0 ? typed : lines;
 }
 
-function makeFieldLineGroup(lines, mode) {
+function fieldLinePairKey(line, mode) {
+  const candidates = mode === "exterior"
+    ? [line?.paired_shell_line_id, line?.line_id] : [line?.line_id];
+  for (const value of candidates) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  }
+  return null;
+}
+
+function selectFieldLinesByStride(linesByMode, requestedStride) {
+  const value = Number(requestedStride);
+  const stride = Number.isFinite(value) ? Math.max(1, Math.round(value)) : 1;
+  const ranks = new Map();
+  const selected = {};
+  // Shell order defines the shared selection. Missing or reordered exterior
+  // arcs cannot shift which paired lines are displayed. Exterior-only IDs
+  // follow the shell IDs; repeated IDs retain all segments of the same group.
+  for (const mode of ["shell", "exterior"]) {
+    if (!Array.isArray(linesByMode[mode])) continue;
+    selected[mode] = linesByMode[mode].filter((line, index) => {
+      const key = fieldLinePairKey(line, mode);
+      // Legacy bundles without IDs retain their independent per-file stride.
+      if (key === null) return index % stride === 0;
+      if (!ranks.has(key)) ranks.set(key, ranks.size);
+      return ranks.get(key) % stride === 0;
+    });
+  }
+  return selected;
+}
+
+function makeFieldLineGroup(lines, mode, selectedLines = lines) {
   const group = new THREE.Group();
   group.name = `magnetic-field-lines-${mode}`;
   group.userData.isMagneticFieldLineGroup = true;
   group.userData.lineMode = mode;
 
-  const stride = Math.max(1, params.lineStride);
   const material = makeLineMaterial();
   const loadedLines = [];
 
   const [vmin, vmax] = getFieldLineRange(lines);
   group.userData.strengthRange = [vmin, vmax];
 
-  for (let i = 0; i < lines.length; i += stride) {
-    const line = lines[i];
+  for (const line of selectedLines) {
     if (!Array.isArray(line.points) || line.points.length < 2) continue;
 
     const positions = [];

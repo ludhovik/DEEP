@@ -244,6 +244,14 @@ shell lines, exterior potential/poloidal lines, or both. Lines can be coloured
 by strength or CMB seed polarity, with configurable width, opacity, stride, and
 range.
 
+With **Line type → Both**, **Line stride** selects linked internal/exterior
+lines together using their identifiers. A stride of 3 retains every third
+shell line group and all of its available exterior partners, even when exterior
+arcs are missing or stored in a different order. A stride of 1 shows all lines.
+Older bundles without line identifiers retain independent stride selection;
+new converter output already contains the pairing information. Shell lines
+without an exported exterior partner remain available for display.
+
 All three converters trace a line in Cartesian coordinates with arclength-like
 parameter `s`:
 

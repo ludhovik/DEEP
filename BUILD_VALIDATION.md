@@ -1,5 +1,21 @@
 # Integrated package validation
 
+## Paired field-line stride (2026-09-06)
+
+- `npm run test-viewer`: 51 passing tests. Five new regressions verify paired
+  selection at strides 1 through 10 with missing/reordered exterior arcs,
+  explicit pairing identifiers, repeated segments, legacy files, single-mode
+  selection, and cache reuse after changing stride.
+- The geometry regression builds real Three.js `Line2`/`LineGeometry` objects
+  and checks that every selected exterior segment has its selected shell
+  partner with identical CMB endpoint coordinates in the geometry buffers.
+- `npm run build` passes with the installed lockfile dependencies; the existing
+  large JavaScript chunk advisory remains. No browser/GPU rendering test was
+  performed for this selection change. Check **Line type → Both** and move
+  **Line stride** from 1 to 10 after deployment.
+- Existing bundles containing `line_id`/`paired_shell_line_id` need no
+  reconversion for this viewer change. Converter code is unchanged.
+
 ## Exterior tracing (2026-09-06)
 
 - Converter suite: 41 passing tests (33 package tests, eight exterior tests).

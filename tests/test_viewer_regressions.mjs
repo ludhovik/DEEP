@@ -6,6 +6,9 @@ import vm from "node:vm";
 import test from "node:test";
 import { SURFACE_TEXTURES } from "../src/surface-textures.js";
 import * as RealTHREE from "three";
+import { Line2 } from "three/examples/jsm/lines/Line2.js";
+import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
+import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 
 const source = fs.readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
 function definition(name) {
@@ -100,9 +103,9 @@ function viewer() {
       mesh.userData.triangleCount = 1;
       return mesh;
     },
-    makeFieldLineGroup: (lines, mode) => {
+    makeFieldLineGroup: (lines, mode, selectedLines = lines) => {
       const group = new Mesh(new Geometry(mode), new Material({ linewidth: 2 }));
-      group.userData.lines = lines;
+      group.userData.lines = selectedLines;
       group.traverse = callback => callback(group);
       return group;
     },
@@ -129,7 +132,7 @@ function viewer() {
     "validFieldForState", "applySnapshotParam", "collectViewState", "encodeViewState", "decodeViewState",
     "getAvailableFieldLineModes", "updateOpacities", "preloadHeavyObjectsForFrame",
     "loadFrameByIndex", "rebuildEquator", "disposeObject", "fetchFieldLineFile",
-    "getFieldLineFilename", "loadLinesForMode", "inferLineType",
+    "getFieldLineFilename", "loadLinesForMode", "inferLineType", "fieldLinePairKey", "selectFieldLinesByStride",
     "buildFieldLineObjectCacheEntry", "ensureFieldLineObjectCacheEntry", "loadFieldLines", "updateFieldLineVisuals",
     "applyViewStateParams", "refreshViewPresentation", "applyViewState", "loadDatasetViewState",
     "updateEarthSurface", "ensureEarthTexture", "updateSurfaceAttribution",
@@ -591,6 +594,117 @@ test("field-line loads use captured filenames and only the latest mode is displa
   assert.equal(ctx.fieldLineGroups.exterior, cached);
   assert.equal(cached.material.opacity, 0.4);
   assert.equal(cached.material.linewidth, 5);
+});
+
+function pairedLineFixture() {
+  const shell = Array.from({ length: 12 }, (_, i) => {
+    const foot = [Math.cos(i), Math.sin(i), 0];
+    return { line_id: `seed-${i}`, points: [foot.map(x => 0.8 * x), foot],
+      strength: [2, 1], region: "fluid_shell" };
+  });
+  // Missing arcs and reordered records reproduce the independent-stride bug.
+  const exterior = [11, 8, 6, 5, 3, 2, 0].map(i => ({
+    line_id: `seed-${i}`, paired_shell_line_id: `seed-${i}`,
+    points: [shell[i].points[1], shell[i].points[1].map(x => 1.2 * x)],
+    strength: [1, 0.5], region: "outside_cmb_potential_poloidal",
+  }));
+  return { shell, exterior };
+}
+
+test("every viewer stride preserves all available shell/exterior pairs despite missing and reordered arcs", () => {
+  const ctx = viewer(), lines = pairedLineFixture();
+  for (let stride = 1; stride <= 10; stride++) {
+    const shown = ctx.selectFieldLinesByStride(lines, stride);
+    const selectedIds = new Set(shown.shell.map(line => line.line_id));
+    assert.equal(shown.shell.length, Math.ceil(lines.shell.length / stride));
+    for (const arc of lines.exterior) {
+      assert.equal(shown.exterior.includes(arc), selectedIds.has(arc.paired_shell_line_id));
+    }
+    for (const arc of shown.exterior) {
+      const internal = shown.shell.find(line => line.line_id === arc.paired_shell_line_id);
+      assert.deepEqual(arc.points[0], internal.points.at(-1));
+    }
+  }
+  assert.equal(lines.shell.length, 12);
+  assert.equal(lines.exterior.length, 7);
+});
+
+test("explicit pairing takes precedence and all segments with one identifier stay together", () => {
+  const ctx = viewer();
+  const shell = [{ line_id: 0 }, { line_id: "skip" }, { line_id: "last" }];
+  const exterior = [
+    { line_id: "last", paired_shell_line_id: "skip" },
+    { line_id: "different-exterior-id", paired_shell_line_id: 0 },
+    { line_id: "second-segment", paired_shell_line_id: "0" },
+    { line_id: "last" },
+    { line_id: "unpaired-extra" },
+  ];
+  const shown = ctx.selectFieldLinesByStride({ shell, exterior }, 2);
+  assert.deepEqual(Array.from(shown.shell), [shell[0], shell[2]]);
+  assert.deepEqual(Array.from(shown.exterior), exterior.slice(1, 4));
+  assert.equal(ctx.selectFieldLinesByStride({ shell, exterior }, 1).exterior.length, 5);
+});
+
+test("legacy lines without identifiers and single-domain selections retain ordinary stride", () => {
+  const ctx = viewer();
+  const shell = Array.from({ length: 5 }, (_, i) => ({ points: [[i, 0, 0], [i, 1, 0]] }));
+  const exterior = shell.slice().reverse();
+  const shown = ctx.selectFieldLinesByStride({ shell, exterior }, 2);
+  assert.deepEqual(Array.from(shown.shell), [shell[0], shell[2], shell[4]]);
+  assert.deepEqual(Array.from(shown.exterior), [exterior[0], exterior[2], exterior[4]]);
+  const fixture = pairedLineFixture();
+  const single = ctx.selectFieldLinesByStride({ exterior: fixture.exterior }, 3);
+  assert.deepEqual(Array.from(single.exterior), [fixture.exterior[0], fixture.exterior[3], fixture.exterior[6]]);
+  assert.equal(single.shell, undefined);
+});
+
+test("paired selection is applied during loading and cached separately for each stride", async () => {
+  const ctx = viewer(), fixture = pairedLineFixture();
+  ctx.metadata.field_lines = { shell: "shell.json", exterior: "exterior.json" };
+  Object.assign(ctx.params, { showFieldLines: true, fieldLineDisplay: "both", lineStride: 3 });
+  let fetches = 0;
+  ctx.fetchDatasetResource = async url => {
+    fetches++;
+    return new Response(JSON.stringify(url.endsWith("shell.json") ? fixture.shell : fixture.exterior));
+  };
+  await ctx.loadFieldLines();
+  const cached = { ...ctx.fieldLineGroups };
+  assert.deepEqual(Array.from(cached.shell.userData.lines, line => line.line_id), ["seed-0", "seed-3", "seed-6", "seed-9"]);
+  assert.deepEqual(Array.from(cached.exterior.userData.lines, line => line.paired_shell_line_id), ["seed-6", "seed-3", "seed-0"]);
+  ctx.params.lineStride = 1;
+  await ctx.loadFieldLines();
+  assert.equal(ctx.fieldLineGroups.shell.userData.lines.length, 12);
+  assert.equal(ctx.fieldLineGroups.exterior.userData.lines.length, 7);
+  ctx.params.lineStride = 3;
+  await ctx.loadFieldLines();
+  assert.equal(ctx.fieldLineGroups.shell, cached.shell);
+  assert.equal(ctx.fieldLineGroups.exterior, cached.exterior);
+  assert.equal(fetches, 2);
+  assert.equal(ctx.scene.objects.size, 2);
+});
+
+test("real Three.js line geometry keeps every selected pair with coincident CMB endpoints", async () => {
+  const ctx = viewer(), fixture = pairedLineFixture();
+  Object.assign(ctx, {
+    THREE: RealTHREE, Line2, LineGeometry,
+    makeLineMaterial: () => new LineMaterial({ vertexColors: true }),
+    getFieldLineVertexColor: () => new RealTHREE.Color("red"),
+    loadLinesForMode: async mode => fixture[mode],
+  });
+  vm.runInContext(definition("makeFieldLineGroup"), ctx);
+  ctx.metadata.field_lines = { mode: "both" };
+  Object.assign(ctx.params, { fieldLineDisplay: "both", lineStride: 3 });
+  const { groups } = await ctx.buildFieldLineObjectCacheEntry();
+  assert.equal(groups.shell.children.length, 4);
+  assert.equal(groups.exterior.children.length, 3);
+  for (let i = 0; i < groups.exterior.children.length; i++) {
+    const id = groups.exterior.userData.lines[i].paired_shell_line_id;
+    const j = groups.shell.userData.lines.findIndex(line => line.line_id === id);
+    const end = groups.shell.children[j].geometry.getAttribute("instanceEnd");
+    const start = groups.exterior.children[i].geometry.getAttribute("instanceStart");
+    assert.deepEqual([end.getX(0), end.getY(0), end.getZ(0)], [start.getX(0), start.getY(0), start.getZ(0)]);
+  }
+  for (const group of Object.values(groups)) ctx.disposeFieldLineGroupResources(group);
 });
 
 test("a field-line HTTP failure does not erase the working lines", async () => {
