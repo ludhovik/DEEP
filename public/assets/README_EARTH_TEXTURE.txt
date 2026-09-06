@@ -1,5 +1,9 @@
 Bundled Earth texture: earth_blue_marble.png
 
+Select this image in Planet / moon surface > Image body > Earth. Other planets
+and moons are documented in surfaces/CREDITS.txt. Image selection, longitude,
+radius and opacity are included in view codes.
+
 Unmodified 2048 x 1024 global latitude-longitude (equirectangular) map:
 https://svs.gsfc.nasa.gov/vis/a000000/a002900/a002915/bluemarble-2048.png
 Source and credits: https://svs.gsfc.nasa.gov/2915/

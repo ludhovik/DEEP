@@ -4,6 +4,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
 import test from "node:test";
+import { SURFACE_TEXTURES } from "../src/surface-textures.js";
+import * as RealTHREE from "three";
 
 const source = fs.readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
 function definition(name) {
@@ -49,6 +51,7 @@ class Mesh {
 function viewer() {
   const ctx = vm.createContext({
     console, DOMException, Response, Blob, AbortController, performance, TextEncoder, Float32Array, btoa, atob,
+    SURFACE_TEXTURES,
     window: { setInterval, clearInterval, setTimeout, clearTimeout },
     DEFAULT_DATASET_ROOT: "demo", DEFAULT_SECONDARY_DATASET_ROOT: "secondary",
     THREE: { Mesh, Color, MeshPhongMaterial: Material, DoubleSide: 2, NormalBlending: 1, NoBlending: 0 },
@@ -129,6 +132,7 @@ function viewer() {
     "getFieldLineFilename", "loadLinesForMode", "inferLineType",
     "buildFieldLineObjectCacheEntry", "ensureFieldLineObjectCacheEntry", "loadFieldLines", "updateFieldLineVisuals",
     "applyViewStateParams", "refreshViewPresentation", "applyViewState", "loadDatasetViewState",
+    "updateEarthSurface", "ensureEarthTexture", "updateSurfaceAttribution",
     "viewStateBlob", "writeDatasetViewFile", "saveViewStateCode", "downloadViewStateCode",
     "parseFolderSourcePath", "fileFromDirectoryHandle", "parseLocalFilesystemPath", "encodeLocalFilesystemPath",
     "captureDatasetState", "restoreDatasetState", "loadDatasetFromParams",
@@ -139,6 +143,179 @@ function viewer() {
 function presetCode(ctx, values = {}) {
   return ctx.encodeViewState({ version: 2, scope: "view-only", params: values });
 }
+
+function surfaceViewer() {
+  const ctx = viewer(), loads = [], elements = new Map();
+  const element = () => ({ style: {}, children: [], textContent: "",
+    replaceChildren(...children) { this.children = children; } });
+  Object.assign(ctx, {
+    surfaceTextures: new Map(), surfaceTexturePromises: new Map(), SURFACE_TEXTURE_CACHE_SIZE: 3,
+    renderer: { capabilities: { getMaxAnisotropy: () => 16 } },
+    appPublicUrl: path => `https://example.test/DEEP/${path}`,
+    document: {
+      getElementById: id => elements.get(id), createElement: element,
+      createTextNode: text => ({ textContent: text }),
+      body: { appendChild: node => elements.set(node.id, node) },
+    },
+    getActiveCmbClipOptions: () => null,
+    makeEarthSurfaceMesh: (radius, opacity, texture, longitude) => {
+      const obj = new Mesh(new Geometry(radius, longitude), new Material({ opacity, map: texture.clone() }));
+      return obj;
+    },
+    THREE: { ...RealTHREE, TextureLoader: class {
+      setCrossOrigin() {}
+      load(url, resolve, _progress, reject) { loads.push({ url, resolve, reject }); }
+    } },
+  });
+  ctx.params.showEarthSurface = true;
+  return { ctx, loads, elements };
+}
+
+test("all planet selections survive view-code round trips without loading a different dataset", () => {
+  const ctx = viewer();
+  for (const body of Object.keys(SURFACE_TEXTURES)) {
+    ctx.params.earthTextureBody = body;
+    ctx.params.earthLongitudeDeg = 42;
+    ctx.params.earthRadiusScale = 1.2;
+    const snapshot = ctx.decodeViewState(ctx.encodeViewState(ctx.collectViewState()));
+    ctx.params.earthTextureBody = "earth";
+    ctx.applyViewStateParams(snapshot);
+    assert.equal(ctx.params.earthTextureBody, body);
+    assert.equal(ctx.params.earthRadiusScale, 1.2);
+    assert.equal(ctx.params.earthLongitudeDeg, 42);
+    assert.equal(ctx.dataBasePath, "demo");
+    assert.equal(ctx.params.earthField, "Br_Earth_lmax13");
+  }
+  assert.equal(ctx.applySnapshotParam("earthTextureBody", "unknown"), false);
+  assert.equal(ctx.applySnapshotParam("earthTextureBody", "__proto__"), false);
+  assert.equal(ctx.applySnapshotParam("earthTextureBody", "constructor"), false);
+});
+
+test("older full view codes select Earth while partial changes preserve the selected body", () => {
+  const ctx = viewer();
+  ctx.params.earthTextureBody = "mars";
+  ctx.applyViewStateParams({ earthOpacity: 0.5 });
+  assert.equal(ctx.params.earthTextureBody, "mars");
+  ctx.applyViewStateParams({ version: 2, scope: "view-only", params: { earthOpacity: 0.7 } });
+  assert.equal(ctx.params.earthTextureBody, "earth");
+});
+
+test("rapid body changes display only the latest requested image and its matching credit", async () => {
+  const { ctx, loads, elements } = surfaceViewer();
+  ctx.params.earthTextureBody = "mars";
+  const first = ctx.updateEarthSurface();
+  ctx.params.earthTextureBody = "moon";
+  const second = ctx.updateEarthSurface();
+  assert.match(loads[0].url, /\/DEEP\/assets\/surfaces\/mars.jpg$/);
+  const moon = new RealTHREE.Texture();
+  loads[1].resolve(moon);
+  await second;
+  const displayed = ctx.earthMesh;
+  assert.equal(displayed.userData.viewerTopology.body, "moon");
+  assert.equal(displayed.material.map.source, moon.source);
+  loads[0].resolve(new RealTHREE.Texture());
+  await first;
+  assert.equal(ctx.earthMesh, displayed);
+  assert.match(elements.get("earth-attribution").children[0].textContent, /^Moon:/);
+  assert.equal(elements.get("earth-attribution").style.display, "block");
+  assert.equal(ctx.scene.objects.size, 1);
+});
+
+test("a failed image keeps the displayed body and can be retried", async () => {
+  const { ctx, loads, elements } = surfaceViewer();
+  let pending = ctx.updateEarthSurface();
+  loads[0].resolve(new RealTHREE.Texture());
+  await pending;
+  const earth = ctx.earthMesh;
+  let disposed = false;
+  earth.material.map.addEventListener("dispose", () => { disposed = true; });
+  ctx.console = { warn() {} };
+  let status;
+  ctx.setStatus = message => { status = message; };
+  ctx.params.earthTextureBody = "venus";
+  pending = ctx.updateEarthSurface();
+  loads[1].reject(new Error("Network error"));
+  await pending;
+  assert.equal(ctx.earthMesh, earth);
+  assert.equal(disposed, false);
+  assert.match(elements.get("earth-attribution").children[0].textContent, /^Earth:/);
+  assert.match(status, /Venus.*retry/);
+  pending = ctx.updateEarthSurface();
+  loads[2].resolve(new RealTHREE.Texture());
+  await pending;
+  assert.equal(ctx.earthMesh.userData.viewerTopology.body, "venus");
+  assert.equal(disposed, true, "Release the replaced mesh's texture");
+  assert.equal(earth.geometry.disposed, true);
+});
+
+test("hiding the surface while an image loads prevents a late mesh or credit", async () => {
+  const { ctx, loads, elements } = surfaceViewer();
+  const pending = ctx.updateEarthSurface();
+  ctx.params.showEarthSurface = false;
+  await ctx.updateEarthSurface();
+  loads[0].resolve(new RealTHREE.Texture());
+  await pending;
+  assert.equal(ctx.earthMesh, null);
+  assert.equal(elements.has("earth-attribution"), false);
+});
+
+test("reusing a surface cannot retain the wrong body or longitude", async () => {
+  const { ctx, loads } = surfaceViewer();
+  let pending = ctx.updateEarthSurface();
+  loads[0].resolve(new RealTHREE.Texture());
+  await pending;
+  const earth = ctx.earthMesh;
+  ctx.params.earthTextureBody = "ganymede";
+  ctx.params.earthRadiusScale = 1.3;
+  pending = ctx.updateEarthSurface({ reuseGeometry: true });
+  loads[1].resolve(new RealTHREE.Texture());
+  await pending;
+  const ganymede = ctx.earthMesh;
+  assert.notEqual(ganymede, earth);
+  assert.equal(ganymede.userData.viewerTopology.body, "ganymede");
+  assert.equal(ganymede.userData.viewerTopology.radius, 1.3);
+  ctx.params.earthLongitudeDeg = 57;
+  await ctx.updateEarthSurface({ reuseGeometry: true });
+  assert.notEqual(ctx.earthMesh, ganymede);
+  assert.equal(ctx.earthMesh.userData.viewerTopology.longitudeDeg, 57);
+  const rotated = ctx.earthMesh;
+  ctx.params.earthOpacity = 0.2;
+  await ctx.updateEarthSurface({ reuseGeometry: true });
+  assert.equal(ctx.earthMesh, rotated);
+  assert.equal(ctx.earthMesh.material.opacity, 0.2);
+  assert.equal(loads.length, 2, "Changing longitude or opacity reuses the downloaded image");
+});
+
+test("texture loads are shared and decoded-image cache eviction leaves displayed clones alive", async () => {
+  const { ctx, loads } = surfaceViewer();
+  const pending = ctx.ensureEarthTexture("mars");
+  const shared = ctx.ensureEarthTexture("mars");
+  assert.equal(loads.length, 1);
+  const original = new RealTHREE.Texture(), clone = original.clone();
+  let originalDisposed = false, cloneDisposed = false;
+  original.addEventListener("dispose", () => { originalDisposed = true; });
+  clone.addEventListener("dispose", () => { cloneDisposed = true; });
+  loads[0].resolve(original);
+  assert.equal(await pending, original);
+  assert.equal(await shared, original);
+  assert.equal(original.wrapS, RealTHREE.RepeatWrapping);
+  assert.equal(original.wrapT, RealTHREE.ClampToEdgeWrapping);
+  assert.equal(original.colorSpace, RealTHREE.SRGBColorSpace);
+  assert.equal(original.anisotropy, 8);
+  for (const body of ["moon", "ganymede", "mercury"]) {
+    const loading = ctx.ensureEarthTexture(body);
+    loads.at(-1).resolve(new RealTHREE.Texture());
+    await loading;
+  }
+  assert.equal(ctx.surfaceTextures.size, 3);
+  assert.equal(originalDisposed, true);
+  assert.equal(cloneDisposed, false);
+  assert.equal(clone.source, original.source);
+  const reload = ctx.ensureEarthTexture("mars");
+  loads.at(-1).resolve(new RealTHREE.Texture());
+  assert.notEqual(await reload, original);
+  assert.equal(ctx.surfaceTexturePromises.size, 0);
+});
 
 function datasetLoader(ctx, code) {
   const meta = structuredClone(ctx.metadata), grid = structuredClone(ctx.coords);

@@ -19,7 +19,8 @@ with Vite. Local datasets are read in the browser and are not uploaded.
 - two equatorial and two meridional slices;
 - positive and negative isosurfaces;
 - internal and exterior magnetic field lines;
-- an Earth texture or an extrapolated Earth-surface radial magnetic field;
+- Earth, Mars, Ganymede, Mercury, Venus, Enceladus and Moon surface images, or
+  an available extrapolated radial magnetic field;
 - two compatible datasets on the same grid;
 - time sequences with playback, preloading, and bounded memory caching;
 - PNG, PDF, WebM, and PNG-sequence output;
@@ -171,8 +172,30 @@ Every CMB, ICB, radial, equatorial, and meridional display has:
 - opacity.
 
 The CMB can be clipped by one or two meridional planes or by an explicit
-eight-quarter mask. The Earth surface can show a texture or an available
-extrapolated magnetic field.
+eight-quarter mask. Open **Planet / moon surface**, enable **Show**, choose
+**Display → Surface image**, then select **Image body**: Earth, Mars, Ganymede,
+Mercury, Venus (radar surface), Enceladus or Moon. **Texture longitude**, **Image
+radius / outer**, and **Opacity** adjust its placement and appearance. Images
+use the same closed sphere, polar caps and meridian clipping as the Earth image.
+
+Changing the body changes the reference image only. It preserves your simulation
+fields, camera, clipping and radius settings. The radius is a multiple of the
+dataset's outer radius; choose the ratio appropriate to your figure. This is a
+visual reference, not a physical model of that body's interior or magnetic field.
+**Display → Magnetic B_r**, when available, continues to show the dataset's
+extrapolated field at the radius recorded in its metadata.
+
+The selected body is saved in copied `DTV2` codes and dataset `view.DTV2` files.
+Older full view codes without a body selection use Earth. Images are bundled
+with the viewer and downloaded only when selected, from the same origin as the
+app. They do not use Figshare, Zenodo or the Cloudflare proxy. Source credits
+follow the displayed image; a failed load leaves the previous image in place.
+
+Venus uses a radar-derived surface image. Some maps use enhanced colours or
+filled coverage gaps and are intended for illustration. Source mosaics can
+retain lighting differences or limited polar detail even though the sphere
+geometry has no missing seam or cap. See the
+[surface-image sources, licences and limitations](public/assets/surfaces/CREDITS.txt).
 
 The bundled Earth image is a complete 2:1 latitude-longitude map from
 [NASA's Blue Marble](https://svs.gsfc.nasa.gov/2915/). The longitude seam is

@@ -1,0 +1,80 @@
+DEEPscope planet and moon surface imagery
+========================================
+
+These are reference images, independent of the simulation data and its units.
+Their use does not imply endorsement by the source organisations. Image licences
+below apply separately from the repository's software licence. Include these
+credits when redistributing the images or figures containing them.
+
+All six JPEGs and the Earth PNG are bundled without further image edits by
+DEEPscope. They are global 2:1 equirectangular maps, with north at the top.
+The viewer uses +z north and places the map centre along +x at zero Texture
+longitude. Positive Texture longitude shifts the imagery toward +y without
+rotating the simulation, clipping planes or underlying fields. Map processing,
+coverage and longitude conventions are source-dependent: verify alignment
+against the source before using an image as a geographic measurement layer.
+
+EARTH -- ../earth_blue_marble.png -- 2048 x 1024
+Credit: NASA/Goddard Space Flight Center Scientific Visualization Studio.
+Blue Marble data courtesy of Reto Stockli (NASA/GSFC) and NASA's Earth Observatory.
+Source: https://svs.gsfc.nasa.gov/2915/
+Download: https://svs.gsfc.nasa.gov/vis/a000000/a002900/a002915/bluemarble-2048.png
+NASA imagery guidance: https://www.nasa.gov/nasa-brand-center/images-and-media/
+This is a reference mosaic, not current seasonal snow or sea ice. Greenwich is
+at the horizontal centre. See ../README_EARTH_TEXTURE.txt for replacement maps.
+
+MARS -- mars.jpg -- 2048 x 1024
+MERCURY -- mercury.jpg -- 2048 x 1024
+VENUS -- venus.jpg -- 2048 x 1024
+Credit for each image: Solar System Scope / INOVE.
+Licence for each image: Creative Commons Attribution 4.0 International (CC BY 4.0).
+Licence: https://creativecommons.org/licenses/by/4.0/
+Creator, sources and licence statement: https://www.solarsystemscope.com/textures/
+Downloads:
+https://www.solarsystemscope.com/textures/download/2k_mars.jpg
+https://www.solarsystemscope.com/textures/download/2k_mercury.jpg
+https://www.solarsystemscope.com/textures/download/2k_venus_surface.jpg
+The creator describes NASA-derived maps with enhanced colours and fictional
+terrain used to fill missing coverage where necessary. Treat them as illustrative
+textures, not calibrated colour, elevation or albedo data. Venus is a coloured
+radar-derived surface depiction beneath its clouds, not an optical cloud image.
+
+GANYMEDE -- ganymede.jpg -- 4096 x 2048
+Creator's notices, preserved from the upstream file licence:
+SPDX-FileCopyrightText: 2019 Askaniy Anpilogov
+SPDX-FileCopyrightText: NASA/JPL-Caltech/ASI/USGS
+SPDX-FileCopyrightText: NASA/JPL-Caltech/Björn Jónsson
+SPDX-FileCopyrightText: NASA/JPL-Caltech/SwRI/MSSS/Brian Swift
+SPDX-License-Identifier: CC-BY-3.0
+Licence: https://creativecommons.org/licenses/by/3.0/
+Source and licence notice:
+https://github.com/CelestiaProject/CelestiaContent/blob/1993a082ee6307c0df7fdc0828eb117a0e8e9958/textures/hires/ganymede.jpg.license
+Download:
+https://raw.githubusercontent.com/CelestiaProject/CelestiaContent/1993a082ee6307c0df7fdc0828eb117a0e8e9958/textures/hires/ganymede.jpg
+Source processing description:
+https://github.com/CelestiaProject/CelestiaContent/blob/1993a082ee6307c0df7fdc0828eb117a0e8e9958/README
+The upstream composite combines a USGS colour map, reprojected Juno imagery
+by Brian Swift and gap filling from a texture by Björn Jónsson. DEEPscope uses
+the Celestia-distributed JPEG unchanged.
+
+ENCELADUS -- enceladus.jpg -- 3600 x 1800
+Credit: NASA/JPL/Space Science Institute. Border removal: Ysogo.
+Original mosaic: PIA08417, Map of Enceladus, June 2008.
+Source: https://www.jpl.nasa.gov/images/pia08417-map-of-enceladus/
+Border-free derivative and public-domain notice:
+https://commons.wikimedia.org/wiki/File:Enceladus_June_2008_PIA08417_moon_only.jpg
+Download:
+https://upload.wikimedia.org/wikipedia/commons/5/57/Enceladus_June_2008_PIA08417_moon_only.jpg
+JPL imagery policy: https://www.jpl.nasa.gov/jpl-image-use-policy/
+This greyscale mosaic combines Cassini images with Voyager coverage. The
+downloaded derivative removes the labelled border; DEEPscope makes no further
+image edits. Different illumination and resolution remain visible in the mosaic.
+
+MOON -- moon.jpg -- 2048 x 1024
+Credit: NASA's Scientific Visualization Studio; LRO / LROC / LOLA.
+Source: https://svs.gsfc.nasa.gov/4720/ (CGI Moon Kit)
+Download: https://svs.gsfc.nasa.gov/vis/a000000/a004700/a004720/lroc_color_2k.jpg
+NASA imagery guidance: https://www.nasa.gov/nasa-brand-center/images-and-media/
+The LROC colour map uses LOLA greyscale albedo data in the polar regions beyond
+the colour coverage. The source is intended for visualisation. Zero longitude
+is at the horizontal centre; it is not a live image of the Moon's illumination.

@@ -6,6 +6,7 @@ import { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import GUI from "lil-gui";
+import { SURFACE_TEXTURES, SURFACE_TEXTURE_OPTIONS } from "./surface-textures.js";
 
 const APP_BASE_URL = new URL(import.meta.env.BASE_URL || "./", window.location.href);
 function appPublicUrl(relativePath) {
@@ -56,7 +57,7 @@ const displayNames = {
   cmb: "CMB",
   icb: "ICB",
   radial: "Radial sphere",
-  earth: "Earth surface",
+  earth: "Outer surface",
   equator: "Equator 1",
   equator2: "Equator 2",
   meridian: "Meridian 1",
@@ -324,6 +325,7 @@ const params = {
 
   showEarthSurface: false,
   earthDisplayMode: "texture",
+  earthTextureBody: "earth",
   earthField: "Br_Earth_lmax13",
   earthLongitudeDeg: 0.0,
   earthRadiusScale: 1.83,
@@ -415,7 +417,9 @@ let meridianFillerMesh = null;
 let meridian2FillerMesh = null;
 let fieldLineGroups = { shell: null, exterior: null };
 let earthMesh = null;
-let earthTexture = null;
+const surfaceTextures = new Map();
+const surfaceTexturePromises = new Map();
+const SURFACE_TEXTURE_CACHE_SIZE = 3;
 const fieldLineDataCache = new Map();
 const fieldLineDataCacheMeta = new Map();
 const isosurfaceObjectCache = new Map();
@@ -429,10 +433,6 @@ const renderRequestVersions = new Map();
 let fieldLineDataCacheBytes = 0;
 let heavyObjectCacheBytes = 0;
 let cacheAccessCounter = 0;
-
-const EARTH_TEXTURE_URL = appPublicUrl("assets/earth_blue_marble.png");
-const EARTH_TEXTURE_SOURCE_URL = "https://svs.gsfc.nasa.gov/2915/";
-const EARTH_TEXTURE_ATTRIBUTION = "Earth imagery: NASA/Goddard Space Flight Center Scientific Visualization Studio.";
 
 const dataCache = new Map();
 const dataCacheMeta = new Map();
@@ -1158,28 +1158,67 @@ function updateFieldLineVisuals() {
   }
 }
 
-async function ensureEarthTexture() {
-  if (earthTexture) return earthTexture;
+async function ensureEarthTexture(body) {
+  if (!Object.prototype.hasOwnProperty.call(SURFACE_TEXTURES, body)) {
+    throw new Error("Unknown planet or moon texture.");
+  }
+  if (surfaceTextures.has(body)) {
+    const texture = surfaceTextures.get(body);
+    surfaceTextures.delete(body);
+    surfaceTextures.set(body, texture);
+    return texture;
+  }
+  if (surfaceTexturePromises.has(body)) return surfaceTexturePromises.get(body);
+  const surface = SURFACE_TEXTURES[body];
   const loader = new THREE.TextureLoader();
   loader.setCrossOrigin("anonymous");
-  const texture = await new Promise((resolve, reject) => {
-    loader.load(EARTH_TEXTURE_URL, resolve, undefined, reject);
+  const pending = new Promise((resolve, reject) => {
+    loader.load(appPublicUrl(surface.file), resolve, undefined, () => {
+      reject(new Error(`Could not load the ${surface.label} image. Select the body again to retry.`));
+    });
+  }).then(texture => {
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.ClampToEdgeWrapping;
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+    surfaceTextures.set(body, texture);
+    // Bound decoded-image memory when cycling through all seven bodies. Meshes
+    // own texture clones; evicting a source never disposes the displayed clone.
+    while (surfaceTextures.size > SURFACE_TEXTURE_CACHE_SIZE) {
+      const oldest = surfaceTextures.keys().next().value;
+      surfaceTextures.get(oldest).dispose();
+      surfaceTextures.delete(oldest);
+    }
+    return texture;
+  }).finally(() => {
+    surfaceTexturePromises.delete(body);
   });
-  earthTexture = texture;
-  texture.wrapS = THREE.RepeatWrapping;
-  texture.wrapT = THREE.ClampToEdgeWrapping;
-  texture.colorSpace = THREE.SRGBColorSpace;
-  // Keep coastlines legible where the globe turns away from the camera.
-  texture.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  surfaceTexturePromises.set(body, pending);
+  return pending;
+}
 
+function updateSurfaceAttribution(body) {
+  const surface = SURFACE_TEXTURES[body];
   let attrib = document.getElementById("earth-attribution");
   if (!attrib) {
     attrib = document.createElement("div");
     attrib.id = "earth-attribution";
-    attrib.innerHTML = '<div>' + EARTH_TEXTURE_ATTRIBUTION + '</div><div><a href="' + EARTH_TEXTURE_SOURCE_URL + '" target="_blank" rel="noopener">NASA Blue Marble source and credits</a></div>';
     document.body.appendChild(attrib);
   }
-  return earthTexture;
+  const credit = document.createElement("div");
+  credit.textContent = surface.credit;
+  const source = document.createElement("a");
+  source.textContent = "Image source";
+  source.href = surface.sourceUrl;
+  source.target = "_blank";
+  source.rel = "noopener noreferrer";
+  const fullCredits = document.createElement("a");
+  fullCredits.textContent = "Full credits and licences";
+  fullCredits.href = appPublicUrl("assets/surfaces/CREDITS.txt");
+  fullCredits.target = "_blank";
+  fullCredits.rel = "noopener noreferrer";
+  attrib.replaceChildren(credit, source, document.createTextNode(" · "), fullCredits);
+  attrib.style.display = "block";
 }
 
 function getActiveCmbClipOptions() {
@@ -1362,7 +1401,7 @@ function makeEarthSurfaceMesh(radius, opacity, texture, longitudeDeg, clipOption
   const uvs = [];
   const indices = [];
 
-  // Geometry is fixed in the dynamo frame: north pole is always +z.
+  // Geometry is fixed in the simulation frame: north pole is always +z.
   // The longitude control must only shift the texture in u, never rotate/tilt the mesh.
 
   for (let it = 0; it <= nTheta; it++) {
@@ -1420,8 +1459,8 @@ function makeEarthSurfaceMesh(radius, opacity, texture, longitudeDeg, clipOption
   textureMap.wrapS = THREE.RepeatWrapping;
   textureMap.wrapT = THREE.ClampToEdgeWrapping;
   textureMap.colorSpace = THREE.SRGBColorSpace;
-  // A standard world map has Greenwich at u=0.5, north at v=1.
-  // At zero offset Greenwich lies along +x; east longitude increases toward +y.
+  // The image centre lies along +x at zero offset; north is at v=1.
+  // Increasing simulation longitude samples the map eastward toward +y.
   textureMap.offset.x = 0.5 - Number(longitudeDeg) / 360.0;
   textureMap.offset.y = 0.0;
   textureMap.repeat.set(1.0, 1.0);
@@ -1596,43 +1635,46 @@ async function updateEarthSurface(options = {}) {
 
       if (attribution) attribution.style.display = "none";
     } else {
-      hideColourbarForSlot("earth");
+      const body = params.earthTextureBody;
+      const longitudeDeg = Number(params.earthLongitudeDeg);
       const radius = Number(metadata?.radii?.outer || metadata?.r_outer || 1.0)
         * Number(params.earthRadiusScale);
 
       const canReuseTexture = reuseGeometry
         && earthMesh?.userData?.viewerTopology?.kind === "earth-texture"
+        && earthMesh.userData.viewerTopology.body === body
+        && earthMesh.userData.viewerTopology.longitudeDeg === longitudeDeg
         && Math.abs(Number(earthMesh.userData.viewerTopology.radius) - radius) < 1.0e-12;
 
       if (canReuseTexture) {
         earthMesh.visible = true;
         applyOpacityAndDepth(earthMesh.material, params.earthOpacity);
       } else {
-        const texture = await loadForRender(request, () => ensureEarthTexture());
+        const texture = await loadForRender(request, () => ensureEarthTexture(body));
         if (!renderRequestIsCurrent(request)) return;
         const replacement = makeEarthSurfaceMesh(
           radius,
           params.earthOpacity,
           texture,
-          params.earthLongitudeDeg,
+          longitudeDeg,
           clipOptions
         );
         disposeObject(earthMesh);
         earthMesh = replacement;
-        earthMesh.userData.viewerTopology = { kind: "earth-texture", radius };
+        earthMesh.userData.viewerTopology = { kind: "earth-texture", radius, body, longitudeDeg };
         earthMesh.visible = true;
         scene.add(earthMesh);
       }
 
-      if (attribution) attribution.style.display = "block";
+      hideColourbarForSlot("earth");
+      updateSurfaceAttribution(body);
     }
 
     await rebuildGapFillers();
   } catch (err) {
     if (!renderRequestIsCurrent(request)) return;
-    console.warn("Could not update Earth surface", err);
-    hideColourbarForSlot("earth");
-    setStatus(`Earth surface could not be loaded: ${err.message}`);
+    console.warn("Could not update outer surface", err);
+    setStatus(`Outer surface could not be loaded: ${err.message}`);
   }
 }
 
@@ -5991,6 +6033,10 @@ function disposeObject(obj) {
 
   if (obj.geometry) obj.geometry.dispose();
 
+  // Surface images are cloned for each mesh's longitude transform. They are
+  // owned by that mesh and must be released when switching bodies or modes.
+  if (obj.userData?.viewerTopology?.kind === "earth-texture") obj.material?.map?.dispose();
+
   if (obj.material) {
     if (Array.isArray(obj.material)) {
       for (const mat of obj.material) mat.dispose();
@@ -6043,7 +6089,7 @@ function setStatusSummary(lastFieldName = null) {
   const shownMap = {shell: "shell/internal", exterior: "exterior potential/poloidal", both: "both"};
   const lineMode = metadata.field_lines?.mode ? `B lines=${metadata.field_lines.mode}, shown=${shownMap[params.fieldLineDisplay] || params.fieldLineDisplay} | ` : "";
   const earthText = params.showEarthSurface
-    ? `, Earth=${params.earthDisplayMode === "magnetic" ? params.earthField : "texture"}`
+    ? `, Surface=${params.earthDisplayMode === "magnetic" ? params.earthField : SURFACE_TEXTURES[params.earthTextureBody]?.label}`
     : "";
   const fieldText = `CMB=${params.cmbField}, ICB=${params.icbField}, R=${params.radialField}@${Number(params.radialSurfaceRadiusRo).toFixed(3)}ro${earthText}, Eq1=${params.equatorField}, Eq2=${params.equator2Field}, Mer1=${params.meridianField}, Mer2=${params.meridian2Field}`;
   const changed = lastFieldName ? ` | updated=${lastFieldName}` : "";
@@ -6361,7 +6407,7 @@ function updateVisibility() {
   const earthAttribution = document.getElementById("earth-attribution");
   if (earthAttribution) {
     earthAttribution.style.display = params.showEarthSurface
-      && params.earthDisplayMode === "texture" ? "block" : "none";
+      && earthMesh?.userData?.viewerTopology?.kind === "earth-texture" ? "block" : "none";
   }
   updateAxesOverlay();
   applyLegendLayout();
@@ -6760,6 +6806,7 @@ function applySnapshotParam(key, value) {
   if (!validFieldForState(key, value)) return false;
   if (key === "fieldLineDisplay" && !getAvailableFieldLineModes().includes(value)) return false;
   if (key === "earthDisplayMode" && !["texture", "magnetic"].includes(value)) return false;
+  if (key === "earthTextureBody" && !Object.prototype.hasOwnProperty.call(SURFACE_TEXTURES, value)) return false;
   if (key === "isoTransparencyMode" && !["stable", "smooth"].includes(value)) return false;
   if (["legendPosition", "titlePosition", "exportPanelPosition"].includes(key) && !PANEL_POSITIONS.has(value)) return false;
   params[key] = value;
@@ -6772,6 +6819,11 @@ function applyViewStateParams(snapshot) {
     throw new Error("View state must contain a parameter object.");
   }
   const snap = snapshot?.params ? snapshot : { params: snapshot || {} };
+  // Full view codes created before body selection always used the Earth image.
+  // Partial parameter objects still change only the supplied options.
+  if (snapshot.params && snapshot.version && !Object.prototype.hasOwnProperty.call(snap.params, "earthTextureBody")) {
+    params.earthTextureBody = "earth";
+  }
   const skippedFields = [];
   for (const [key, value] of Object.entries(snap.params || {})) {
     const applied = applySnapshotParam(key, value);
@@ -7449,11 +7501,11 @@ function buildGui() {
     "Smooth (may reorder)": "smooth",
   }).name("Transparency").onChange(refreshIsosurfaces);
 
-  const earthFolder = gui.addFolder("Earth surface");
-  const rebuildEarth = debouncedViewerTask("Earth surface update", () => updateEarthSurface({ reuseGeometry: false }));
-  const recolourEarth = debouncedViewerTask("Earth surface colour update", () => updateEarthSurface({ reuseGeometry: true }));
+  const earthFolder = gui.addFolder("Planet / moon surface");
+  const rebuildEarth = debouncedViewerTask("Outer surface update", () => updateEarthSurface({ reuseGeometry: false }));
+  const recolourEarth = debouncedViewerTask("Outer surface colour update", () => updateEarthSurface({ reuseGeometry: true }));
   const earthFields = getEarthFieldNames();
-  const earthModes = { "Earth image": "texture" };
+  const earthModes = { "Surface image": "texture" };
   if (earthFields.length > 0) earthModes["Magnetic B_r"] = "magnetic";
   if (params.earthDisplayMode === "magnetic" && earthFields.length === 0) {
     params.earthDisplayMode = "texture";
@@ -7463,6 +7515,7 @@ function buildGui() {
   }
   earthFolder.add(params, "showEarthSurface").name("Show").onChange(rebuildEarth);
   earthFolder.add(params, "earthDisplayMode", earthModes).name("Display").onChange(rebuildEarth);
+  earthFolder.add(params, "earthTextureBody", SURFACE_TEXTURE_OPTIONS).name("Image body").onChange(rebuildEarth);
   if (earthFields.length > 0) {
     earthFolder.add(params, "earthField", earthFields).name("Magnetic field").onChange(rebuildEarth);
     earthFolder.add(params, "earthScale", ["symmetric", "minmax", "manual"]).name("Scale").onChange(recolourEarth);
@@ -7471,7 +7524,7 @@ function buildGui() {
     earthFolder.add(params, "earthMax").name("Manual max").onFinishChange(recolourEarth);
   }
   earthFolder.add(params, "earthLongitudeDeg", -180, 180, 1).name("Texture longitude").onFinishChange(rebuildEarth);
-  earthFolder.add(params, "earthRadiusScale", 1.0, 2.5, 0.01).name("Texture radius / core").onFinishChange(rebuildEarth);
+  earthFolder.add(params, "earthRadiusScale", 1.0, 2.5, 0.01).name("Image radius / outer").onFinishChange(rebuildEarth);
   earthFolder.add(params, "earthOpacity", 0.05, 1.0, 0.01).name("Opacity").onChange(updateOpacities);
   earthFolder.add(params, "showSliceGapFiller").name("Slice gap filler")
     .onChange(viewerTaskCallback("Slice gap filler", rebuildGapFillers));

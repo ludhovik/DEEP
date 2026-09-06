@@ -1,5 +1,23 @@
 # Integrated package validation
 
+## Planet and moon images (2026-09-06)
+
+- `npm run test-viewer`: 46 passing tests. Seven new regressions exercise body
+  selection and saved-code compatibility, out-of-order image loads and credits,
+  failure/retry, hiding during a pending load, geometry reuse, bounded source
+  caching and disposal of replaced texture clones. Image/network/DOM objects
+  use test doubles; the texture objects and existing sphere tests use Three.js.
+- `npm run build` passes on Node 24 with the installed lockfile dependencies.
+  The existing large JavaScript chunk advisory remains.
+- All seven source maps were visually inspected. Pillow decoded each complete
+  image and verified a 2:1 aspect ratio, with no map borders or labels. The six
+  new JPEGs total about 5.4 MiB; only the selected image is requested at runtime.
+  The deployed assets match the source files byte for byte. Source URLs, credits,
+  licences and map limitations are in `public/assets/surfaces/CREDITS.txt`.
+- Browser/GPU visual validation remains unperformed in this environment. After
+  applying, open the demo and switch all seven choices under Planet / moon
+  surface; check longitude, poles, opacity, clipping, and a copied view code.
+
 ## Earth image and dataset launcher (2026-09-06)
 
 - `npm ci --no-audit --no-fund` and `npm run build` pass using the lockfile.
