@@ -665,6 +665,17 @@ class ConverterPackageTests(unittest.TestCase):
             self.assertTrue((backups[0] / "C_volume.f32").is_file())
             self.assertEqual([p.name for p in (repo / "public").iterdir()], ["data"])
 
+    def test_reconversion_preserves_the_dataset_default_view(self):
+        from tools.viewer_bundle import staged_bundle_output
+        with tempfile.TemporaryDirectory() as folder:
+            root = pathlib.Path(folder) / "output"
+            self.minimal_bundle(root)
+            code = "DTV2:eyJ2ZXJzaW9uIjoyLCJzY29wZSI6InZpZXctb25seSIsInBhcmFtcyI6e319\n"
+            (root / "view.DTV2").write_text(code)
+            with staged_bundle_output(root) as stage:
+                self.minimal_bundle(stage, 2)
+            self.assertEqual((root / "view.DTV2").read_text(), code)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

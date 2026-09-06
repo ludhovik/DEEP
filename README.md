@@ -278,6 +278,45 @@ applied.
 Older `DTV1:` codes remain readable, but any dataset path embedded in them is
 ignored.
 
+### Default view stored with a dataset
+
+Put a plain UTF-8 file named **`view.DTV2`** beside `metadata.json`. Its contents
+are the complete `DTV2:...` code produced by **View state → Copy code**, with
+an optional final newline. No change to `metadata.json` is needed. DEEPscope
+automatically applies that view when opening the primary dataset, before the
+first render. The convention works with local folders, local-server paths,
+HTTP datasets, Figshare and Zenodo records that include the file.
+
+To save the current setup, use **View state → Save view.DTV2**:
+
+1. For a folder opened with **Select primary folder**, a supporting browser asks
+   for write permission and creates or replaces `view.DTV2` in that folder.
+   Reading a dataset never requests write access.
+2. If the source is remote, was opened by a server path, or the browser only
+   supports read-only folder selection, the viewer offers a `view.DTV2` file to
+   save/download. Place it beside `metadata.json`, or upload it with the remote
+   dataset. A web page cannot directly write into a Figshare/Zenodo record.
+
+**Download view.DTV2** always offers a separate copy. After adding a file through
+a download, reselect a folder opened with read-only file input so the viewer can
+see the new file. After updating a remote record, refresh the page and reopen
+the dataset. Keep the exact filename `view.DTV2`, including its capitalization.
+Writing through a selected folder depends on the browser's
+[File System Access permission support](https://developer.mozilla.org/en-US/docs/Web/API/FileSystemHandle/requestPermission).
+
+For a sequence, put the shared view at the root beside `sequence.json`; **Save
+view.DTV2** writes there even when a later frame is selected. If the root has no
+usable view file, the initial frame's `view.DTV2` is tried. The view is applied
+once when opening the sequence, not at each playback frame. Secondary datasets
+do not replace the primary view.
+
+A missing view file leaves normal loading unchanged. Invalid/unreadable view
+files are reported without blocking the dataset; optional network lookups have
+a five-second timeout. If saved settings fail to render, the viewer retries the
+new dataset with its normal view. Compatible settings are applied, unavailable
+fields are skipped, and dataset paths/frame numbers embedded in a code are
+ignored. Re-running a converter preserves a `view.DTV2` at the output root.
+
 ## Sequences
 
 A sequence root has this shape:

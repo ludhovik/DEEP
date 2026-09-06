@@ -392,6 +392,7 @@ const params = {
   showViewStateCode: () => showViewStateCode(),
   loadViewStateCode: () => loadViewStateCode(),
   saveViewStateCode: () => saveViewStateCode(),
+  downloadViewStateCode: () => downloadViewStateCode(),
 
   resetCamera: () => { resetCameraView(); syncCameraParamsFromCamera(true); },
 };
@@ -442,6 +443,8 @@ let datasetRootPath = DEFAULT_DATASET_ROOT;
 let dataBasePath = DEFAULT_DATASET_ROOT;
 let secondaryDataset = null;
 const datasetFolderSources = new Map();
+let activeDatasetFolderSource = null;
+let datasetViewSaveInProgress = false;
 let sequenceIndex = null;
 let sequenceTimer = null;
 let sequenceFrameLoading = false;
@@ -1859,7 +1862,7 @@ async function fetchRemoteRepositoryResource(path, options = {}) {
         statusText: "Not Found",
       });
     }
-    return await fetchWithTimeout(downloadUrl, { signal: options.signal });
+    return await fetchWithTimeout(downloadUrl, { signal: options.signal, cache: options.cache }, options.timeoutMs);
   } catch (error) {
     remoteRepositoryIndexCache.delete(cacheKey);
     if (error?.name === "AbortError" || error?.name === "TimeoutError") throw error;
@@ -1872,18 +1875,18 @@ async function fetchRemoteRepositoryResource(path, options = {}) {
 
 async function fetchDatasetResource(path, options = {}) {
   const signal = options.signal || datasetRequestSignal || undefined;
-  const repositoryResponse = await fetchRemoteRepositoryResource(path, { signal });
+  const repositoryResponse = await fetchRemoteRepositoryResource(path, { ...options, signal });
   if (repositoryResponse) return repositoryResponse;
 
   const localPath = parseLocalFilesystemPath(path);
   if (localPath) {
     const encodedPath = encodeLocalFilesystemPath(localPath);
     const endpoint = `/__localfs__/${encodedPath}`;
-    return await fetchWithTimeout(endpoint, { cache: "no-store", signal });
+    return await fetchWithTimeout(endpoint, { cache: "no-store", signal }, options.timeoutMs);
   }
 
   const folderPath = parseFolderSourcePath(path);
-  if (!folderPath) return await fetchWithTimeout(path, { signal });
+  if (!folderPath) return await fetchWithTimeout(path, { signal, cache: options.cache }, options.timeoutMs);
 
   const source = datasetFolderSources.get(folderPath.role);
   if (!source) {
@@ -6659,6 +6662,9 @@ function addDisplayControls(gui, slot, label, fieldParam, showParam, opacityPara
 
 const VIEW_STATE_PREFIX = "DTV2:";
 const LEGACY_VIEW_STATE_PREFIX = "DTV1:";
+const DATASET_VIEW_FILENAME = "view.DTV2";
+const DATASET_VIEW_TIMEOUT_MS = 5000;
+const MAX_DATASET_VIEW_CODE_LENGTH = 262144;
 const VIEW_STATE_EXCLUDED_PARAMS = new Set([
   "datasetPath",
   "secondaryDatasetPath",
@@ -6746,20 +6752,21 @@ function applySnapshotParam(key, value) {
   return true;
 }
 
-async function applyViewState(snapshot) {
+function applyViewStateParams(snapshot) {
   if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)
     || (snapshot.params !== undefined && (!snapshot.params || typeof snapshot.params !== "object" || Array.isArray(snapshot.params)))) {
     throw new Error("View state must contain a parameter object.");
   }
-  pauseSequence(false);
-  cancelPendingViewerTasks();
-  const context = captureRenderContext();
   const snap = snapshot?.params ? snapshot : { params: snapshot || {} };
   const skippedFields = [];
   for (const [key, value] of Object.entries(snap.params || {})) {
     const applied = applySnapshotParam(key, value);
     if (!applied && key.endsWith("Field")) skippedFields.push(String(value));
   }
+  return skippedFields;
+}
+
+function refreshViewPresentation() {
   updateLighting();
   updateBackgroundColor();
   applyCameraViewFromParams();
@@ -6767,6 +6774,14 @@ async function applyViewState(snapshot) {
   applyLegendLayout();
   applyExportPanelLayout();
   buildGui();
+}
+
+async function applyViewState(snapshot) {
+  const skippedFields = applyViewStateParams(snapshot);
+  pauseSequence(false);
+  cancelPendingViewerTasks();
+  const context = captureRenderContext();
+  refreshViewPresentation();
   await rebuildAllMeshes();
   if (!renderContextIsCurrent(context)) return;
   await loadFieldLines();
@@ -6814,10 +6829,104 @@ async function loadViewStateCode() {
   }
 }
 
+async function loadDatasetViewState(rootPath, basePath = rootPath, signal = datasetRequestSignal) {
+  const warnings = [];
+  // A sequence-wide view takes precedence over its initial frame's view.
+  for (const folder of [...new Set([rootPath, basePath])]) {
+    const url = dataUrlForBase(folder, DATASET_VIEW_FILENAME);
+    try {
+      if (signal?.aborted) throw signal.reason || new DOMException("Dataset load cancelled", "AbortError");
+      const response = await fetchDatasetResource(url, {
+        signal, timeoutMs: DATASET_VIEW_TIMEOUT_MS, cache: "no-store",
+      });
+      if (!response.ok) {
+        releaseDatasetResponse(response);
+        if (response.status === 404 || response.status === 410) continue;
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const code = (await readDatasetResponse(response, "text")).trim();
+      if (signal?.aborted) throw signal.reason || new DOMException("Dataset load cancelled", "AbortError");
+      // Static SPA hosts may return index.html for a missing optional file.
+      if (/^(?:<!doctype\s+html|<html\b)/i.test(code)) continue;
+      if (!code.startsWith(VIEW_STATE_PREFIX) || code.length > MAX_DATASET_VIEW_CODE_LENGTH) {
+        throw new Error("expected a DTV2: view code");
+      }
+      const snapshot = decodeViewState(code);
+      if (snapshot?.version !== 2 || snapshot?.scope !== "view-only"
+        || !snapshot.params || typeof snapshot.params !== "object" || Array.isArray(snapshot.params)) {
+        throw new Error("expected a version 2 view-only parameter object");
+      }
+      return { snapshot, source: url, warnings };
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      warnings.push(`${DATASET_VIEW_FILENAME} at ${folder} ignored: ${error?.message || error}`);
+    }
+  }
+  return { snapshot: null, source: null, warnings };
+}
+
+function viewStateBlob() {
+  return new Blob([encodeViewState(collectViewState()) + "\n"], { type: "text/plain;charset=utf-8" });
+}
+
+async function writeDatasetViewFile(source, relativePath, blob) {
+  if (source?.type !== "handle" || typeof source.handle?.requestPermission !== "function") return false;
+  // Request permission directly from the Save button's user gesture, before
+  // traversing subdirectories. Reading a dataset never requests write access.
+  const permission = await source.handle.requestPermission({ mode: "readwrite" });
+  if (permission !== "granted") return false;
+  let directory = source.handle;
+  for (const part of String(relativePath || "").split("/").filter(Boolean)) {
+    if (part === "." || part === "..") throw new Error("Invalid dataset subdirectory.");
+    directory = await directory.getDirectoryHandle(part);
+  }
+  const handle = await directory.getFileHandle(DATASET_VIEW_FILENAME, { create: true });
+  const writable = await handle.createWritable();
+  try {
+    await writable.write(blob);
+    await writable.close();
+  } catch (error) {
+    try { await writable.abort(); } catch { /* The stream may already be closed. */ }
+    throw error;
+  }
+  return true;
+}
+
+async function downloadViewStateCode() {
+  return await saveBlob(viewStateBlob(), DATASET_VIEW_FILENAME, "view-state");
+}
+
 async function saveViewStateCode() {
-  const code = encodeViewState(collectViewState());
-  const blob = new Blob([code + "\n"], { type: "text/plain;charset=utf-8" });
-  await saveBlob(blob, `deepscope-view-state-${Date.now()}.txt`, "view-state");
+  if (datasetLoadInProgress || sequenceFrameLoading) {
+    setStatus("Wait for dataset/frame loading to finish before saving its view.");
+    return;
+  }
+  if (datasetViewSaveInProgress) return;
+  datasetViewSaveInProgress = true;
+  // Capture both the code and its destination before any permission prompt.
+  const root = datasetRootPath;
+  const folder = parseFolderSourcePath(root);
+  const source = activeDatasetFolderSource;
+  try {
+    const blob = viewStateBlob();
+    if (folder && await writeDatasetViewFile(source, folder.relativePath, blob)) {
+      setStatus(`Saved ${DATASET_VIEW_FILENAME} in ${source.handle.name || root}. It will be applied when this dataset opens.`);
+      return;
+    }
+    const result = await saveBlob(blob, DATASET_VIEW_FILENAME, "view-state");
+    if (result !== "cancelled") {
+      setStatus(`${DATASET_VIEW_FILENAME} ${result === "saved" ? "saved" : "download requested"}. Place it beside metadata.json (or sequence.json for a sequence), then reopen the dataset. Reselect read-only folders to include the new file.`);
+    }
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      setStatus(`Save cancelled for ${DATASET_VIEW_FILENAME}.`);
+    } else {
+      console.error("Could not save dataset view", error);
+      setStatus(`Could not save ${DATASET_VIEW_FILENAME}: ${error?.message || error}. Use Download view.DTV2 to save a copy.`);
+    }
+  } finally {
+    datasetViewSaveInProgress = false;
+  }
 }
 
 const DATASET_FIELD_PARAM_KEYS = [
@@ -6914,18 +7023,24 @@ function captureDatasetState() {
     coords,
     sequenceIndex,
     secondaryDataset,
+    activeDatasetFolderSource,
+    viewParams: { ...params },
     sequenceFrame: params.sequenceFrame,
     fields: Object.fromEntries(DATASET_FIELD_PARAM_KEYS.map((key) => [key, params[key]])),
   };
 }
 
 function restoreDatasetState(state) {
+  if (state.viewParams) Object.assign(params, state.viewParams);
+  // Loading deliberately paused the old sequence; its timer was cancelled.
+  params.sequencePlaying = false;
   datasetRootPath = state.datasetRootPath;
   dataBasePath = state.dataBasePath;
   metadata = state.metadata;
   coords = state.coords;
   sequenceIndex = state.sequenceIndex;
   secondaryDataset = state.secondaryDataset;
+  activeDatasetFolderSource = state.activeDatasetFolderSource || null;
   params.datasetPath = state.datasetRootPath;
   params.sequenceFrame = state.sequenceFrame;
   for (const [key, value] of Object.entries(state.fields)) params[key] = value;
@@ -6939,6 +7054,9 @@ async function loadDatasetFromParams() {
   }
 
   const requestedRoot = normaliseDatasetRoot(params.datasetPath);
+  const requestedFolder = parseFolderSourcePath(requestedRoot);
+  const requestedFolderSource = requestedFolder ? datasetFolderSources.get(requestedFolder.role) : null;
+  syncCameraParamsFromCamera(false);
   const previous = captureDatasetState();
   const controller = new AbortController();
   let committed = false;
@@ -6976,6 +7094,7 @@ async function loadDatasetFromParams() {
       firstFieldFile,
       Number(candidateMetadata.nr) * Number(candidateMetadata.ntheta) * Number(candidateMetadata.nphi)
     );
+    const datasetView = await loadDatasetViewState(requestedRoot, candidateBasePath, controller.signal);
 
     datasetRootPath = requestedRoot;
     dataBasePath = candidateBasePath;
@@ -6983,6 +7102,7 @@ async function loadDatasetFromParams() {
     metadata = candidateMetadata;
     coords = candidateCoords;
     secondaryDataset = null;
+    activeDatasetFolderSource = requestedFolderSource || null;
     params.datasetPath = requestedRoot;
     params.sequenceFrame = 0;
     if (sequenceIndex?.frames?.length > 0) {
@@ -6995,15 +7115,36 @@ async function loadDatasetFromParams() {
     committed = true;
 
     applyDefaultFields();
-    buildGui();
-    updateLighting();
-    updateBackgroundColor();
-
-    await rebuildAllMeshes();
-    await loadFieldLines();
+    const fallbackParams = { ...params };
+    let usedDatasetView = false;
+    let skippedViewFields = [];
+    if (datasetView.snapshot) {
+      skippedViewFields = applyViewStateParams(datasetView.snapshot);
+      usedDatasetView = true;
+    }
+    try {
+      refreshViewPresentation();
+      await rebuildAllMeshes();
+      await loadFieldLines();
+    } catch (viewError) {
+      if (!usedDatasetView || controller.signal.aborted) throw viewError;
+      // Optional appearance settings must not prevent a valid dataset opening.
+      Object.assign(params, fallbackParams);
+      disposeHeavyPlaybackCaches();
+      refreshViewPresentation();
+      datasetView.warnings.push(`${DATASET_VIEW_FILENAME} could not be rendered; default view used: ${viewError?.message || viewError}`);
+      usedDatasetView = false;
+      await rebuildAllMeshes();
+      await loadFieldLines();
+    }
+    updateFieldLineVisuals();
+    updateOpacities();
     updateVisibility();
     rememberDatasetRoot(requestedRoot);
-    setStatusSummary(`dataset:${datasetRootPath}`);
+    const viewStatus = usedDatasetView
+      ? `; ${DATASET_VIEW_FILENAME} applied${skippedViewFields.length ? `; unavailable fields skipped: ${[...new Set(skippedViewFields)].join(", ")}` : ""}`
+      : "";
+    setStatusSummary(`dataset:${datasetRootPath}${viewStatus}${datasetView.warnings.length ? `; ${datasetView.warnings.join("; ")}` : ""}`);
     hideDatasetLauncher();
     return true;
   } catch (err) {
@@ -7013,7 +7154,7 @@ async function loadDatasetFromParams() {
       disposeHeavyPlaybackCaches();
       if (metadata) {
         try {
-          buildGui();
+          refreshViewPresentation();
           await rebuildAllMeshes();
           await loadFieldLines();
           updateVisibility();
@@ -7135,7 +7276,8 @@ function buildGui() {
   stateFolder.add(params, "copyViewStateCode").name("Copy code");
   stateFolder.add(params, "showViewStateCode").name("Show code");
   stateFolder.add(params, "loadViewStateCode").name("Load code");
-  stateFolder.add(params, "saveViewStateCode").name("Save code to file");
+  stateFolder.add(params, "saveViewStateCode").name("Save view.DTV2");
+  stateFolder.add(params, "downloadViewStateCode").name("Download view.DTV2");
 
   const volumeFields = getVolumeFieldNames();
   const cmbFields = getCmbFieldNames();
@@ -7365,6 +7507,7 @@ async function saveBlob(blob, filename, description = "file") {
       const pickerTypes = {
         png: [{ description: "PNG image", accept: { "image/png": [".png"] } }],
         pdf: [{ description: "PDF document", accept: { "application/pdf": [".pdf"] } }],
+        dtv2: [{ description: "DEEPscope view code", accept: { "text/plain": [".DTV2"] } }],
         webm: [{ description: "WebM video", accept: { "video/webm": [".webm"] } }],
         webm: [{ description: "WebM video", accept: { "video/webm": [".webm"] } }],
       };
@@ -7376,11 +7519,11 @@ async function saveBlob(blob, filename, description = "file") {
       await writable.write(blob);
       await writable.close();
       setStatus(`Saved ${filename}.`);
-      return;
+      return "saved";
     } catch (err) {
       if (err?.name === "AbortError") {
         setStatus(`Save cancelled for ${filename}.`);
-        return;
+        return "cancelled";
       }
       console.warn("Save picker failed; falling back to download link.", err);
     }
@@ -7396,6 +7539,7 @@ async function saveBlob(blob, filename, description = "file") {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 5000);
   setStatus(`Download requested for ${filename}. Check your browser Downloads.`);
+  return "downloaded";
 }
 
 

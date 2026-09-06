@@ -1,5 +1,20 @@
 # Integrated package validation
 
+## Dataset default view (2026-09-06)
+
+The `view.DTV2` feature adds optional automatic view loading and saving to a
+selected dataset folder. Viewer regressions cover applying the code before
+the first render, missing/invalid files, render fallback and rollback, sequence
+root precedence, source routing, folder permissions, save/load round trips,
+cancelled/failed writes, and preserving the destination across pending prompts.
+The converter suite also verifies preservation of `view.DTV2` on reconversion.
+
+Validation: 33 viewer logic tests and 32 converter tests pass, along with
+JavaScript/Python syntax checks and patch application to the verified base.
+Rendering and browser file handles use test doubles. No new Vite production
+build or browser/GPU/permission-dialog test was performed here; run the commands
+below and check saving/reopening a local folder in your browser before pushing.
+
 ## Converter/viewer review fixes (2026-09-05)
 
 - Converter regression suite: 31/31 passing (synthetic/import-only native backends).
