@@ -6,7 +6,8 @@ import { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import GUI from "lil-gui";
-import { makeMagneticTubeGeometry, peakLineStrength, estimateTubeBytes } from "./field-line-tubes.js";
+import { makeMagneticTubeGeometry, peakLineStrength, estimateTubeBytes, simplifyMagneticLine } from "./field-line-tubes.js";
+import { createViewerStatus } from "./viewer-status.js";
 import { SURFACE_TEXTURES, SURFACE_TEXTURE_OPTIONS } from "./surface-textures.js";
 
 const APP_BASE_URL = new URL(import.meta.env.BASE_URL || "./", window.location.href);
@@ -18,7 +19,6 @@ const DEFAULT_DATASET_ROOT = appPublicUrl("data").replace(/\/+$/, "");
 const DEFAULT_SECONDARY_DATASET_ROOT = appPublicUrl("data2").replace(/\/+$/, "");
 
 const statusEl = document.getElementById("status");
-const exportMessageEl = document.getElementById("export-message");
 const axesOverlayEl = document.getElementById("axes-overlay");
 const datasetLauncherEl = document.getElementById("dataset-launcher");
 const datasetLauncherStatusEl = document.getElementById("dataset-launcher-status");
@@ -31,6 +31,7 @@ const infoHeaderEl = document.getElementById("info-header");
 const infoContentEl = document.getElementById("info-content");
 const infoCollapseButtonEl = document.getElementById("info-collapse-button");
 const infoResizeHandleEl = document.getElementById("info-resize-handle");
+const infoWarningButtonEl = document.getElementById("info-warning-button");
 const legendPanelEl = document.getElementById("legend-panel");
 const legendHeaderEl = document.getElementById("legend-header");
 const legendContentEl = document.getElementById("legend-content");
@@ -328,6 +329,9 @@ const params = {
   lineTubeMinDiameter: 0.0,
   lineTubeMaxDiameter: 0.08,
   lineTubeSides: 8,
+  lineTubeSimplify: true,
+  lineTubeShapeError: 0.0005,
+  lineTubeEnergyErrorPercent: 1.0,
   lineOpacity: 0.95,
 
   showEarthSurface: false,
@@ -502,22 +506,32 @@ const videoState = {
 
 const cameraParamControllers = [];
 
-function setStatus(text) {
-  statusEl.textContent = text;
-  setExportMessage(text);
-}
+const viewerStatus = createViewerStatus({
+  status: statusEl, panel: infoPanelEl, warningButton: infoWarningButtonEl,
+  notice: document.getElementById("info-notice"), noticeText: document.getElementById("info-notice-text"),
+  dismissButton: document.getElementById("info-dismiss-warning"),
+  onReveal: () => {
+    params.titleCollapsed = false;
+    applyTitleLayout();
+    refreshPanelLayoutControllers();
+  },
+});
 
-function setExportMessage(text) {
-  if (exportMessageEl) exportMessageEl.textContent = text;
+function setStatus(text, options) {
+  viewerStatus.set(text, options);
 }
 
 async function runViewerTask(label, task) {
+  const noticeVersion = viewerStatus.version;
+  const scope = ["Magnetic field-line update", "Magnetic field-line visibility"].includes(label) ? "field-lines" : label;
   try {
-    return await task();
+    const result = await task();
+    viewerStatus.clear(scope, noticeVersion);
+    return result;
   } catch (err) {
     if (err?.name === "AbortError") return null;
     console.error(`${label} failed`, err);
-    setStatus(`${label} failed: ${err?.message || err}`);
+    setStatus(`${label} failed: ${err?.message || err}`, { level: "error", scope });
     return null;
   }
 }
@@ -820,7 +834,7 @@ function bindFloatingPanelControls({
   });
 
   header?.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0 || event.target === collapseButton || !panel) return;
+    if (event.button !== 0 || event.target.closest?.("button") || !panel) return;
     event.preventDefault();
     const startRect = panel.getBoundingClientRect();
     const offsetX = event.clientX - startRect.left;
@@ -1687,7 +1701,7 @@ async function updateEarthSurface(options = {}) {
   } catch (err) {
     if (!renderRequestIsCurrent(request)) return;
     console.warn("Could not update outer surface", err);
-    setStatus(`Outer surface could not be loaded: ${err.message}`);
+    setStatus(`Outer surface could not be loaded: ${err.message}`, { level: "error" });
   }
 }
 
@@ -2069,7 +2083,7 @@ async function selectDatasetFolder(role) {
     }
   } catch (err) {
     console.error(err);
-    setStatus(`Could not select dataset folder: ${err.message}`);
+    setStatus(`Could not select dataset folder: ${err.message}`, { level: "error" });
     return false;
   } finally {
     // Retain only the displayed primary/secondary folders (including a restored
@@ -2484,7 +2498,8 @@ function getFieldLineObjectCacheKey(basePath = dataBasePath) {
     stride: Math.max(1, Math.round(Number(params.lineStride))),
     renderMode: params.lineRenderMode,
     tube: [params.lineTubeDiameter, params.lineTubeReference, params.lineTubeMinDiameter,
-           params.lineTubeMaxDiameter, params.lineTubeSides],
+           params.lineTubeMaxDiameter, params.lineTubeSides, params.lineTubeSimplify,
+           params.lineTubeShapeError, params.lineTubeEnergyErrorPercent],
     radius: metadata?.r_outer,
     colourMode: params.lineColourMode,
     colormap: params.lineColormap,
@@ -2617,16 +2632,31 @@ async function buildFieldLineObjectCacheEntry(context = captureRenderContext()) 
       }));
     }
     const selected = selectFieldLinesByStride(linesByMode, context.params.lineStride);
+    const originalPointCounts = Object.fromEntries(Object.entries(selected).map(([mode, lines]) =>
+      [mode, lines.reduce((sum, line) => sum + (line.points?.length || 0), 0)]));
     const tubeReference = Number(context.params.lineTubeReference) > 0
       ? Number(context.params.lineTubeReference) : peakLineStrength(Object.values(linesByMode).flat()) || 1;
     if (context.params.lineRenderMode === "b2-tubes") {
+      for (const mode of Object.keys(selected)) {
+        selected[mode] = selected[mode].map(line => simplifyMagneticLine(line, {
+          enabled: context.params.lineTubeSimplify,
+          positionTolerance: context.params.lineTubeShapeError * Number(context.metadata.r_outer),
+          energyTolerance: context.params.lineTubeEnergyErrorPercent / 100,
+        }));
+      }
       const bytes = estimateTubeBytes(Object.values(selected).flat(), context.params.lineTubeSides);
       if (bytes > 192 * 1024 * 1024) {
-        throw new Error("B² tubes exceed the geometry budget. Increase Line stride or reduce Tube sides.");
+        throw new Error(`B² tubes exceed the geometry budget: estimated ${(bytes / 1024 ** 2).toFixed(1)} MiB, limit 192 MiB. `
+          + `${context.params.lineTubeSimplify ? "Increase the simplification error limits, " : "Enable Simplify tubes, "}`
+          + "increase Line stride or reduce Tube sides.");
       }
     }
     for (const [mode, lines] of Object.entries(linesByMode)) {
       const group = withCapturedRenderContext(context, () => makeFieldLineGroup(lines, mode, selected[mode], tubeReference));
+      group.userData.tubeOriginalPoints = originalPointCounts[mode];
+      group.userData.tubePoints = selected[mode].reduce((sum, line) => sum + (line.points?.length || 0), 0);
+      group.userData.tubeEstimatedBytes = estimateTubeBytes(selected[mode], context.params.lineTubeSides);
+      group.userData.tubeSimplified = Boolean(context.params.lineTubeSimplify);
       group.visible = false;
       groups[mode] = group;
       allLoadedLines = allLoadedLines.concat(group.userData.lines || []);
@@ -2805,7 +2835,7 @@ async function loadSequenceIndex(silent = false) {
   } catch (err) {
     console.warn("Could not load sequence.json", err);
     sequenceIndex = null;
-    if (!silent) setStatus(`Could not load sequence: ${err.message}`);
+    if (!silent) setStatus(`Could not load sequence: ${err.message}`, { level: "error" });
     return null;
   }
 }
@@ -3081,7 +3111,7 @@ async function loadFrameByIndex(index, options = {}) {
       }
     }
     refreshSequenceControllers();
-    setStatus(`Could not load sequence frame: ${err?.message || err}`);
+    setStatus(`Could not load sequence frame: ${err?.message || err}`, { level: "error" });
     return false;
   } finally {
     sequenceFrameLoading = false;
@@ -3103,7 +3133,7 @@ function scheduleNextSequenceFrame() {
     const loaded = await loadFrameByIndex(next, { playback: true, skipEarthUpdate: true });
     if (!loaded) {
       pauseSequence(false);
-      setStatus("Sequence playback stopped because a frame could not be loaded.");
+      setStatus("Sequence playback stopped because a frame could not be loaded.", { level: "error" });
       return;
     }
     scheduleNextSequenceFrame();
@@ -3145,7 +3175,7 @@ function pauseSequence(refreshHeavy = true) {
   if (refreshHeavy && (wasPlaying || deferredSequenceObjectsHidden) && !sequencePngExportActive) {
     refreshDeferredSequenceObjects().catch((err) => {
       console.error(err);
-      setStatus(`Could not refresh deferred objects: ${err.message}`);
+      setStatus(`Could not refresh deferred objects: ${err.message}`, { level: "error" });
     });
   }
 }
@@ -3389,7 +3419,7 @@ async function loadSecondaryDatasetFromParams() {
       }
     }
     buildGui();
-    setStatus(`Could not load secondary dataset: ${err.message}`);
+    setStatus(`Could not load secondary dataset: ${err.message}`, { level: "error" });
     return false;
   } finally {
     setDatasetLoadingState(false);
@@ -6235,6 +6265,10 @@ function setStatusSummary(lastFieldName = null) {
   const groups = Object.values(fieldLineGroups).filter(Boolean);
   const tubeInfo = params.showFieldLines && params.lineRenderMode === "b2-tubes"
     ? ` | Tube diameter ∝ B²; reference |B|=${formatNumber(groups[0]?.userData.tubeReference || 1)}`
+      + `; ${groups[0]?.userData.tubeSimplified ? "simplified" : "original"} points `
+      + `${groups.reduce((sum, g) => sum + (g.userData.tubePoints || 0), 0).toLocaleString()}`
+      + `/${groups.reduce((sum, g) => sum + (g.userData.tubeOriginalPoints || 0), 0).toLocaleString()}`
+      + `; mesh estimate ${(groups.reduce((sum, g) => sum + (g.userData.tubeEstimatedBytes || 0), 0) / 1024 ** 2).toFixed(1)}/192 MiB`
       + (groups.some(g => g.userData.sampledTubeStrengths) ? " (legacy strengths sampled on viewer grid)" : "")
       + (groups.some(g => g.userData.missingTubeStrengths) ? "; lines without strengths keep constant width" : "") : "";
   setStatus(`${dataset}${title}${sim}${lineMode}${fieldText}${changed}${tubeInfo} | grid ${metadata.nr} x ${metadata.ntheta} x ${metadata.nphi}`);
@@ -6964,6 +6998,7 @@ const VIEW_STATE_NUMBER_LIMITS = {
   radialSurfaceRadiusRo: [0, 1],
   lineTubeDiameter: [0.00001, 0.25], lineTubeReference: [0, 1e100],
   lineTubeMinDiameter: [0, 0.25], lineTubeMaxDiameter: [0.00001, 0.25], lineTubeSides: [3, 16],
+  lineTubeShapeError: [0.000001, 0.05], lineTubeEnergyErrorPercent: [0.01, 20],
 };
 
 function getAvailableColormapNames() {
@@ -7102,7 +7137,7 @@ async function loadViewStateCode() {
     await applyViewState(snapshot);
   } catch (err) {
     console.error(err);
-    setStatus(`Could not load view state: ${err.message}`);
+    setStatus(`Could not load view state: ${err.message}`, { level: "error" });
     window.alert(`Could not load view state code.\n${err.message}`);
   }
 }
@@ -7200,7 +7235,7 @@ async function saveViewStateCode() {
       setStatus(`Save cancelled for ${DATASET_VIEW_FILENAME}.`);
     } else {
       console.error("Could not save dataset view", error);
-      setStatus(`Could not save ${DATASET_VIEW_FILENAME}: ${error?.message || error}. Use Download view.DTV2 to save a copy.`);
+      setStatus(`Could not save ${DATASET_VIEW_FILENAME}: ${error?.message || error}. Use Download view.DTV2 to save a copy.`, { level: "error" });
     }
   } finally {
     datasetViewSaveInProgress = false;
@@ -7331,6 +7366,7 @@ async function loadDatasetFromParams() {
     return false;
   }
 
+  const previousNoticeVersion = viewerStatus.version;
   const requestedRoot = normaliseDatasetRoot(params.datasetPath);
   const requestedFolder = parseFolderSourcePath(requestedRoot);
   const requestedFolderSource = requestedFolder ? datasetFolderSources.get(requestedFolder.role) : null;
@@ -7422,7 +7458,9 @@ async function loadDatasetFromParams() {
     const viewStatus = usedDatasetView
       ? `; ${DATASET_VIEW_FILENAME} applied${skippedViewFields.length ? `; unavailable fields skipped: ${[...new Set(skippedViewFields)].join(", ")}` : ""}`
       : "";
-    setStatusSummary(`dataset:${datasetRootPath}${viewStatus}${datasetView.warnings.length ? `; ${datasetView.warnings.join("; ")}` : ""}`);
+    viewerStatus.clear(null, previousNoticeVersion);
+    setStatusSummary(`dataset:${datasetRootPath}${viewStatus}`);
+    if (datasetView.warnings.length) setStatus(datasetView.warnings.join("\n"), { level: "warning", scope: "Dataset view" });
     hideDatasetLauncher();
     return true;
   } catch (err) {
@@ -7446,7 +7484,7 @@ async function loadDatasetFromParams() {
     const reason = err?.name === "TimeoutError"
       ? `a network request exceeded ${Math.round(DATASET_FETCH_TIMEOUT_MS / 1000)} seconds`
       : (err?.message || String(err));
-    setStatus(`Could not load dataset ${requestedRoot}: ${reason}.`);
+    setStatus(`Could not load dataset ${requestedRoot}: ${reason}.`, { level: "error" });
     return false;
   } finally {
     window.clearInterval(progressTimer);
@@ -7694,6 +7732,12 @@ function buildGui() {
     tubeFolder.add(params, "lineTubeMinDiameter", 0, 0.25, 0.0001).name("Minimum / ro").onFinishChange(refreshFieldLines);
     tubeFolder.add(params, "lineTubeMaxDiameter", 0.00001, 0.25, 0.0001).name("Maximum / ro").onFinishChange(refreshFieldLines);
     tubeFolder.add(params, "lineTubeSides", 3, 16, 1).name("Tube sides").onFinishChange(refreshFieldLines);
+    const simplificationFolder = lineFolder.addFolder("Tube simplification");
+    simplificationFolder.add(params, "lineTubeSimplify").name("Simplify tubes").onChange(refreshFieldLines);
+    simplificationFolder.add(params, "lineTubeShapeError", 0.000001, 0.05, 0.0001)
+      .name("Shape error / ro").onFinishChange(refreshFieldLines);
+    simplificationFolder.add(params, "lineTubeEnergyErrorPercent", 0.01, 20, 0.1)
+      .name("B² error (%)").onFinishChange(refreshFieldLines);
     lineFolder.add(params, "lineWidthPx", 1, 12, 0.25).name("Thickness px").onChange(updateFieldLineVisuals);
     lineFolder.add(params, "lineOpacity", 0.05, 1.0, 0.01).name("Opacity").onChange(updateFieldLineVisuals);
   } else {
@@ -7786,7 +7830,7 @@ async function saveBlob(blob, filename, description = "file") {
     throw new Error(`No ${description} data were produced.`);
   }
 
-  setExportMessage(`Saving ${filename}...`);
+  setStatus(`Saving ${filename}...`);
 
   if (window.isSecureContext && "showSaveFilePicker" in window) {
     try {
@@ -8126,7 +8170,7 @@ async function renderSequencePngFrames() {
   if (sequencePngExportActive) return;
   if (!sequenceIndex) await loadSequenceIndex(false);
   if (!sequenceIndex?.frames?.length) {
-    setStatus("No sequence.json frames available for PNG rendering.");
+    setStatus("No sequence.json frames available for PNG rendering.", { level: "warning" });
     return;
   }
 
@@ -8154,6 +8198,7 @@ async function renderSequencePngFrames() {
   const originalFrame = Math.round(params.sequenceFrame);
   const zipFiles = [];
   let completionMessage = null;
+  let completionLevel = "info";
   sequencePngExportActive = true;
   sequencePngCancelRequested = false;
   pauseSequence(false);
@@ -8199,6 +8244,7 @@ async function renderSequencePngFrames() {
   } catch (err) {
     console.error(err);
     completionMessage = `PNG sequence export failed: ${err.message}`;
+    completionLevel = "error";
   } finally {
     sequencePngExportActive = false;
     sequencePngCancelRequested = false;
@@ -8207,7 +8253,7 @@ async function renderSequencePngFrames() {
     await loadFrameByIndex(originalFrame, { includeHeavy: true, skipEarthUpdate: false });
     setDeferredSequenceObjectVisibility(false);
     syncRendererToWindowSize();
-    if (completionMessage) setStatus(completionMessage);
+    if (completionMessage) setStatus(completionMessage, { level: completionLevel });
   }
 }
 
@@ -8218,7 +8264,7 @@ async function exportCurrentViewPNG() {
     await saveBlob(blob, `deepscope-${Date.now()}.png`, "PNG");
   } catch (err) {
     console.error(err);
-    setStatus(`PNG export failed: ${err.message}`);
+    setStatus(`PNG export failed: ${err.message}`, { level: "error" });
   }
 }
 
@@ -8297,7 +8343,7 @@ async function exportCurrentViewPDF() {
     await saveBlob(blob, `deepscope-${Date.now()}.pdf`, "PDF");
   } catch (err) {
     console.error(err);
-    setStatus(`PDF export failed: ${err.message}`);
+    setStatus(`PDF export failed: ${err.message}`, { level: "error" });
   }
 }
 
@@ -8915,7 +8961,7 @@ async function updateVideoSequenceFrame(targetIndex) {
     videoState.sequenceCurrentFrame = target;
   } catch (err) {
     console.error(err);
-    setStatus(`Video sequence frame ${target + 1} failed: ${err.message}`);
+    setStatus(`Video sequence frame ${target + 1} failed: ${err.message}`, { level: "error" });
   } finally {
     // Remove loading time from the camera/video timeline. The recorder was
     // paused, so no duplicated frozen frames are encoded during the swap.
@@ -8941,7 +8987,8 @@ async function startFullRotationRecording() {
   if (backgroundExport) {
     if (typeof VideoEncoder === "undefined" || typeof VideoFrame === "undefined") {
       setStatus(
-        "Background WebM video requires WebCodecs. Use a recent Chromium browser over localhost or HTTPS."
+        "Background WebM video requires WebCodecs. Use a recent Chromium browser over localhost or HTTPS.",
+        { level: "warning" }
       );
       return;
     }
@@ -8952,7 +8999,7 @@ async function startFullRotationRecording() {
     }
     offlineFileHandle = target.handle;
   } else if (typeof MediaRecorder === "undefined" || !renderer.domElement.captureStream) {
-    setStatus("Video recording is not supported in this browser.");
+    setStatus("Video recording is not supported in this browser.", { level: "warning" });
     return;
   }
 
@@ -8961,7 +9008,7 @@ async function startFullRotationRecording() {
   if (activatePlayback) {
     if (!sequenceIndex) await loadSequenceIndex(false);
     if (!sequenceIndex || !Array.isArray(sequenceIndex.frames) || sequenceIndex.frames.length === 0) {
-      setStatus("Cannot activate playback during video export: no sequence frames are available.");
+      setStatus("Cannot activate playback during video export: no sequence frames are available.", { level: "warning" });
       return;
     }
   }
@@ -8972,7 +9019,7 @@ async function startFullRotationRecording() {
     : { first: originalFrameBeforeVideo, last: originalFrameBeforeVideo, count: 1 };
 
   if (activatePlayback && playbackRange.count <= 0) {
-    setStatus("Cannot activate playback during video export: the selected frame range is empty.");
+    setStatus("Cannot activate playback during video export: the selected frame range is empty.", { level: "warning" });
     return;
   }
 
@@ -8981,7 +9028,7 @@ async function startFullRotationRecording() {
     try {
       customMotion = parseVideoCustomMotion(params.videoCustomMotion);
     } catch (err) {
-      setStatus(`Cannot record personalized motion: ${err.message}`);
+      setStatus(`Cannot record personalized motion: ${err.message}`, { level: "error" });
       return;
     }
   }
@@ -8991,7 +9038,7 @@ async function startFullRotationRecording() {
   const radiusXY = Math.hypot(offset.x, offset.y);
 
   if (radius <= 1.0e-8 || radiusXY <= 1.0e-8) {
-    setStatus("Cannot record rotation from current camera position.");
+    setStatus("Cannot record rotation from current camera position.", { level: "warning" });
     return;
   }
 
@@ -9029,7 +9076,7 @@ async function startFullRotationRecording() {
       videoState.offline = false;
       controls.enabled = true;
       restoreRendererAfterVideo();
-      setStatus(`Background video export failed: ${err.message}`);
+      setStatus(`Background video export failed: ${err.message}`, { level: "error" });
     }
     return;
   }
@@ -9079,7 +9126,7 @@ async function startFullRotationRecording() {
       await saveBlob(blob, `deepscope-rotation-${Date.now()}.webm`, "video");
     } catch (err) {
       console.error(err);
-      setStatus(`Video save failed: ${err.message}`);
+      setStatus(`Video save failed: ${err.message}`, { level: "error" });
     } finally {
       stream.getTracks().forEach((t) => t.stop());
 
@@ -9248,7 +9295,7 @@ async function stepSequenceFrameByKeyboard(delta) {
       await loadSequenceIndex(false);
     }
     if (!sequenceIndex || !Array.isArray(sequenceIndex.frames) || sequenceIndex.frames.length === 0) {
-      setStatus('No sequence is available for keyboard frame stepping.');
+      setStatus('No sequence is available for keyboard frame stepping.', { level: "warning" });
       return;
     }
 
@@ -9267,7 +9314,7 @@ async function stepSequenceFrameByKeyboard(delta) {
     });
   } catch (err) {
     console.error(err);
-    setStatus(`Could not change sequence frame: ${err.message}`);
+    setStatus(`Could not change sequence frame: ${err.message}`, { level: "error" });
   } finally {
     if (wasPlaying && sequenceIndex?.frames?.length > 0 && !videoState.active) {
       params.sequencePlaying = true;
@@ -9329,7 +9376,7 @@ function animate(now = performance.now()) {
   } catch (err) {
     console.error("Render loop error", err);
     if (!animate.lastErrorAt || now - animate.lastErrorAt > 3000) {
-      setStatus(`Rendering recovered from an error: ${err?.message || err}`);
+      setStatus(`Rendering failed: ${err?.message || err}`, { level: "error" });
       animate.lastErrorAt = now;
     }
   }
@@ -9366,12 +9413,12 @@ window.addEventListener("unhandledrejection", (event) => {
   const reason = event.reason;
   if (reason?.name === "AbortError") return;
   console.error("Unhandled viewer task", reason);
-  setStatus(`A viewer task failed safely: ${reason?.message || reason || "unknown error"}`);
+  setStatus(`A viewer task failed safely: ${reason?.message || reason || "unknown error"}`, { level: "error" });
 });
 
 renderer.domElement.addEventListener("webglcontextlost", (event) => {
   event.preventDefault();
-  setStatus("WebGL context was lost. Waiting for the browser to restore it...");
+  setStatus("WebGL context was lost. Waiting for the browser to restore it...", { level: "error", scope: "WebGL recovery" });
 });
 
 renderer.domElement.addEventListener("webglcontextrestored", () => {

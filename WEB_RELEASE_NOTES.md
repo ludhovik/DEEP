@@ -1,5 +1,18 @@
 # v0.4.0 — static hosted/local-data viewer
 
+## Tube simplification and title warnings (2026-09-07)
+
+- Add **Tube simplification → Simplify tubes**, enabled by default with an
+  explicit off switch. Bound centreline and B² interpolation errors while
+  retaining exact endpoints, magnetic extrema, pairing identifiers and gaps.
+  Save the toggle and error limits in DTV2; leave stored line data unchanged.
+- Apply the geometry budget after simplification. Show point counts and the
+  estimated mesh size in the title, with actionable oversized-mesh errors.
+- Keep dataset summaries and viewer feedback in the title instead of copying
+  them into Quick export. Show a persistent **⚠** button in collapsed titles;
+  clicking it opens the message. Warnings can be dismissed, and successful
+  control retries clear their own preceding errors without hiding newer ones.
+
 ## B² magnetic tubes and incremental converters (2026-09-07)
 
 - Choose **Magnetic field lines → Render as → B² tubes** for three-dimensional

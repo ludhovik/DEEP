@@ -29,6 +29,88 @@ export function estimateTubeBytes(lines, sides) {
   return lines.reduce((sum, line) => sum + (line.points?.length || 0) * (112 * sides + 96), 0);
 }
 
+// Approximate the saved polyline and its B² profile, never retracing the field.
+// Both errors are checked at every source sample using cumulative arclength.
+export function simplifyMagneticLine(line, options = {}) {
+  if (!options.enabled || !Array.isArray(line.points) || !Array.isArray(line.strength)
+      || line.points.length < 3) return line;
+  const positionTolerance = Number(options.positionTolerance);
+  const energyTolerance = Number(options.energyTolerance);
+  if (!(positionTolerance > 0) || !Number.isFinite(positionTolerance)
+      || !(energyTolerance > 0 && energyTolerance <= 1)) {
+    throw new Error("Tube simplification tolerances must be positive and finite.");
+  }
+  const points = line.points, strength = line.strength, count = points.length;
+  const keep = new Uint8Array(count);
+  const distance = new Float64Array(count);
+  const energy = new Float64Array(count);
+  const valid = i => Array.isArray(points[i]) && points[i].length >= 3
+    && Number.isFinite(points[i][0]) && Number.isFinite(points[i][1]) && Number.isFinite(points[i][2])
+    && typeof strength[i] === "number" && Number.isFinite(strength[i]) && strength[i] >= 0;
+
+  const simplifyChain = (first, last) => {
+    keep[first] = keep[last] = 1;
+    if (last - first < 2) return;
+    let peak = 0, peakIndex = first, minimumIndex = first;
+    distance[first] = 0;
+    for (let i = first; i <= last; i++) {
+      if (strength[i] > peak) { peak = strength[i]; peakIndex = i; }
+      if (strength[i] < strength[minimumIndex]) minimumIndex = i;
+      if (i > first) distance[i] = distance[i - 1] + Math.hypot(
+        points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1], points[i][2] - points[i - 1][2]);
+    }
+    if (!Number.isFinite(distance[last])) {
+      keep.fill(1, first, last + 1);
+      return;
+    }
+    // Normalization avoids overflow when squaring large magnetic strengths.
+    for (let i = first; i <= last; i++) energy[i] = peak > 0 ? (strength[i] / peak) ** 2 : 0;
+    const anchors = [...new Set([first, minimumIndex, peakIndex, last])].sort((a, b) => a - b);
+    const stack = [];
+    for (let i = 1; i < anchors.length; i++) {
+      keep[anchors[i - 1]] = keep[anchors[i]] = 1;
+      stack.push([anchors[i - 1], anchors[i]]);
+    }
+    while (stack.length) {
+      const [a, b] = stack.pop();
+      if (b - a < 2) continue;
+      const length = distance[b] - distance[a];
+      let worst = 1, split = -1;
+      for (let i = a + 1; i < b; i++) {
+        const t = length > 0 ? (distance[i] - distance[a]) / length : (i - a) / (b - a);
+        const spatialError = Math.hypot(
+          points[i][0] - ((1 - t) * points[a][0] + t * points[b][0]),
+          points[i][1] - ((1 - t) * points[a][1] + t * points[b][1]),
+          points[i][2] - ((1 - t) * points[a][2] + t * points[b][2]));
+        const interpolatedEnergy = (1 - t) * energy[a] + t * energy[b];
+        const energyError = Math.abs(energy[i] - interpolatedEnergy)
+          / (energyTolerance * Math.max(energy[i], interpolatedEnergy, 1e-12));
+        const error = Math.max(spatialError / positionTolerance, energyError);
+        if (error > worst) { worst = error; split = i; }
+      }
+      if (split >= 0) {
+        // Balanced splits bound work by O(n log n), even for very noisy input.
+        const margin = Math.max(1, Math.floor((b - a) / 4));
+        split = Math.max(a + margin, Math.min(b - margin, split));
+        keep[split] = 1;
+        stack.push([a, split], [split, b]);
+      }
+    }
+  };
+
+  let first = 0;
+  for (let i = 0; i <= count; i++) {
+    if (i < count && valid(i)) continue;
+    if (i > first) simplifyChain(first, i - 1);
+    if (i < count) keep[i] = 1; // Retain missing-data separators: never bridge gaps.
+    first = i + 1;
+  }
+  const indices = [];
+  for (let i = 0; i < count; i++) if (keep[i]) indices.push(i);
+  if (indices.length === count) return line;
+  return { ...line, points: indices.map(i => points[i]), strength: indices.map(i => strength[i]) };
+}
+
 export function makeMagneticTubeGeometry(points, strengths, vertexColors, options) {
   const sides = Math.round(options.sides ?? 8);
   if (!Number.isInteger(sides) || sides < 3 || sides > 16) throw new Error("Tube sides must be between 3 and 16.");

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as THREE from "three";
-import { makeMagneticTubeGeometry, magneticTubeDiameter, peakLineStrength, estimateTubeBytes } from "../src/field-line-tubes.js";
+import { makeMagneticTubeGeometry, magneticTubeDiameter, peakLineStrength, estimateTubeBytes, simplifyMagneticLine } from "../src/field-line-tubes.js";
 
 const options = { reference: 1, diameter: 0.1, minimum: 0, maximum: 1, sides: 8, lengthScale: 1 };
 const colours = count => Array(count).fill([1, 0.2, 0.1]).flat();
@@ -75,4 +75,84 @@ test("duplicates, null samples, zero field and sharp turns produce finite geomet
 test("reference strength uses raw B magnitudes and ignores missing values", () => {
   assert.equal(peakLineStrength([{ strength: [null, 2, 4] }, { strength: [1, 3, NaN] }]), 4);
   assert.equal(peakLineStrength([{ points: [[0, 0, 0]] }]), 0);
+});
+
+const simplifyOptions = { enabled: true, positionTolerance: 0.0005, energyTolerance: 0.01 };
+
+function assertApproximation(source, reduced, tolerance = simplifyOptions) {
+  const indices = new Map(source.points.map((p, i) => [p, i]));
+  const distances = [0];
+  for (let i = 1; i < source.points.length; i++) {
+    distances[i] = distances[i - 1] + Math.hypot(...source.points[i].map((v, axis) => v - source.points[i - 1][axis]));
+  }
+  const peak = Math.max(...source.strength);
+  for (let j = 1; j < reduced.points.length; j++) {
+    const a = indices.get(reduced.points[j - 1]), b = indices.get(reduced.points[j]);
+    for (let i = a + 1; i < b; i++) {
+      const t = (distances[i] - distances[a]) / (distances[b] - distances[a]);
+      const error = Math.hypot(...[0, 1, 2].map(axis => source.points[i][axis]
+        - ((1 - t) * source.points[a][axis] + t * source.points[b][axis])));
+      assert.ok(error <= tolerance.positionTolerance + 1e-12, `shape error ${error}`);
+      const actual = (source.strength[i] / peak) ** 2;
+      const interpolated = (1 - t) * (source.strength[a] / peak) ** 2 + t * (source.strength[b] / peak) ** 2;
+      assert.ok(Math.abs(actual - interpolated) <= tolerance.energyTolerance * Math.max(actual, interpolated, 1e-12) + 1e-14,
+        `B² error at ${i}`);
+    }
+  }
+}
+
+test("simplification reduces straight tubes, preserves exact endpoints and metadata, and switches off losslessly", () => {
+  const line = { line_id: 7, paired_shell_line_id: 7, polarity: -1, type: "exterior",
+    points: Array.from({ length: 1001 }, (_, i) => [0, 0, i / 1000]),
+    strength: Array.from({ length: 1001 }, (_, i) => Math.sqrt(1 + i / 1000)) };
+  const before = JSON.stringify(line);
+  assert.equal(simplifyMagneticLine(line, { enabled: false }), line);
+  const reduced = simplifyMagneticLine(line, simplifyOptions);
+  assert.equal(reduced.points.length, 2);
+  assert.equal(reduced.points[0], line.points[0]);
+  assert.equal(reduced.points.at(-1), line.points.at(-1));
+  assert.equal(reduced.line_id, 7); assert.equal(reduced.paired_shell_line_id, 7);
+  assert.equal(reduced.polarity, -1);
+  assert.equal(JSON.stringify(line), before);
+  assertApproximation(line, reduced);
+  assert.ok(estimateTubeBytes([reduced], 8) < estimateTubeBytes([line], 8) / 100);
+});
+
+test("curved tubes obey both shape and local B² error bounds, including weak-field portions", () => {
+  const line = { points: [], strength: [] };
+  for (let i = 0; i <= 4000; i++) {
+    const t = 2 * Math.PI * i / 4000;
+    line.points.push([Math.cos(t), Math.sin(t), t / 5]);
+    line.strength.push(0.005 + (1 + Math.sin(4 * t)) ** 2);
+  }
+  const reduced = simplifyMagneticLine(line, simplifyOptions);
+  assert.ok(reduced.points.length < line.points.length / 4);
+  assert.equal(Math.max(...reduced.strength), Math.max(...line.strength));
+  assert.equal(Math.min(...reduced.strength), Math.min(...line.strength));
+  assertApproximation(line, reduced);
+});
+
+test("simplification retains narrow magnetic peaks, zero fields, return bends and closed loops", () => {
+  const spike = { points: Array.from({ length: 201 }, (_, i) => [0, 0, i / 200]),
+    strength: Array.from({ length: 201 }, (_, i) => i === 99 ? 30 : i === 101 ? 0 : 1) };
+  const reduced = simplifyMagneticLine(spike, simplifyOptions);
+  assert.ok(reduced.points.includes(spike.points[99]));
+  assert.ok(reduced.points.includes(spike.points[101]));
+  assertApproximation(spike, reduced);
+  const returning = { points: [[0, 0, 0], [0, 0, 2], [0, 0, 1], [0, 0, 3]], strength: [1, 1, 1, 1] };
+  assert.equal(simplifyMagneticLine(returning, simplifyOptions), returning);
+  const closed = { points: [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 0, 0]], strength: [1, 1, 1, 1] };
+  assert.equal(simplifyMagneticLine(closed, simplifyOptions), closed);
+});
+
+test("simplification preserves missing-strength separators and avoids overflow for large B", () => {
+  const line = { points: Array.from({ length: 101 }, (_, i) => [0, 0, i]),
+    strength: Array.from({ length: 101 }, (_, i) => i === 50 ? null : 1e300) };
+  const reduced = simplifyMagneticLine(line, simplifyOptions);
+  assert.deepEqual(reduced.points, [line.points[0], line.points[49], line.points[50], line.points[51], line.points[100]]);
+  const geometry = makeMagneticTubeGeometry(reduced.points, reduced.strength, colours(reduced.points.length),
+    { ...options, reference: 1e300 });
+  assert.equal(geometry.userData.tube.chains, 2);
+  assert.ok(geometry.attributes.position.array.every(Number.isFinite));
+  geometry.dispose();
 });

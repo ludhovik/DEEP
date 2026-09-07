@@ -8,7 +8,7 @@ import { SURFACE_TEXTURES } from "../src/surface-textures.js";
 import * as RealTHREE from "three";
 import { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
-import { peakLineStrength, estimateTubeBytes, makeMagneticTubeGeometry } from "../src/field-line-tubes.js";
+import { peakLineStrength, estimateTubeBytes, makeMagneticTubeGeometry, simplifyMagneticLine } from "../src/field-line-tubes.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 
 const source = fs.readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
@@ -55,7 +55,8 @@ class Mesh {
 function viewer() {
   const ctx = vm.createContext({
     console, DOMException, Response, Blob, AbortController, performance, TextEncoder, Float32Array, btoa, atob,
-    SURFACE_TEXTURES, peakLineStrength, estimateTubeBytes, makeMagneticTubeGeometry,
+    SURFACE_TEXTURES, peakLineStrength, estimateTubeBytes, makeMagneticTubeGeometry, simplifyMagneticLine,
+    viewerStatus: { clear: () => {}, version: 0 },
     window: { setInterval, clearInterval, setTimeout, clearTimeout },
     DEFAULT_DATASET_ROOT: "demo", DEFAULT_SECONDARY_DATASET_ROOT: "secondary",
     THREE: { Mesh, Color, MeshPhongMaterial: Material, DoubleSide: 2, NormalBlending: 1, NoBlending: 0 },
@@ -119,7 +120,7 @@ function viewer() {
     vm.runInContext(constant(name), ctx);
   }
   for (const name of [
-    "clamp", "roundedCacheNumber", "captureRenderContext", "renderContextIsCurrent",
+    "clamp", "formatBytes", "roundedCacheNumber", "captureRenderContext", "renderContextIsCurrent",
     "withCapturedRenderContext", "renderSignature", "beginRenderRequest", "renderRequestIsCurrent",
     "invalidateRenderRequests", "loadForRender", "pinHeavyCacheEntry", "isEffectivelyOpaque", "applyOpacityAndDepth",
     "normaliseDatasetLabel", "secondaryPrefix", "isSecondaryFieldName", "rawSecondaryFieldName", "prefixedSecondaryFieldName",
@@ -1029,7 +1030,8 @@ test("a field-line HTTP failure does not erase the working lines", async () => {
 test("B² tube controls round-trip through DTV2 and reject invalid settings", () => {
   const ctx = viewer();
   const values = { lineRenderMode: "b2-tubes", lineTubeReference: 2.5, lineTubeDiameter: 0.03,
-    lineTubeMinDiameter: 0.001, lineTubeMaxDiameter: 0.1, lineTubeSides: 12 };
+    lineTubeMinDiameter: 0.001, lineTubeMaxDiameter: 0.1, lineTubeSides: 12,
+    lineTubeSimplify: false, lineTubeShapeError: 0.001, lineTubeEnergyErrorPercent: 2.5 };
   Object.assign(ctx.params, values);
   const saved = ctx.decodeViewState(ctx.encodeViewState(ctx.collectViewState()));
   ctx.params.lineRenderMode = "lines";
@@ -1039,6 +1041,38 @@ test("B² tube controls round-trip through DTV2 and reject invalid settings", ()
   assert.equal(ctx.applySnapshotParam("lineTubeReference", -1), false);
   assert.equal(ctx.applySnapshotParam("lineTubeSides", 4.5), false);
   assert.equal(ctx.applySnapshotParam("lineTubeDiameter", 1e100), false);
+  assert.equal(ctx.applySnapshotParam("lineTubeSimplify", "false"), false);
+  assert.equal(ctx.applySnapshotParam("lineTubeShapeError", -1), false);
+  assert.equal(ctx.applySnapshotParam("lineTubeEnergyErrorPercent", 100), false);
+});
+
+test("tube simplification runs before the budget check and keeps paired footpoints and the original data", async () => {
+  const ctx = viewer(), count = 110_000;
+  const shell = { line_id: 17, points: Array.from({ length: count }, (_, i) => [0, 0, 0.35 + 0.65 * i / (count - 1)]),
+    strength: Array(count).fill(2) };
+  const exterior = { paired_shell_line_id: 17, points: Array.from({ length: count }, (_, i) => [0, 0, 1 + i / (count - 1)]),
+    strength: Array(count).fill(2) };
+  ctx.metadata.field_lines = { mode: "both" };
+  ctx.loadLinesForMode = async mode => [mode === "shell" ? shell : exterior];
+  Object.assign(ctx.params, { showFieldLines: true, fieldLineDisplay: "both", lineStride: 1,
+    lineRenderMode: "b2-tubes", lineTubeSimplify: true });
+  await ctx.loadFieldLines();
+  const good = ctx.fieldLineGroups;
+  const goodShell = good.shell;
+  const reducedShell = good.shell.userData.lines[0], reducedExterior = good.exterior.userData.lines[0];
+  assert.equal(reducedShell.points.length, 2);
+  assert.equal(reducedExterior.points.length, 2);
+  assert.deepEqual(reducedShell.points.at(-1), reducedExterior.points[0]);
+  assert.equal(reducedShell.line_id, reducedExterior.paired_shell_line_id);
+  assert.equal(shell.points.length, count); assert.equal(exterior.points.length, count);
+  assert.equal(good.shell.userData.tubeOriginalPoints, count);
+  assert.equal(good.shell.userData.tubePoints, 2);
+  ctx.params.lineTubeSimplify = false;
+  await assert.rejects(ctx.loadFieldLines(), /geometry budget.*Enable Simplify tubes/);
+  assert.equal(ctx.fieldLineGroups, good, "an oversized unsimplified request keeps the working display");
+  ctx.params.lineTubeSimplify = true;
+  await ctx.loadFieldLines();
+  assert.equal(ctx.fieldLineGroups.shell, goodShell, "switching back reuses the matching geometry");
 });
 
 test("tube stride preserves connected groups and uses one reference before thinning", async () => {
@@ -1108,7 +1142,7 @@ test("excessive tube geometry leaves the last displayed field lines intact", asy
   const original = ctx.fieldLineGroups.shell;
   ctx.params.lineRenderMode = "b2-tubes";
   ctx.loadLinesForMode = async () => [{ points: { length: 10_000_000 }, strength: [1] }];
-  await assert.rejects(ctx.loadFieldLines(), /Increase Line stride/);
+  await assert.rejects(ctx.loadFieldLines(), /geometry budget.*limit 192 MiB/);
   assert.equal(ctx.fieldLineGroups.shell, original);
   assert.ok(ctx.scene.objects.has(original));
   assert.equal(original.geometry.disposed, false);
@@ -1184,7 +1218,7 @@ test("an unrenderable optional view falls back to the normal view of the new dat
     if (ctx.params.cameraDistance === 6) throw new Error("saved surface cannot be built");
   };
   let message;
-  ctx.setStatusSummary = text => { message = text; };
+  ctx.setStatus = (text, options) => { if (options?.level === "warning") message = text; };
   assert.equal(await ctx.loadDatasetFromParams(), true);
   assert.deepEqual(seen, [6, originalDistance]);
   assert.equal(ctx.datasetRootPath, "new-dataset");

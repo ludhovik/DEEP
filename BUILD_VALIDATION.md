@@ -1,5 +1,23 @@
 # Integrated package validation
 
+## Tube simplification and title feedback (2026-09-07)
+
+- All 83 viewer tests pass. Simplification tests check every original sample
+  against the requested spatial and local B² error bounds on curved paths
+  with strongly varying fields. Additional cases preserve peaks, zeros,
+  return bends, closed loops, missing-data separators, exact endpoints and
+  large finite strengths. Disabling simplification returns the original data.
+- A dense paired-line fixture exceeds the 192 MiB limit before simplification
+  and fits afterwards; toggling off preserves the previous working mesh when
+  the new request is too large. DTV2 preserves the toggle and both tolerances.
+- Title-notice tests cover collapsed warnings, reveal/dismiss actions,
+  preservation through unrelated progress, retries through different field-line
+  controls, cancellation, and older tasks completing after newer failures.
+  These UI checks use DOM test doubles; geometry checks use real Three.js.
+- The production build, JavaScript syntax and whitespace checks pass. A live
+  browser/GPU check could not run because the Chromium download timed out.
+  Converter code and data are unchanged by this viewer-only update.
+
 ## Incremental conversion and B² tubes (2026-09-07)
 
 - All 63 converter tests pass. Eleven incremental tests cover source/code

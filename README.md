@@ -237,6 +237,14 @@ expand it. A height of `0` in the controls restores automatic height. Positions,
 dimensions, visibility, and collapse states are included in view-state codes.
 Legend width and position also carry into PNG/PDF legend layout.
 
+Dataset summaries, progress and error messages appear in the **DEEPscope title
+box**. Quick export keeps its buttons and short download hint. An error or
+warning adds a **⚠** button beside the title, including when the box is
+collapsed; click it to expand the box and read the message. **Dismiss warning**
+clears it. Unrelated progress does not hide an error; a successful retry of a
+failed control task clears that task's notice. Loading a new dataset clears
+previous notices. Warnings are temporary feedback and are not saved in DTV2.
+
 ### Isosurfaces and field lines
 
 Isosurfaces support positive and negative levels, independent colours,
@@ -272,6 +280,29 @@ very wide sections. These are display limits. With no clipping, doubling
 `|B|` quadruples the diameter. **Tube sides** controls mesh detail. Increase
 **Line stride** or reduce tube sides if a requested mesh exceeds the geometry
 budget. Tube opacity uses stable dithered transparency, as for isosurfaces.
+
+**Tube simplification → Simplify tubes** is on by default and can be switched
+off to use every saved sample. It reduces points along each retained line,
+keeping the original endpoints, pairing identifiers, strongest/weakest samples
+within each continuous section, and missing-data breaks. It does not retrace
+the magnetic field or change the stored dataset. Ordinary lines are unaffected.
+
+| Simplification control | Default | Meaning |
+| --- | --- | --- |
+| **Shape error / ro** | `0.0005` | Maximum centreline deviation from the saved polyline, as a fraction of outer radius (`0.05%` by default). |
+| **B² error (%)** | `1` | Maximum relative change in the interpolated B² profile at source samples. |
+
+Both bounds are checked using the original cumulative arclength. The energy
+comparison uses a small floor (`10⁻¹²` of the section's peak B²) near zero.
+Larger error limits permit fewer points; smaller limits retain more detail.
+The colour range and automatic strength reference still use the full selected
+domains before thinning. All simplification options are included in DTV2.
+
+The fixed **192 MiB geometry budget** is checked after simplification. The
+title reports retained/original point counts and the estimated mesh size;
+an oversized request leaves the previous display intact. If needed, increase
+the error limits modestly, increase **Line stride**, or reduce **Tube sides**.
+Reducing diameter or opacity does not reduce the number of mesh vertices.
 
 Recent converter bundles already contain `strength = |B|` at each traced
 point and need no reconversion for tubes. For legacy internal lines, including
