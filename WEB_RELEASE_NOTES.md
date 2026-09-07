@@ -1,5 +1,17 @@
 # v0.4.0 — static hosted/local-data viewer
 
+## Adjustable tube geometry memory (2026-09-07)
+
+- Add **Magnetic field lines → Tube memory → Custom limit**, with a configurable
+  **Limit (MiB)** from 32 to 2048. Turning the switch off uses the existing
+  192 MiB default and retains the custom value for reuse.
+- Check the combined shell/exterior estimate after stride and simplification,
+  including cached geometry and pending loads. Changing only the limit reuses
+  matching geometry. Rejected replacements keep the previous display intact.
+- Show the current limit in title summaries and error messages. Keep this
+  session preference independent of dataset presets and copied view codes.
+  It limits estimated tube geometry, not the browser's total memory use.
+
 ## Reset views when opening datasets (2026-09-07)
 
 - Start each primary dataset opening/reload from the default appearance, then

@@ -275,7 +275,7 @@ In **B² tube diameter**, diameter values are fractions of the outer radius
 units; zero selects the maximum available line strength across the displayed
 domains, before stride selection. Set a positive reference to compare figures
 or frames on the same scale. The colour map and its linear/logarithmic scale
-do not change the tube diameter. All tube options are included in DTV2 codes.
+do not change the tube diameter. Tube appearance options are included in DTV2 codes.
 
 **Minimum / ro** can keep weak-field sections visible; **Maximum / ro** limits
 very wide sections. These are display limits. With no clipping, doubling
@@ -300,11 +300,26 @@ Larger error limits permit fewer points; smaller limits retain more detail.
 The colour range and automatic strength reference still use the full selected
 domains before thinning. All simplification options are included in DTV2.
 
-The fixed **192 MiB geometry budget** is checked after simplification. The
-title reports retained/original point counts and the estimated mesh size;
-an oversized request leaves the previous display intact. If needed, increase
-the error limits modestly, increase **Line stride**, or reduce **Tube sides**.
-Reducing diameter or opacity does not reduce the number of mesh vertices.
+In **Magnetic field lines → Tube memory**, **Custom limit** is off by default,
+using a **192 MiB** geometry budget. Turn it on to set **Limit (MiB)** between
+**32 and 2048 MiB**, for example `512`. Turning it off restores the default
+without forgetting the custom value. This is a session preference: opening a
+dataset or applying a DTV2 code leaves it unchanged; refreshing the page restores
+the default. View codes do not contain this memory preference.
+
+The budget checks the estimated combined shell and exterior tube geometry for
+the requested view, **after stride and simplification**, before allocation.
+It also applies to reused geometry and requests still loading. Raising the limit
+does not rebuild an otherwise matching mesh. The title reports retained/original
+point counts and the mesh estimate against the selected limit; an oversized
+request leaves the previous display intact, including when lowering the limit.
+
+This is not a cap on total browser RAM or graphics memory: source arrays,
+temporary work, graphics copies, volumes and other cached views use additional
+memory. The sequence/data cache has its own limit. Higher tube limits allow
+larger meshes and can consume substantially more total memory. Alternatively,
+increase the simplification error limits modestly, increase **Line stride**, or
+reduce **Tube sides**. Reducing diameter or opacity does not reduce vertex count.
 
 Recent converter bundles already contain `strength = |B|` at each traced
 point and need no reconversion for tubes. For legacy internal lines, including

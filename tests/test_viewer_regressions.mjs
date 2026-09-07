@@ -114,6 +114,7 @@ function viewer() {
     },
   });
   for (const name of ["cmbMesh", "icbMesh", "radialSurfaceMesh", "equatorMesh", "equator2Mesh", "meridianMesh", "meridian2Mesh", "earthMesh", "isoPositiveMesh", "isoNegativeMesh", "equatorFillerMesh", "equator2FillerMesh", "meridianFillerMesh", "meridian2FillerMesh"]) ctx[name] = null;
+  vm.runInContext(constant("TUBE_MEMORY_LIMITS"), ctx);
   vm.runInContext(constant("params", "\n};") + "\nglobalThis.params = params;", ctx);
   for (const name of ["VIEW_STATE_PREFIX", "LEGACY_VIEW_STATE_PREFIX", "VIEW_STATE_EXCLUDED_PARAMS", "VIEW_STATE_PARAM_TYPES", "DEFAULT_VIEW_PARAMS", "VIEW_STATE_SCALE_KEYS", "VIEW_STATE_NUMBER_LIMITS", "DATASET_FIELD_PARAM_KEYS", "DATASET_VIEW_FILENAME", "DATASET_VIEW_TIMEOUT_MS", "MAX_DATASET_VIEW_CODE_LENGTH", "DATASET_FETCH_TIMEOUT_MS"]) {
     vm.runInContext(constant(name), ctx);
@@ -138,6 +139,7 @@ function viewer() {
     "loadFrameByIndex", "rebuildEquator", "disposeObject", "fetchFieldLineFile",
     "getFieldLineFilename", "loadLinesForMode", "inferLineType", "fieldLinePairKey", "selectFieldLinesByStride",
     "buildFieldLineObjectCacheEntry", "ensureFieldLineObjectCacheEntry", "loadFieldLines", "updateFieldLineVisuals",
+    "tubeGeometryLimitMiB", "checkTubeGeometryBudget", "checkFieldLineEntryBudget", "addTubeMemoryControls",
     "applyViewStateParams", "applyDefaultDatasetView", "refreshViewPresentation", "applyViewState", "loadDatasetViewState",
     "updateEarthSurface", "ensureEarthTexture", "updateSurfaceAttribution",
     "viewStateBlob", "writeDatasetViewFile", "saveViewStateCode", "downloadViewStateCode",
@@ -1077,6 +1079,161 @@ test("tube simplification runs before the budget check and keeps paired footpoin
   ctx.params.lineTubeSimplify = true;
   await ctx.loadFieldLines();
   assert.equal(ctx.fieldLineGroups.shell, goodShell, "switching back reuses the matching geometry");
+});
+
+test("tube memory controls switch between the default and a bounded custom limit", () => {
+  const ctx = viewer(), controls = new Map();
+  let refreshes = 0;
+  const folder = {
+    addFolder(name) { assert.equal(name, "Tube memory"); return this; },
+    add(object, key, min, max) {
+      const controller = {
+        domElement: {}, min, max,
+        name() { return this; },
+        enable(value) { this.enabled = value; return this; },
+        onChange(callback) { this.change = callback; return this; },
+        onFinishChange(callback) { this.finish = callback; return this; },
+        updateDisplay() {},
+      };
+      controls.set(key, controller);
+      return controller;
+    },
+  };
+  ctx.addTubeMemoryControls(folder, () => refreshes++);
+  const custom = controls.get("lineTubeCustomMemoryLimit"), limit = controls.get("lineTubeMemoryLimitMiB");
+  assert.equal(ctx.tubeGeometryLimitMiB(), 192);
+  assert.equal(limit.enabled, false);
+  assert.equal(limit.min, 32); assert.equal(limit.max, 2048);
+  ctx.params.lineTubeCustomMemoryLimit = true;
+  custom.change();
+  assert.equal(limit.enabled, true);
+  for (const [input, expected] of [[512, 512], [0, 192], [NaN, 192], [Infinity, 192], [-5, 192], [1, 32], [1e6, 2048], [300.7, 301]]) {
+    ctx.params.lineTubeMemoryLimitMiB = input;
+    limit.finish();
+    assert.equal(ctx.params.lineTubeMemoryLimitMiB, expected);
+    assert.equal(ctx.tubeGeometryLimitMiB(), expected);
+  }
+  ctx.params.lineTubeCustomMemoryLimit = false;
+  custom.change();
+  assert.equal(limit.enabled, false);
+  assert.equal(ctx.tubeGeometryLimitMiB(), 192);
+  ctx.params.lineTubeCustomMemoryLimit = true;
+  custom.change();
+  assert.equal(ctx.tubeGeometryLimitMiB(), 301, "turning off retains the user's custom value");
+  assert.equal(refreshes, 11);
+});
+
+function budgetViewer() {
+  const ctx = viewer();
+  ctx.metadata.field_lines = { mode: "both" };
+  Object.assign(ctx.params, { showFieldLines: true, fieldLineDisplay: "both", lineStride: 1 });
+  // The real estimator sees ~142 MiB per domain, ~284 MiB combined. The renderer
+  // double avoids allocating hundreds of megabytes in this policy regression.
+  ctx.loadLinesForMode = async mode => [{ line_id: 1, paired_shell_line_id: 1,
+    type: mode, points: { length: 150_000 }, strength: [2] }];
+  return ctx;
+}
+
+test("custom tube memory counts both domains and checks cached geometry without rebuilding it", async () => {
+  const ctx = budgetViewer();
+  await ctx.loadFieldLines();
+  const original = ctx.fieldLineGroups.shell;
+  ctx.params.lineRenderMode = "b2-tubes";
+  await assert.rejects(ctx.loadFieldLines(), /estimated 283\.8 MiB, limit 192 MiB.*Tube memory/);
+  assert.equal(ctx.fieldLineGroups.shell, original);
+  Object.assign(ctx.params, { lineTubeCustomMemoryLimit: true, lineTubeMemoryLimitMiB: 384 });
+  await ctx.loadFieldLines();
+  const tubes = ctx.fieldLineGroups.shell, key = ctx.getFieldLineObjectCacheKey();
+  assert.notEqual(tubes, original);
+  ctx.params.lineTubeCustomMemoryLimit = false;
+  await assert.rejects(ctx.loadFieldLines(), /limit 192 MiB/);
+  assert.equal(ctx.fieldLineGroups.shell, tubes, "lowering the limit preserves the last working display");
+  ctx.params.lineRenderMode = "lines";
+  await ctx.loadFieldLines();
+  assert.equal(ctx.fieldLineGroups.shell, original, "the cap does not block ordinary lines");
+  ctx.params.lineRenderMode = "b2-tubes";
+  ctx.loadLinesForMode = async () => { throw new Error("Cached geometry should be reused"); };
+  await assert.rejects(ctx.loadFieldLines(), /limit 192 MiB/);
+  assert.equal(ctx.fieldLineGroups.shell, original, "an over-budget cached entry cannot replace the display");
+  Object.assign(ctx.params, { lineTubeCustomMemoryLimit: true, lineTubeMemoryLimitMiB: 512 });
+  assert.equal(ctx.getFieldLineObjectCacheKey(), key, "memory preferences do not duplicate geometry");
+  await ctx.loadFieldLines();
+  assert.equal(ctx.fieldLineGroups.shell, tubes);
+  assert.equal(ctx.fieldLineObjectCache.size, 2);
+});
+
+test("pending shared tube builds use the latest memory limit before allocation", async () => {
+  for (const raising of [true, false]) {
+    const ctx = budgetViewer(), gate = deferred();
+    await ctx.loadFieldLines();
+    const original = ctx.fieldLineGroups.shell, load = ctx.loadLinesForMode;
+    let reads = 0, allocations = 0;
+    const makeGroup = ctx.makeFieldLineGroup;
+    ctx.makeFieldLineGroup = (...args) => { allocations++; return makeGroup(...args); };
+    ctx.loadLinesForMode = async mode => { reads++; await gate.promise; return load(mode); };
+    Object.assign(ctx.params, { lineRenderMode: "b2-tubes", lineTubeCustomMemoryLimit: !raising,
+      lineTubeMemoryLimitMiB: 384 });
+    const first = ctx.loadFieldLines();
+    ctx.params.lineTubeCustomMemoryLimit = raising;
+    const latest = ctx.loadFieldLines();
+    const checked = raising ? latest : assert.rejects(latest, /limit 192 MiB/);
+    gate.resolve();
+    await Promise.all([first, checked]);
+    assert.equal(reads, 2, "requests share one build for shell and exterior");
+    assert.equal(allocations, raising ? 2 : 0);
+    if (raising) assert.notEqual(ctx.fieldLineGroups.shell, original);
+    else assert.equal(ctx.fieldLineGroups.shell, original);
+  }
+});
+
+test("a memory change while accepting a cached entry is checked before replacing visible lines", async () => {
+  const ctx = budgetViewer();
+  Object.assign(ctx.params, { lineRenderMode: "b2-tubes", lineTubeCustomMemoryLimit: true,
+    lineTubeMemoryLimitMiB: 384 });
+  await ctx.loadFieldLines();
+  ctx.params.lineRenderMode = "lines";
+  await ctx.loadFieldLines();
+  const original = ctx.fieldLineGroups.shell;
+  ctx.params.lineRenderMode = "b2-tubes";
+  const ensure = ctx.ensureFieldLineObjectCacheEntry;
+  ctx.ensureFieldLineObjectCacheEntry = async context => {
+    const entry = await ensure(context);
+    ctx.params.lineTubeCustomMemoryLimit = false;
+    return entry;
+  };
+  await assert.rejects(ctx.loadFieldLines(), /limit 192 MiB/);
+  assert.equal(ctx.fieldLineGroups.shell, original);
+});
+
+test("view codes and dataset defaults preserve the session's tube memory preference", () => {
+  const ctx = viewer();
+  Object.assign(ctx.params, { lineTubeCustomMemoryLimit: true, lineTubeMemoryLimitMiB: 512 });
+  const state = ctx.decodeViewState(ctx.encodeViewState(ctx.collectViewState()));
+  assert.equal(Object.hasOwn(state.params, "lineTubeCustomMemoryLimit"), false);
+  assert.equal(Object.hasOwn(state.params, "lineTubeMemoryLimitMiB"), false);
+  ctx.applyViewStateParams({ version: 2, scope: "view-only",
+    params: { lineTubeCustomMemoryLimit: false, lineTubeMemoryLimitMiB: 2048, lineTubeSides: 12 } });
+  assert.equal(ctx.params.lineTubeSides, 12, "the appearance still applies");
+  ctx.applyDefaultFields = () => {};
+  ctx.applyDefaultDatasetView();
+  assert.equal(ctx.params.lineTubeCustomMemoryLimit, true);
+  assert.equal(ctx.params.lineTubeMemoryLimitMiB, 512);
+});
+
+test("the title reports tube geometry against the user's current limit", () => {
+  const ctx = viewer();
+  vm.runInContext(definition("setStatusSummary"), ctx);
+  let status;
+  ctx.setStatus = value => { status = value; };
+  ctx.formatNumber = String;
+  Object.assign(ctx.params, { showFieldLines: true, lineRenderMode: "b2-tubes",
+    lineTubeCustomMemoryLimit: true, lineTubeMemoryLimitMiB: 512 });
+  ctx.fieldLineGroups.shell = { userData: { tubeEstimatedBytes: 20 * 1024 ** 2 } };
+  ctx.setStatusSummary();
+  assert.match(status, /mesh estimate 20\.0\/512 MiB/);
+  ctx.params.lineTubeCustomMemoryLimit = false;
+  ctx.setStatusSummary();
+  assert.match(status, /mesh estimate 20\.0\/192 MiB/);
 });
 
 test("tube stride preserves connected groups and uses one reference before thinning", async () => {

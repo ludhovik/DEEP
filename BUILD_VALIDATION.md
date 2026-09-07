@@ -1,5 +1,21 @@
 # Integrated package validation
 
+## Adjustable tube geometry memory (2026-09-07)
+
+- All 99 viewer/proxy tests pass. New cases exercise the custom/default toggle,
+  numeric bounds, invalid input, both-domain accounting, cached rejection and
+  reuse, and preservation of the previous display. Pending builds use the latest
+  limit before allocation; a limit changed while accepting a cached result is
+  checked again before replacing visible lines.
+- Tests verify that view codes and dataset defaults preserve this session
+  preference, ordinary lines remain usable, and the title shows the selected
+  limit. Large-budget cases use the real estimator with small rendering doubles
+  to avoid allocating hundreds of megabytes in the test suite.
+- Production build, JavaScript syntax and whitespace checks pass. Existing
+  geometry tests use real Three.js, while UI/network checks use test doubles;
+  no browser/GPU memory profiling was performed. The existing large-chunk build
+  advisory remains. No converter or Worker deployment changes are required.
+
 ## Missing/deleted dataset view reset (2026-09-07)
 
 - All 93 viewer/proxy tests pass. New scenarios open a Figshare/Zenodo preset,

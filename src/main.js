@@ -192,6 +192,8 @@ const axes = new THREE.AxesHelper(1.25);
 axes.visible = false;
 scene.add(axes);
 
+const TUBE_MEMORY_LIMITS = Object.freeze({ defaultMiB: 192, minMiB: 32, maxMiB: 2048 });
+
 const params = {
   cmbField: "Br",
   icbField: "Br",
@@ -332,6 +334,8 @@ const params = {
   lineTubeSimplify: true,
   lineTubeShapeError: 0.0005,
   lineTubeEnergyErrorPercent: 1.0,
+  lineTubeCustomMemoryLimit: false,
+  lineTubeMemoryLimitMiB: TUBE_MEMORY_LIMITS.defaultMiB,
   lineOpacity: 0.95,
 
   showEarthSurface: false,
@@ -2614,6 +2618,31 @@ async function ensureIsosurfaceObjectCacheEntry(context = captureRenderContext()
   return entry;
 }
 
+function tubeGeometryLimitMiB(settings = params) {
+  if (settings.lineTubeCustomMemoryLimit !== true) return TUBE_MEMORY_LIMITS.defaultMiB;
+  const value = Number(settings.lineTubeMemoryLimitMiB);
+  return Number.isFinite(value) && value > 0
+    ? Math.round(clamp(value, TUBE_MEMORY_LIMITS.minMiB, TUBE_MEMORY_LIMITS.maxMiB))
+    : TUBE_MEMORY_LIMITS.defaultMiB;
+}
+
+function checkTubeGeometryBudget(bytes, renderParams = params) {
+  // Memory is a live session preference, even when an earlier request captured
+  // different rendering settings. Check before allocating, also on cache reuse.
+  const limitMiB = tubeGeometryLimitMiB();
+  if (!Number.isFinite(bytes) || bytes > limitMiB * 1024 ** 2) {
+    throw new Error(`B² tubes exceed the geometry budget: estimated ${(bytes / 1024 ** 2).toFixed(1)} MiB, limit ${limitMiB} MiB. `
+      + `${renderParams.lineTubeSimplify ? "Increase the simplification error limits, " : "Enable Simplify tubes, "}`
+      + "increase Line stride, reduce Tube sides, or raise Tube memory → Custom limit → Limit (MiB).");
+  }
+}
+
+function checkFieldLineEntryBudget(entry, renderParams = params) {
+  if (renderParams.lineRenderMode !== "b2-tubes") return;
+  checkTubeGeometryBudget(Object.values(entry.groups).reduce((sum, group) =>
+    sum + (group.userData.tubeEstimatedBytes || 0), 0), renderParams);
+}
+
 async function buildFieldLineObjectCacheEntry(context = captureRenderContext()) {
   const availableModes = getAvailableFieldLineModes(context.metadata);
   if (availableModes.length === 0) {
@@ -2661,11 +2690,7 @@ async function buildFieldLineObjectCacheEntry(context = captureRenderContext()) 
         }));
       }
       const bytes = estimateTubeBytes(Object.values(selected).flat(), context.params.lineTubeSides);
-      if (bytes > 192 * 1024 * 1024) {
-        throw new Error(`B² tubes exceed the geometry budget: estimated ${(bytes / 1024 ** 2).toFixed(1)} MiB, limit 192 MiB. `
-          + `${context.params.lineTubeSimplify ? "Increase the simplification error limits, " : "Enable Simplify tubes, "}`
-          + "increase Line stride or reduce Tube sides.");
-      }
+      checkTubeGeometryBudget(bytes, context.params);
     }
     for (const [mode, lines] of Object.entries(linesByMode)) {
       const group = withCapturedRenderContext(context, () => makeFieldLineGroup(lines, mode, selected[mode], tubeReference));
@@ -2718,6 +2743,7 @@ async function ensureFieldLineObjectCacheEntry(context = captureRenderContext())
   } else {
     entry.last = ++cacheAccessCounter;
   }
+  checkFieldLineEntryBudget(entry, context.params);
   return entry;
 }
 
@@ -6284,7 +6310,7 @@ function setStatusSummary(lastFieldName = null) {
       + `; ${groups[0]?.userData.tubeSimplified ? "simplified" : "original"} points `
       + `${groups.reduce((sum, g) => sum + (g.userData.tubePoints || 0), 0).toLocaleString()}`
       + `/${groups.reduce((sum, g) => sum + (g.userData.tubeOriginalPoints || 0), 0).toLocaleString()}`
-      + `; mesh estimate ${(groups.reduce((sum, g) => sum + (g.userData.tubeEstimatedBytes || 0), 0) / 1024 ** 2).toFixed(1)}/192 MiB`
+      + `; mesh estimate ${(groups.reduce((sum, g) => sum + (g.userData.tubeEstimatedBytes || 0), 0) / 1024 ** 2).toFixed(1)}/${tubeGeometryLimitMiB()} MiB`
       + (groups.some(g => g.userData.sampledTubeStrengths) ? " (legacy strengths sampled on viewer grid)" : "")
       + (groups.some(g => g.userData.missingTubeStrengths) ? "; lines without strengths keep constant width" : "") : "";
   setStatus(`${dataset}${title}${sim}${lineMode}${fieldText}${changed}${tubeInfo} | grid ${metadata.nr} x ${metadata.ntheta} x ${metadata.nphi}`);
@@ -6842,6 +6868,8 @@ async function loadFieldLines() {
   try {
     const entry = await loadForRender(request, () => ensureFieldLineObjectCacheEntry(request.context));
     if (!renderRequestIsCurrent(request) || !params.showFieldLines) return;
+    // The preference can change during the await, including for cached builds.
+    checkFieldLineEntryBudget(entry, request.context.params);
     detachActiveFieldLineGroups();
     fieldLineGroups = { shell: null, exterior: null };
 
@@ -6992,6 +7020,8 @@ const VIEW_STATE_EXCLUDED_PARAMS = new Set([
   "sequencePlaying",
   "sequenceMaxCachedFrames",
   "sequenceCacheLimitMB",
+  "lineTubeCustomMemoryLimit",
+  "lineTubeMemoryLimitMiB",
   "sequencePngFirst",
   "sequencePngLast",
   "sequencePngStep",
@@ -7549,6 +7579,27 @@ function buildPointOfViewGui() {
   povGui.close();
 }
 
+function addTubeMemoryControls(lineFolder, refreshFieldLines) {
+  const memoryFolder = lineFolder.addFolder("Tube memory");
+  const custom = memoryFolder.add(params, "lineTubeCustomMemoryLimit").name("Custom limit");
+  const limit = memoryFolder.add(params, "lineTubeMemoryLimitMiB",
+    TUBE_MEMORY_LIMITS.minMiB, TUBE_MEMORY_LIMITS.maxMiB, 16).name("Limit (MiB)");
+  custom.domElement.title = `Off uses the default ${TUBE_MEMORY_LIMITS.defaultMiB} MiB tube geometry limit.`;
+  limit.domElement.title = "Estimated tube geometry per view, after stride and simplification. Total browser and graphics memory can be higher.";
+  limit.enable(params.lineTubeCustomMemoryLimit);
+  custom.onChange(() => {
+    limit.enable(params.lineTubeCustomMemoryLimit);
+    setStatusSummary();
+    refreshFieldLines();
+  });
+  limit.onFinishChange(() => {
+    params.lineTubeMemoryLimitMiB = tubeGeometryLimitMiB({ ...params, lineTubeCustomMemoryLimit: true });
+    limit.updateDisplay();
+    setStatusSummary();
+    refreshFieldLines();
+  });
+}
+
 function buildGui() {
   if (guiRoot) guiRoot.destroy();
   if (povGuiRoot) {
@@ -7767,6 +7818,7 @@ function buildGui() {
       .name("Shape error / ro").onFinishChange(refreshFieldLines);
     simplificationFolder.add(params, "lineTubeEnergyErrorPercent", 0.01, 20, 0.1)
       .name("B² error (%)").onFinishChange(refreshFieldLines);
+    addTubeMemoryControls(lineFolder, refreshFieldLines);
     lineFolder.add(params, "lineWidthPx", 1, 12, 0.25).name("Thickness px").onChange(updateFieldLineVisuals);
     lineFolder.add(params, "lineOpacity", 0.05, 1.0, 0.01).name("Opacity").onChange(updateFieldLineVisuals);
   } else {
