@@ -83,7 +83,7 @@ EARTH_RADIUS_KM = 6371.0
 CMB_RADIUS_KM = 3480.0
 DEFAULT_EARTH_RADIUS_SCALE = EARTH_RADIUS_KM / CMB_RADIUS_KM
 DEFAULT_EARTH_BR_LMAX = 13
-CONVERTER_PACKAGE_VERSION = "3.4.0"
+CONVERTER_PACKAGE_VERSION = "3.4.2"
 
 
 def json_number(value: Any, default: float | None = None) -> float | None:
@@ -838,7 +838,6 @@ def convert_xshells(args: argparse.Namespace) -> None:
         register("T", T, rt, "temperature")  # backward-compatible XSHELLS alias
         Cnom0 = remove_m0_phi(T)
         register("Cnom0", Cnom0, rt, "temperature")
-        register("C_nom0", Cnom0, rt, "temperature")
         register("C_phiavg", phi_average_volume(T), rt, "temperature")
         if not args.no_m0_fields:
             register("T_nom0", Cnom0, rt, "temperature")
@@ -857,7 +856,6 @@ def convert_xshells(args: argparse.Namespace) -> None:
         register("Comp", Comp, rc, "composition")
         Compnom0 = remove_m0_phi(Comp)
         register("Compnom0", Compnom0, rc, "composition")
-        register("Comp_nom0", Compnom0, rc, "composition")
         register("Comp_phiavg", phi_average_volume(Comp), rc, "composition")
 
     gradients: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, str]] = {}

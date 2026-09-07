@@ -1,5 +1,18 @@
 # Integrated package validation
 
+## Remove duplicate scalar fields (2026-09-07)
+
+- All 52 converter tests pass; the synthetic MagIC bundle now verifies that
+  only `Cnom0`/`Compnom0` are exported, without underscored metadata or files.
+- All 54 viewer tests pass, including old primary/secondary metadata,
+  aliases-only bundles, canonical range preservation, idempotent metadata
+  normalization, and old saved-view field selections.
+- Python/JavaScript syntax checks and the production build pass. The existing
+  large-chunk advisory remains. No browser/GPU visual test was performed.
+- Deploy the updated viewer to remove duplicate choices from existing datasets.
+  Reconvert to omit redundant files from future exports; existing stored files
+  are not deleted by the viewer.
+
 ## Spectral cutoffs and both-end connections (2026-09-06)
 
 - Converter suites: 52 passing tests across package, exterior tracing and new

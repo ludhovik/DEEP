@@ -720,8 +720,13 @@ the source. Leave the strides at 1 when no further viewer-grid filtering is
 wanted.
 
 `Cnol0` and `Compnol0` are no longer exported. The `m=0`-removed diagnostics
-(`Cnom0`, `Compnom0` and their `_nom0` aliases) are unchanged. Existing bundles
-with the retired fields remain readable.
+(`Cnom0`, `Compnom0`) are unchanged. From converter 3.4.2, the duplicate names
+`C_nom0` and `Comp_nom0` and their separate files are no longer exported.
+The viewer removes these duplicate choices from older bundles too, and maps
+old saved-view selections to `Cnom0`/`Compnom0`. If an old bundle contains only
+an underscored name, its existing file is exposed under the canonical name.
+Updating the viewer fixes the field menus without reconverting old datasets;
+it does not delete files from existing local or remote bundles.
 
 All three converter CLIs build into a staging directory and validate the
 complete bundle before replacing `--out`. A failed conversion or sequence frame

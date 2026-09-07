@@ -63,7 +63,7 @@ EARTH_RADIUS_KM = 6371.0
 CMB_RADIUS_KM = 3480.0
 DEFAULT_EARTH_RADIUS_SCALE = EARTH_RADIUS_KM / CMB_RADIUS_KM
 DEFAULT_EARTH_BR_LMAX = 13
-CONVERTER_PACKAGE_VERSION = "3.4.0"
+CONVERTER_PACKAGE_VERSION = "3.4.2"
 
 
 # -----------------------------------------------------------------------------
@@ -3236,8 +3236,6 @@ def convert_state(args: argparse.Namespace) -> None:
         "Comp": Compspat,
         "Cnom0": Cspatnom0,
         "Compnom0": Compspatnom0,
-        "C_nom0": Cspatnom0,
-        "Comp_nom0": Compspatnom0,
         "C_phiavg": phi_average_volume(Cspat, "C"),
         "Comp_phiavg": phi_average_volume(Compspat, "Comp"),
         "N2": N2_volume,

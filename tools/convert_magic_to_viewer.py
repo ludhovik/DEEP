@@ -63,7 +63,7 @@ CMB_RADIUS_KM = 3480.0
 DEFAULT_EARTH_RADIUS_SCALE = EARTH_RADIUS_KM / CMB_RADIUS_KM
 DEFAULT_EARTH_BR_LMAX = 13
 RADIAL_ATOL = 1.0e-10
-CONVERTER_PACKAGE_VERSION = "3.4.0"
+CONVERTER_PACKAGE_VERSION = "3.4.2"
 
 
 def json_number(value: Any, default: float | None = None) -> float | None:
@@ -569,7 +569,6 @@ def convert_graph(path: Path, outdir: Path, args: argparse.Namespace) -> dict[st
         register("C", C, r_shell, "entropy")
         register("T", C, r_shell, "entropy")
         register("Cnom0", remove_m0_phi(C), r_shell, "entropy")
-        register("C_nom0", remove_m0_phi(C), r_shell, "entropy")
         register("C_phiavg", phi_average_volume(C), r_shell, "entropy")
         if not args.no_m0_fields:
             register("T_nom0", remove_m0_phi(C), r_shell, "entropy")
@@ -579,7 +578,6 @@ def convert_graph(path: Path, outdir: Path, args: argparse.Namespace) -> dict[st
         scalars["Comp"] = (Comp, r_shell, "composition")
         register("Comp", Comp, r_shell, "composition")
         register("Compnom0", remove_m0_phi(Comp), r_shell, "composition")
-        register("Comp_nom0", remove_m0_phi(Comp), r_shell, "composition")
         register("Comp_phiavg", phi_average_volume(Comp), r_shell, "composition")
     for optional in ("Phase", "P"):
         if optional in raw:

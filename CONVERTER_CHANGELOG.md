@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.4.2
+
+- Remove the duplicate `C_nom0` and `Comp_nom0` fields and physical output
+  files from all three converters; retain `Cnom0` and `Compnom0`.
+- Remove the duplicate menu choices when loading older primary or secondary
+  datasets, including aliases-only bundles. Translate old saved-view field
+  selections to the canonical names without changing scientific values.
+
 ## 3.4.0
 
 - Support `--spectral-lmax` in Leeds, XSHELLS and MagIC. Default 0 retains all

@@ -122,6 +122,7 @@ function viewer() {
     "invalidateRenderRequests", "loadForRender", "pinHeavyCacheEntry", "isEffectivelyOpaque", "applyOpacityAndDepth",
     "normaliseDatasetLabel", "secondaryPrefix", "isSecondaryFieldName", "rawSecondaryFieldName", "prefixedSecondaryFieldName",
     "resolveFieldSource", "getPrimaryVolumeFieldNames", "getSecondaryVolumeFieldNames", "getVolumeFieldNames",
+    "normaliseScalarFieldMetadata", "canonicalScalarFieldName",
     "getIsosurfaceObjectCacheKey", "getFieldLineObjectCacheKey", "buildIsosurfaceObjectCacheEntry",
     "ensureIsosurfaceObjectCacheEntry", "detachActiveIsosurfaces", "rebuildIsosurfaces", "makeIsoMaterial",
     "geometryMemoryBytes", "object3DMemoryBytes", "isActiveIsosurfaceEntry", "isActiveFieldLineEntry",
@@ -146,6 +147,35 @@ function viewer() {
 function presetCode(ctx, values = {}) {
   return ctx.encodeViewState({ version: 2, scope: "view-only", params: values });
 }
+
+test("duplicate scalar choices disappear for old primary and secondary bundles without mutating their metadata", () => {
+  const ctx = viewer();
+  const old = { fields: { Cnom0: "Cnom0.f32", C_nom0: "duplicate.f32", Comp_nom0: "legacy-comp.f32", C: "C.f32" },
+    ranges: { Cnom0: { min: -1 }, C_nom0: { min: -2 }, Comp_nom0: { min: -3 } } };
+  ctx.metadata = ctx.normaliseScalarFieldMetadata(old);
+  ctx.secondaryDataset = { metadata: ctx.normaliseScalarFieldMetadata(old) };
+  ctx.params.secondaryDatasetLabel = "D2";
+  assert.deepEqual(Array.from(ctx.getVolumeFieldNames()), ["Cnom0", "C", "Compnom0", "D2:Cnom0", "D2:C", "D2:Compnom0"]);
+  assert.equal(ctx.metadata.fields.Cnom0, "Cnom0.f32");
+  assert.equal(ctx.metadata.fields.Compnom0, "legacy-comp.f32");
+  assert.equal(ctx.metadata.ranges.Cnom0.min, -1);
+  assert.equal(ctx.metadata.ranges.Compnom0.min, -3);
+  assert.equal(old.fields.C_nom0, "duplicate.f32");
+  assert.deepEqual(ctx.normaliseScalarFieldMetadata(ctx.metadata), ctx.metadata);
+});
+
+test("legacy scalar selections in view codes map to canonical primary and secondary fields", () => {
+  const ctx = viewer();
+  ctx.metadata.fields = { Cnom0: "Cnom0.f32", Compnom0: "Compnom0.f32" };
+  ctx.secondaryDataset = { metadata: ctx.metadata };
+  ctx.params.secondaryDatasetLabel = "D2";
+  const code = presetCode(ctx, { equatorField: "C_nom0", meridianField: "D2:Comp_nom0", isoField: "Comp_nom0" });
+  assert.equal(ctx.applyViewStateParams(ctx.decodeViewState(code)).length, 0);
+  assert.equal(ctx.params.equatorField, "Cnom0");
+  assert.equal(ctx.params.meridianField, "D2:Compnom0");
+  assert.equal(ctx.params.isoField, "Compnom0");
+  assert.equal(ctx.canonicalScalarFieldName("grad_rC_full"), "grad_rC_full");
+});
 
 function surfaceViewer() {
   const ctx = viewer(), loads = [], elements = new Map();

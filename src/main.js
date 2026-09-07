@@ -3096,9 +3096,31 @@ function stripLegacyCpsMetadata(meta) {
   return meta;
 }
 
+function normaliseScalarFieldMetadata(meta) {
+  if (!meta?.fields) return meta;
+  const result = { ...meta };
+  for (const key of ["fields", "ranges", "field_domains"]) {
+    if (!meta[key]) continue;
+    result[key] = { ...meta[key] };
+    for (const [alias, canonical] of [["C_nom0", "Cnom0"], ["Comp_nom0", "Compnom0"]]) {
+      if (!Object.prototype.hasOwnProperty.call(result[key], alias)) continue;
+      if (!Object.prototype.hasOwnProperty.call(result[key], canonical)) {
+        result[key][canonical] = result[key][alias];
+      }
+      delete result[key][alias];
+    }
+  }
+  return result;
+}
+
+function canonicalScalarFieldName(name) {
+  // Includes labelled secondary fields, e.g. D2:Comp_nom0.
+  return String(name).replace(/(^|:)(C|Comp)_nom0$/, "$1$2nom0");
+}
+
 async function loadMetadataForBase(basePath) {
   const meta = await fetchJsonStrict(dataUrlForBase(basePath, "metadata.json"), "metadata.json");
-  return stripLegacyCpsMetadata(meta);
+  return normaliseScalarFieldMetadata(stripLegacyCpsMetadata(meta));
 }
 
 async function loadMetadata() {
@@ -6830,6 +6852,7 @@ function validFieldForState(key, value) {
 function applySnapshotParam(key, value) {
   if (!Object.prototype.hasOwnProperty.call(VIEW_STATE_PARAM_TYPES, key) || VIEW_STATE_EXCLUDED_PARAMS.has(key)) return false;
   if (typeof value !== VIEW_STATE_PARAM_TYPES[key]) return false;
+  if (key.endsWith("Field")) value = canonicalScalarFieldName(value);
   if (typeof value === "number" && !Number.isFinite(value)) return false;
   if (key.endsWith("Opacity") && (value < 0 || value > 1)) return false;
   const limits = VIEW_STATE_NUMBER_LIMITS[key];

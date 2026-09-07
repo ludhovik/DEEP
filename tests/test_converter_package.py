@@ -424,6 +424,12 @@ class ConverterPackageTests(unittest.TestCase):
             expected_size = metadata["nr"] * metadata["ntheta"] * metadata["nphi"] * 4
             self.assertEqual(metadata["viewer_field_contract"], "dynamo-three-viewer-v2-common")
             self.assertIn("Comp", metadata["fields"])
+            for alias, canonical in (("C_nom0", "Cnom0"), ("Comp_nom0", "Compnom0")):
+                self.assertIn(canonical, metadata["fields"])
+                self.assertNotIn(alias, metadata["fields"])
+                self.assertNotIn(alias, metadata["ranges"])
+                self.assertNotIn(alias, metadata["field_domains"])
+                self.assertFalse((output / f"{alias}_volume.f32").exists())
             for filename in metadata["fields"].values():
                 self.assertEqual((output / filename).stat().st_size, expected_size)
 
