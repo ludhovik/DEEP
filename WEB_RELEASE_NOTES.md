@@ -1,5 +1,15 @@
 # v0.4.0 — static hosted/local-data viewer
 
+## Refresh published dataset views (2026-09-07)
+
+- Refresh the Figshare/Zenodo file index as well as the contents when reading
+  `view.DTV2`, so reopening a dataset discovers newly added or replaced views.
+  Forward the optional view's timeout and cancellation to the record lookup.
+- Prevent a failed older request from evicting a newer repository index.
+- Remove the Figshare proxy's one-hour cache and add an explicit Wrangler
+  configuration. Deploy the Worker separately from GitHub Pages; see
+  [deployment instructions](GITHUB_PAGES.md#figshare-proxy).
+
 ## Tube simplification and title warnings (2026-09-07)
 
 - Add **Tube simplification → Simplify tubes**, enabled by default with an

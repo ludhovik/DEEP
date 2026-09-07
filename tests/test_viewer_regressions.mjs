@@ -1297,6 +1297,122 @@ test("view files use existing HTTP, local filesystem, Figshare and Zenodo routin
   assert.ok(calls.every(call => call.cache === "no-store" && call.timeout === 5000));
 });
 
+function repositoryViewLoader(provider) {
+  const ctx = viewer(), calls = [];
+  const state = { revision: 1, hasView: true };
+  const root = `${provider}:33455986`;
+  const apiUrl = provider === "figshare"
+    ? "https://deep-figshare-proxy.ludhovik-research.workers.dev/figshare/articles/33455986"
+    : "https://zenodo.org/api/records/33455986";
+  ctx.remoteRepositoryIndexCache = new Map();
+  ctx.fetchWithTimeout = async (url, options, timeout) => {
+    calls.push({ url, ...options, timeout });
+    if (url === apiUrl) {
+      const files = [["metadata.json", "https://files.example/metadata"]];
+      if (state.hasView) files.push(["view.DTV2", `https://files.example/view-${state.revision}`]);
+      return Response.json(provider === "figshare"
+        ? { files: files.map(([name, download_url], id) => ({ id, name, download_url })) }
+        : { files: files.map(([key, content]) => ({ key, links: { content } })) });
+    }
+    if (url === "https://files.example/metadata") return Response.json({ fields: {} });
+    const revision = Number(url.match(/view-(\d+)$/)?.[1]);
+    assert.ok(revision > 0, `Unexpected download: ${url}`);
+    return new Response(presetCode(ctx, { cameraDistance: revision + 3 }));
+  };
+  for (const name of ["normaliseRepositoryPath", "stripRepositoryDatasetPrefix", "buildFigshareIndex",
+    "buildZenodoIndex", "fetchRemoteRepositoryResource", "fetchDatasetResource"]) {
+    vm.runInContext(definition(name), ctx);
+  }
+  return { ctx, calls, state, root, apiUrl };
+}
+
+test("reopening a Figshare or Zenodo view discovers replaced file IDs and keeps ordinary reads cached", async () => {
+  for (const provider of ["figshare", "zenodo"]) {
+    const { ctx, calls, state, root, apiUrl } = repositoryViewLoader(provider);
+    const controller = new AbortController();
+    const first = await ctx.loadDatasetViewState(root, root, controller.signal);
+    assert.equal(first.snapshot.params.cameraDistance, 4);
+    state.revision = 2;
+    const second = await ctx.loadDatasetViewState(root, root, controller.signal);
+    assert.equal(second.snapshot.params.cameraDistance, 5);
+    assert.equal(calls.filter(call => call.url === apiUrl).length, 2);
+    assert.ok(calls.every(call => call.cache === "no-store" && call.timeout === 5000
+      && call.signal === controller.signal));
+    // A view refresh updates the shared index without forcing another API
+    // request for each subsequent data file or clearing the volume caches.
+    const cachedVolume = new Float32Array([1, 2, 3]);
+    ctx.dataCache.set(`${root}/Br.f32`, cachedVolume);
+    await ctx.fetchDatasetResource(`${root}/metadata.json`);
+    await ctx.fetchDatasetResource(`${root}/metadata.json`);
+    assert.equal(calls.filter(call => call.url === apiUrl).length, 2);
+    assert.equal(ctx.dataCache.get(`${root}/Br.f32`), cachedVolume);
+  }
+});
+
+test("a saved view added after opening a record is discovered without refreshing the page", async () => {
+  for (const provider of ["figshare", "zenodo"]) {
+    const { ctx, state, root } = repositoryViewLoader(provider);
+    state.hasView = false;
+    assert.equal((await ctx.loadDatasetViewState(root)).snapshot, null);
+    state.hasView = true;
+    assert.equal((await ctx.loadDatasetViewState(root)).snapshot.params.cameraDistance, 4);
+  }
+});
+
+test("failed old record or file requests cannot discard a newly refreshed repository index", async () => {
+  for (const failureStage of ["record", "file"]) {
+    const { ctx, calls, state, root, apiUrl } = repositoryViewLoader("figshare");
+    const pending = deferred(), started = deferred(), fetch = ctx.fetchWithTimeout;
+    let waiting = true;
+    ctx.fetchWithTimeout = (url, options, timeout) => {
+      if (waiting && url === (failureStage === "record" ? apiUrl : "https://files.example/view-1")) {
+        waiting = false;
+        started.resolve();
+        return pending.promise;
+      }
+      return fetch(url, options, timeout);
+    };
+    const oldRead = ctx.fetchRemoteRepositoryResource(`${root}/view.DTV2`);
+    await started.promise;
+    state.revision = 2;
+    assert.equal((await ctx.loadDatasetViewState(root)).snapshot.params.cameraDistance, 5);
+    const currentIndex = ctx.remoteRepositoryIndexCache.get(root);
+    pending.reject(new Error("Old request failed"));
+    assert.equal((await oldRead).status, 502);
+    assert.equal(ctx.remoteRepositoryIndexCache.get(root), currentIndex);
+    const lookupsBefore = calls.filter(call => call.url === apiUrl).length;
+    await ctx.fetchDatasetResource(`${root}/metadata.json`);
+    assert.equal(calls.filter(call => call.url === apiUrl).length, lookupsBefore);
+  }
+});
+
+test("optional view record refreshes propagate timeout and cancellation and can be retried", async () => {
+  for (const provider of ["figshare", "zenodo"]) {
+    const { ctx, root } = repositoryViewLoader(provider);
+    await ctx.fetchDatasetResource(`${root}/metadata.json`);
+    const workingIndex = ctx.remoteRepositoryIndexCache.get(root);
+    const fetch = ctx.fetchWithTimeout;
+    ctx.fetchWithTimeout = async (_url, options, timeout) => {
+      assert.equal(timeout, 5000);
+      assert.equal(options.cache, "no-store");
+      if (options.signal?.aborted) throw options.signal.reason;
+      throw new DOMException("Record refresh timed out", "TimeoutError");
+    };
+    const missed = await ctx.loadDatasetViewState(root);
+    assert.equal(missed.snapshot, null);
+    assert.match(missed.warnings[0], /Record refresh timed out/);
+    assert.equal(ctx.remoteRepositoryIndexCache.get(root), workingIndex);
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(ctx.fetchRemoteRepositoryResource(`${root}/view.DTV2`, {
+      cache: "no-store", timeoutMs: 5000, signal: controller.signal,
+    }), { name: "AbortError" });
+    assert.equal(ctx.remoteRepositoryIndexCache.get(root), workingIndex);
+    ctx.fetchWithTimeout = fetch;
+    assert.equal((await ctx.loadDatasetViewState(root)).snapshot.params.cameraDistance, 4);
+  }
+});
+
 test("folder-selected files can supply view.DTV2 without requesting write permission", async () => {
   const ctx = viewer(), folder = writableFolder();
   const code = presetCode(ctx, { cameraDistance: 8 });

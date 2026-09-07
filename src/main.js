@@ -1886,7 +1886,7 @@ async function fetchWithTimeout(resource, options = {}, timeoutMs = DATASET_FETC
 async function buildFigshareIndex(articleId, options = {}) {
   const response = await fetchWithTimeout(
     `https://deep-figshare-proxy.ludhovik-research.workers.dev/figshare/articles/${articleId}`,
-    { signal: options.signal }
+    { signal: options.signal, cache: options.cache }, options.timeoutMs
   );
   if (!response.ok) {
     releaseDatasetResponse(response);
@@ -1905,7 +1905,7 @@ async function buildFigshareIndex(articleId, options = {}) {
 async function buildZenodoIndex(recordId, options = {}) {
   const response = await fetchWithTimeout(
     `https://zenodo.org/api/records/${recordId}`,
-    { signal: options.signal }
+    { signal: options.signal, cache: options.cache }, options.timeoutMs
   );
   if (!response.ok) {
     releaseDatasetResponse(response);
@@ -1928,16 +1928,21 @@ async function fetchRemoteRepositoryResource(path, options = {}) {
   const relativePath = normaliseRepositoryPath(match[3]);
   const cacheKey = `${provider}:${recordId}`;
 
-  let indexPromise = remoteRepositoryIndexCache.get(cacheKey);
-  if (!indexPromise) {
+  const previousIndexPromise = remoteRepositoryIndexCache.get(cacheKey);
+  let indexPromise = previousIndexPromise;
+  // Replacing a published file can change its download ID. An uncached view
+  // read must refresh the record's file list as well as the file contents.
+  if (!indexPromise || options.cache === "no-store") {
     indexPromise = provider === "figshare"
       ? buildFigshareIndex(recordId, options)
       : buildZenodoIndex(recordId, options);
     remoteRepositoryIndexCache.set(cacheKey, indexPromise);
   }
 
+  let indexResolved = false;
   try {
     const index = await indexPromise;
+    indexResolved = true;
     const downloadUrl = index.get(relativePath);
     if (!downloadUrl) {
       return new Response(`${relativePath} is not present in ${provider} record ${recordId}.`, {
@@ -1947,7 +1952,18 @@ async function fetchRemoteRepositoryResource(path, options = {}) {
     }
     return await fetchWithTimeout(downloadUrl, { signal: options.signal, cache: options.cache }, options.timeoutMs);
   } catch (error) {
-    remoteRepositoryIndexCache.delete(cacheKey);
+    // Keep a valid file list on a download failure. A late failed lookup must
+    // not evict a newer index; a failed optional refresh can reuse the old one.
+    if (!indexResolved && remoteRepositoryIndexCache.get(cacheKey) === indexPromise) {
+      remoteRepositoryIndexCache.delete(cacheKey);
+      if (previousIndexPromise && previousIndexPromise !== indexPromise) {
+        previousIndexPromise.then(() => {
+          if (!remoteRepositoryIndexCache.has(cacheKey)) {
+            remoteRepositoryIndexCache.set(cacheKey, previousIndexPromise);
+          }
+        }, () => {});
+      }
+    }
     if (error?.name === "AbortError" || error?.name === "TimeoutError") throw error;
     return new Response(error?.message || "Remote dataset lookup failed.", {
       status: 502,

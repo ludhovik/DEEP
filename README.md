@@ -114,7 +114,9 @@ Figshare metadata is read through the small Cloudflare Worker in
 `cloudflare/figshare-proxy.js`; the actual data files are downloaded from
 Figshare. The proxy accepts read-only `GET` and CORS preflight requests,
 does not use a Figshare token, and restricts upstream requests to the Figshare
-API and file-download hosts.
+article API. Record responses bypass browser and Cloudflare caches so published
+file replacements can be discovered. See [proxy deployment](GITHUB_PAGES.md#figshare-proxy)
+when updating the Worker; pushing to GitHub Pages does not deploy it.
 
 ### Zenodo
 
@@ -466,8 +468,13 @@ To save the current setup, use **View state → Save view.DTV2**:
 
 **Download view.DTV2** always offers a separate copy. After adding a file through
 a download, reselect a folder opened with read-only file input so the viewer can
-see the new file. After updating a remote record, refresh the page and reopen
-the dataset. Keep the exact filename `view.DTV2`, including its capitalization.
+see the new file. After updating a remote record, publish the changes and reopen
+the dataset. Each saved-view read refreshes the Figshare/Zenodo file list and
+downloads the view without using cached contents, so a replaced file ID is
+discovered without refreshing the page. Ordinary data reads still reuse their
+caches. Keep the exact filename `view.DTV2`, including its capitalization.
+On Figshare, saving an edit as a draft is not enough: the base DOI exposes the
+latest **published** version ([Figshare versioning](https://info.figshare.com/user-guide/how-versioning-works/)).
 Writing through a selected folder depends on the browser's
 [File System Access permission support](https://developer.mozilla.org/en-US/docs/Web/API/FileSystemHandle/requestPermission).
 

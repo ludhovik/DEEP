@@ -1,0 +1,7 @@
+{
+  "name": "deep-figshare-proxy",
+  "main": "figshare-proxy.js",
+  "compatibility_date": "2026-09-07",
+  "workers_dev": true,
+  "keep_vars": true
+}

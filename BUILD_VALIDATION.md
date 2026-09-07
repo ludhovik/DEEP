@@ -1,5 +1,21 @@
 # Integrated package validation
 
+## Refresh published dataset views (2026-09-07)
+
+- All 89 viewer/proxy tests pass. New fixtures publish changed download IDs or
+  add a previously missing view in both Figshare and Zenodo; a repeat read
+  discovers the new view without clearing ordinary volume caches. Tests also
+  cover record timeouts, cancellation, retry and stale-request cache eviction.
+- Worker tests verify uncached upstream requests and browser response headers,
+  while preserving HTTP status, read-only routes and CORS behaviour. They use
+  mocked HTTP responses, not a deployed Cloudflare runtime.
+- The production build, JavaScript syntax and whitespace checks pass. The
+  existing large JavaScript chunk advisory remains. Live retrieval of the
+  reported Figshare record was unavailable; no browser/GPU check was run.
+- Both the viewer and Worker need deployment. The new Wrangler configuration
+  pins support for the standard no-store request option. Converter code is
+  unchanged.
+
 ## Tube simplification and title feedback (2026-09-07)
 
 - All 83 viewer tests pass. Simplification tests check every original sample

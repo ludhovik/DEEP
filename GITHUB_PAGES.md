@@ -70,6 +70,28 @@ https://USER.github.io/REPOSITORY/?dataset=https://DATA-HOST/path/to/viewer_data
 
 The same CORS requirement applies.
 
+## Figshare proxy
+
+The Figshare record lookup uses the separate Cloudflare Worker in
+`cloudflare/figshare-proxy.js`. A GitHub Pages deployment updates the viewer;
+deploy Worker changes separately from the repository root:
+
+```bash
+npx wrangler deploy --config cloudflare/wrangler.jsonc
+```
+
+The configuration targets the existing `deep-figshare-proxy` Worker and pins a
+compatibility date that supports [`cache: "no-store"`](https://developers.cloudflare.com/changelog/post/2024-11-11-cache-no-store/).
+Record responses bypass existing Cloudflare cache entries and ask browsers not
+to store them. The old Worker cached records for one hour, so deploy this update
+when replacing `view.DTV2` files in published Figshare records. Binary data files
+are still downloaded directly from Figshare.
+
+After updating both deployments, refresh DEEPscope once to load the new code.
+Subsequent saved-view updates need only be published and the dataset reopened.
+Use the exact filename `view.DTV2`; a sequence-root view beside `sequence.json`
+takes precedence over its initial frame's view.
+
 ## Privacy model
 
 For **Open local dataset folder**, the website receives no simulation files. The browser grants the page read access only to the directory explicitly selected by the user. Data are decoded locally into browser memory for visualization.

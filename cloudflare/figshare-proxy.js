@@ -60,10 +60,9 @@ export default {
           "Accept": "application/json",
           "User-Agent": "DEEPscope-Figshare-Proxy/1.0",
         },
-        cf: {
-          cacheEverything: true,
-          cacheTtl: 3600,
-        },
+        // Record file IDs change when an author publishes a replacement.
+        // Bypass existing edge entries too, including the old one-hour cache.
+        cache: "no-store",
       });
 
       const headers = new Headers(corsHeaders(origin));
@@ -72,7 +71,7 @@ export default {
         upstream.headers.get("Content-Type") ||
           "application/json"
       );
-      headers.set("Cache-Control", "public, max-age=3600");
+      headers.set("Cache-Control", "no-store");
 
       return new Response(upstream.body, {
         status: upstream.status,
