@@ -71,6 +71,21 @@ when intentionally updating dependencies.
 
 ## Loading data
 
+The progress box shows the current file or calculation and includes **Cancel**.
+Reads show received bytes; a percentage appears when the decoded file size is
+known. Unknown or compressed download sizes use an indeterminate indicator.
+The box remains accessible with the title collapsed or the opening screen visible.
+Cancelling a primary dataset switch restores the preceding dataset and view;
+cancelling a geometry replacement leaves the preceding geometry displayed.
+
+Tube simplification, tube mesh construction and isosurface generation run in a
+browser Web Worker. This uses the visitor's computer and needs no Cloudflare
+deployment. Cancellation terminates active calculations and clears queued work;
+a later request starts a fresh worker. Source arrays stay available in the
+viewer cache, and geometry buffers transfer back without another full copy.
+Parsing large JSON files, copying inputs and uploading meshes to the graphics
+device still take time; the tube budget is not a total browser-memory cap.
+
 ### Local folder
 
 Select a converted single-frame folder containing `metadata.json`, or a
@@ -299,6 +314,28 @@ comparison uses a small floor (`10⁻¹²` of the section's peak B²) near zero.
 Larger error limits permit fewer points; smaller limits retain more detail.
 The colour range and automatic strength reference still use the full selected
 domains before thinning. All simplification options are included in DTV2.
+
+**Tube simplification → Auto fit budget** is optional and off by default. With
+**Simplify tubes** enabled, it increases the shape and B² error tolerances until
+the estimated combined mesh fits the selected tube budget. Each trial starts
+from the saved polylines and retains every selected line, its endpoints, pairing
+identifiers, magnetic extrema and missing-data breaks.
+
+- **Auto max shape / ro**, default `0.005`, bounds the permitted shape error
+  (`0.5%` of the outer radius).
+- **Auto max B² error %**, default `5`, bounds the permitted B² interpolation error.
+
+Automatic fitting never exceeds these bounds, even if the manual tolerances are
+larger. If fitting is impossible within them, it preserves the previous display
+and asks for a different stride, side count, memory budget or error bounds. It
+does not silently drop additional lines. The title reports the tolerances used.
+Turning off **Auto fit budget** restores the manual tolerances; turning off
+**Simplify tubes** uses every saved sample.
+
+DTV2 saves the automatic mode and error bounds. The result also depends on the
+session's memory budget. For a repeatable publication mesh across computers,
+turn off automatic fitting and enter the reported tolerances manually, or turn
+off simplification entirely.
 
 In **Magnetic field lines → Tube memory**, **Custom limit** is off by default,
 using a **192 MiB** geometry budget. Turn it on to set **Limit (MiB)** between

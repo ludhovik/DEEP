@@ -1,5 +1,24 @@
 # Integrated package validation
 
+## Loading progress, geometry workers and automatic tube detail (2026-09-07)
+
+- All 118 viewer/proxy tests pass, including actual worker-thread execution of
+  the browser worker entry point. Tests compare isosurface/tube buffers to the
+  synchronous calculations, check an analytical spherical isosurface and clipping,
+  preserve input buffers, and confirm the calling event loop continues running.
+- Worker cancellation, queued work, stale replies, errors and retries are covered.
+  Viewer integration passes messages through structured cloning, assembles real
+  Three.js tubes, and preserves shell/exterior pairing and vertex colours.
+- Automatic fitting is tested against its budget and original-sample shape/B²
+  bounds, with retained lines and endpoints, manual off switches, impossible-fit
+  rejection and view-code/cache handling. Stream tests cover byte counts, UTF-8,
+  unknown lengths, cancellation and malformed/interrupted responses.
+- Primary dataset cancellation is checked before and after commit, including
+  rollback with a usable read context and subsequent retry. Progress UI uses DOM
+  doubles; no browser/GPU profiling was available in this environment.
+- Production build emits the separate worker asset; JavaScript syntax and
+  whitespace checks pass. The existing large main-chunk advisory remains.
+
 ## Adjustable tube geometry memory (2026-09-07)
 
 - All 99 viewer/proxy tests pass. New cases exercise the custom/default toggle,

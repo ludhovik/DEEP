@@ -6,7 +6,10 @@ import { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import GUI from "lil-gui";
-import { makeMagneticTubeGeometry, peakLineStrength, estimateTubeBytes, simplifyMagneticLine } from "./field-line-tubes.js";
+import { makeMagneticTubeGeometry, peakLineStrength, estimateTubeBytes } from "./field-line-tubes.js";
+import { GeometryClient } from "./geometry-client.js";
+import { unpackGeometry } from "./geometry-jobs.js";
+import { createWorkProgress, readResponseWithProgress } from "./work-progress.js";
 import { createViewerStatus } from "./viewer-status.js";
 import { SURFACE_TEXTURES, SURFACE_TEXTURE_OPTIONS } from "./surface-textures.js";
 
@@ -42,6 +45,78 @@ const exportHeaderEl = document.getElementById("export-header");
 const exportContentEl = document.getElementById("export-content");
 const exportCollapseButtonEl = document.getElementById("export-collapse-button");
 const exportResizeHandleEl = document.getElementById("export-resize-handle");
+
+const workProgress = createWorkProgress({
+  panel: document.getElementById("work-progress"),
+  label: document.getElementById("work-progress-label"),
+  bar: document.getElementById("work-progress-bar"),
+  cancel: document.getElementById("cancel-work"),
+});
+const geometryClient = new GeometryClient();
+
+async function runGeometryJob(type, payload, label) {
+  const progress = workProgress.begin(label, () => geometryClient.cancelAll());
+  try {
+    return await geometryClient.run(type, payload, {
+      signal: datasetRequestSignal || undefined,
+      onProgress: update => progress.update(update),
+    });
+  } finally { progress.finish(); }
+}
+
+async function buildIsosurfaceInBackground(context, field, isoValue) {
+  const clipOptions = withCapturedRenderContext(context, () => getActiveIsoClipOptions());
+  const data = await runGeometryJob("isosurface", { field, metadata: context.metadata,
+    coords: context.coords, isoValue, requestedResolution: context.params.isoResolution, clipOptions },
+    `Building ${context.params.isoField} isosurface`);
+  return unpackGeometry(data);
+}
+
+async function prepareTubeLinesInBackground(selected, context) {
+  const limitBytes = tubeGeometryLimitMiB() * 1024 ** 2;
+  const settings = Object.fromEntries(["lineTubeSimplify", "lineTubeAutoDetail", "lineTubeShapeError",
+    "lineTubeEnergyErrorPercent", "lineTubeAutoMaxShapeError", "lineTubeAutoMaxEnergyErrorPercent",
+    "lineTubeSides"].map(key => [key, context.params[key]]));
+  return await runGeometryJob("prepare-tubes", { selected, settings,
+    radius: Number(context.metadata.r_outer), limitBytes }, "Preparing magnetic tubes");
+}
+
+async function buildTubeGeometriesInBackground(lines, selected, context, tubeReference) {
+  const radius = Number(context.metadata.r_outer), settings = context.params;
+  const controller = new AbortController(), parentSignal = datasetRequestSignal;
+  const progress = workProgress.begin("Preparing tube colours", () => controller.abort());
+  const [vmin, vmax] = withCapturedRenderContext(context, () => getFieldLineRange(lines));
+  const payload = [];
+  let lastYield = performance.now();
+  try {
+    for (const [lineIndex, line] of selected.entries()) {
+      if (!Array.isArray(line.strength) || !Array.isArray(line.points)) { payload.push(null); continue; }
+      const colors = new Float32Array(line.points.length * 3);
+      for (let start = 0; start < line.points.length; start += 10000) {
+        controller.signal.throwIfAborted(); parentSignal?.throwIfAborted();
+        withCapturedRenderContext(context, () => {
+          for (let i = start; i < Math.min(start + 10000, line.points.length); i++) {
+            const c = getFieldLineVertexColor(Number(line.strength[i]), line.polarity ?? 1, vmin, vmax);
+            colors.set([c.r, c.g, c.b], i * 3);
+          }
+        });
+        if (performance.now() - lastYield > 12) {
+          progress.update({ label: "Preparing tube colours", fraction: lineIndex / selected.length });
+          await new Promise(resolve => window.setTimeout(resolve, 0));
+          lastYield = performance.now();
+        }
+      }
+      payload.push({ points: line.points, strength: line.strength, colors });
+    }
+    controller.signal.throwIfAborted(); parentSignal?.throwIfAborted();
+  } finally { progress.finish(); }
+  const data = await runGeometryJob("tubes", { lines: payload, options: {
+    reference: tubeReference, diameter: settings.lineTubeDiameter * radius,
+    minimum: settings.lineTubeMinDiameter * radius, maximum: settings.lineTubeMaxDiameter * radius,
+    sides: settings.lineTubeSides, lengthScale: radius,
+  } }, "Building magnetic tubes");
+  return data.map(unpackGeometry);
+}
 
 const PANEL_POSITION_OPTIONS = {
   "Left centre": "left-center",
@@ -332,6 +407,9 @@ const params = {
   lineTubeMaxDiameter: 0.08,
   lineTubeSides: 8,
   lineTubeSimplify: true,
+  lineTubeAutoDetail: false,
+  lineTubeAutoMaxShapeError: 0.005,
+  lineTubeAutoMaxEnergyErrorPercent: 5.0,
   lineTubeShapeError: 0.0005,
   lineTubeEnergyErrorPercent: 1.0,
   lineTubeCustomMemoryLimit: false,
@@ -566,6 +644,7 @@ function debouncedViewerTask(label, task, delayMs = 100) {
 
 function cancelPendingViewerTasks() {
   invalidateRenderRequests();
+  geometryClient.cancelAll();
   for (const timer of pendingViewerTaskTimers) window.clearTimeout(timer);
   pendingViewerTaskTimers.clear();
   if (customColourRefreshTimer) {
@@ -1341,35 +1420,6 @@ function getActiveIsoClipOptions() {
   return isoClip;
 }
 
-function planeValueAtPoint(point, phi0) {
-  const x = point[0];
-  const y = point[1];
-  return -Math.sin(phi0) * x + Math.cos(phi0) * y;
-}
-
-function shouldKeepPointForIsoClip(point, clipOptions = null) {
-  if (!clipOptions?.enabled) return true;
-
-  if (clipOptions.mode === "between-meridians-behind" && clipOptions.hasTwoPlanes) {
-    const a = normalizePhi(clipOptions.phiA);
-    const b = normalizePhi(clipOptions.phiB);
-    const spanAB = (b - a + 2.0 * Math.PI) % (2.0 * Math.PI);
-    const useAB = spanAB <= Math.PI;
-    const valA = planeValueAtPoint(point, a);
-    const valB = planeValueAtPoint(point, b);
-    const offA = Number(clipOptions.offsetA || 0.0);
-    const offB = Number(clipOptions.offsetB || 0.0);
-    const inFrontOpening = useAB
-      ? (valA >= offA && valB <= offB)
-      : (valB >= offB && valA <= offA);
-    return !inFrontOpening;
-  }
-
-  const val = planeValueAtPoint(point, clipOptions.phi0);
-  const off = Number(clipOptions.offset || 0.0);
-  return clipOptions.side === "negative" ? val < off : val > off;
-}
-
 function shouldKeepPhiForClip(phiValue, clipOptions = null) {
   return shouldKeepSurfaceCellForClip(0.25 * Math.PI, phiValue, clipOptions);
 }
@@ -1842,19 +1892,35 @@ function stripRepositoryDatasetPrefix(entries) {
 const DATASET_FETCH_TIMEOUT_MS = 180000;
 const RESPONSE_CLEANUP = Symbol("deepResponseCleanup");
 const RESPONSE_ABORT_CONTROLLER = Symbol("deepResponseAbortController");
+const RESPONSE_PROGRESS = Symbol("deepResponseProgress");
 
 function releaseDatasetResponse(response) {
   response?.[RESPONSE_CLEANUP]?.();
 }
 
 async function readDatasetResponse(response, method) {
+  const controller = response?.[RESPONSE_ABORT_CONTROLLER] || new AbortController();
+  const external = datasetRequestSignal;
+  const abort = () => controller.abort(external.reason);
+  if (external?.aborted) abort();
+  else external?.addEventListener("abort", abort, { once: true });
+  const label = response?.deepDatasetLabel || response?.[RESPONSE_PROGRESS]?.label || "Reading local dataset file";
+  const progress = response?.[RESPONSE_PROGRESS]?.progress
+    || workProgress.begin(label, () => controller.abort());
   try {
-    return await response[method]();
+    return await readResponseWithProgress(response, method, {
+      signal: controller.signal,
+      onProgress: ({ received, total }) => progress.update({
+        label: `${label}: ${formatBytes(received)}${total ? ` / ${formatBytes(total)}` : ""}`,
+        fraction: total ? received / total : undefined,
+      }),
+    });
   } catch (err) {
-    const reason = response?.[RESPONSE_ABORT_CONTROLLER]?.signal?.reason;
-    if (reason?.name === "TimeoutError") throw reason;
+    if (controller.signal.reason?.name === "TimeoutError") throw controller.signal.reason;
     throw err;
   } finally {
+    external?.removeEventListener("abort", abort);
+    progress.finish();
     releaseDatasetResponse(response);
   }
 }
@@ -1870,7 +1936,10 @@ async function fetchWithTimeout(resource, options = {}, timeoutMs = DATASET_FETC
     controller.abort(new DOMException(`Request timed out after ${Math.round(timeoutMs / 1000)} seconds.`, "TimeoutError"));
   }, timeoutMs);
 
+  const label = `Loading ${String(resource).split("/").at(-1).split("?")[0]}`;
+  const progress = workProgress.begin(label, () => controller.abort());
   const cleanup = () => {
+    progress.finish();
     window.clearTimeout(timer);
     externalSignal?.removeEventListener("abort", abortFromExternal);
   };
@@ -1879,6 +1948,7 @@ async function fetchWithTimeout(resource, options = {}, timeoutMs = DATASET_FETC
     const response = await fetch(resource, { ...options, signal: controller.signal });
     Object.defineProperty(response, RESPONSE_CLEANUP, { value: cleanup });
     Object.defineProperty(response, RESPONSE_ABORT_CONTROLLER, { value: controller });
+    Object.defineProperty(response, RESPONSE_PROGRESS, { value: { label, progress } });
     return response;
   } catch (err) {
     cleanup();
@@ -1977,19 +2047,22 @@ async function fetchRemoteRepositoryResource(path, options = {}) {
 }
 
 async function fetchDatasetResource(path, options = {}) {
+  const named = response => Object.assign(response, {
+    deepDatasetLabel: `Loading ${String(path).split("/").at(-1).split("?")[0]}`,
+  });
   const signal = options.signal || datasetRequestSignal || undefined;
   const repositoryResponse = await fetchRemoteRepositoryResource(path, { ...options, signal });
-  if (repositoryResponse) return repositoryResponse;
+  if (repositoryResponse) return named(repositoryResponse);
 
   const localPath = parseLocalFilesystemPath(path);
   if (localPath) {
     const encodedPath = encodeLocalFilesystemPath(localPath);
     const endpoint = `/__localfs__/${encodedPath}`;
-    return await fetchWithTimeout(endpoint, { cache: "no-store", signal }, options.timeoutMs);
+    return named(await fetchWithTimeout(endpoint, { cache: "no-store", signal }, options.timeoutMs));
   }
 
   const folderPath = parseFolderSourcePath(path);
-  if (!folderPath) return await fetchWithTimeout(path, { signal, cache: options.cache }, options.timeoutMs);
+  if (!folderPath) return named(await fetchWithTimeout(path, { signal, cache: options.cache }, options.timeoutMs));
 
   const source = datasetFolderSources.get(folderPath.role);
   if (!source) {
@@ -2010,10 +2083,10 @@ async function fetchDatasetResource(path, options = {}) {
     if (!file) {
       return new Response("File not found", { status: 404, statusText: "Not Found" });
     }
-    return new Response(file, {
+    return named(new Response(file, {
       status: 200,
-      headers: { "Content-Type": file.type || "application/octet-stream" },
-    });
+      headers: { "Content-Type": file.type || "application/octet-stream", "Content-Length": String(file.size) },
+    }));
   } catch (err) {
     if (err?.name !== "NotFoundError") console.warn("Could not read selected folder file", err);
     return new Response("File not found", { status: 404, statusText: "Not Found" });
@@ -2520,6 +2593,8 @@ function getFieldLineObjectCacheKey(basePath = dataBasePath) {
     tube: [params.lineTubeDiameter, params.lineTubeReference, params.lineTubeMinDiameter,
            params.lineTubeMaxDiameter, params.lineTubeSides, params.lineTubeSimplify,
            params.lineTubeShapeError, params.lineTubeEnergyErrorPercent],
+    autoTubeDetail: [params.lineTubeAutoDetail, params.lineTubeAutoMaxShapeError, params.lineTubeAutoMaxEnergyErrorPercent,
+      params.lineTubeAutoDetail && params.lineTubeSimplify ? tubeGeometryLimitMiB() : null],
     radius: metadata?.r_outer,
     colourMode: params.lineColourMode,
     colormap: params.lineColormap,
@@ -2536,55 +2611,18 @@ function getFieldLineObjectCacheKey(basePath = dataBasePath) {
 
 async function buildIsosurfaceObjectCacheEntry(context = captureRenderContext()) {
   const field = await withCapturedRenderContext(context, () => loadField(context.params.isoField));
-  return withCapturedRenderContext(context, () => {
-    const isoClipOptions = getActiveIsoClipOptions();
-    let positive = null;
-    let negative = null;
-    let triangleCount = 0;
-
-    try {
-      if (params.showIsoPositive) {
-        const mesh = makeSphericalGridIsosurfaceMesh(
-          field,
-          Number(params.isoPositiveValue),
-          params.isoPositiveColor,
-          params.isoOpacity,
-          params.isoResolution,
-          isoClipOptions
-        );
-        positive = mesh.geometry;
-        mesh.material.dispose();
-        triangleCount += mesh.userData.triangleCount || 0;
-      }
-
-      if (params.showIsoNegative) {
-        const mesh = makeSphericalGridIsosurfaceMesh(
-          field,
-          Number(params.isoNegativeValue),
-          params.isoNegativeColor,
-          params.isoOpacity,
-          params.isoResolution,
-          isoClipOptions
-        );
-        negative = mesh.geometry;
-        mesh.material.dispose();
-        triangleCount += mesh.userData.triangleCount || 0;
-      }
-    } catch (error) {
-      positive?.dispose();
-      negative?.dispose();
-      throw error;
-    }
-
-    return {
-      positive,
-      negative,
-      triangleCount,
-      clipped: Boolean(params.isoClipWithMeridian),
-      bytes: geometryMemoryBytes(positive) + geometryMemoryBytes(negative),
-      last: ++cacheAccessCounter,
-    };
-  });
+  let positive = null, negative = null;
+  try {
+    if (context.params.showIsoPositive) positive = await buildIsosurfaceInBackground(context, field, Number(context.params.isoPositiveValue));
+    if (context.params.showIsoNegative) negative = await buildIsosurfaceInBackground(context, field, Number(context.params.isoNegativeValue));
+    return { positive, negative,
+      triangleCount: ((positive?.attributes.position?.count || 0) + (negative?.attributes.position?.count || 0)) / 3,
+      clipped: Boolean(context.params.isoClipWithMeridian),
+      bytes: geometryMemoryBytes(positive) + geometryMemoryBytes(negative), last: ++cacheAccessCounter };
+  } catch (error) {
+    positive?.dispose(); negative?.dispose();
+    throw error;
+  }
 }
 
 async function ensureIsosurfaceObjectCacheEntry(context = captureRenderContext()) {
@@ -2676,24 +2714,30 @@ async function buildFieldLineObjectCacheEntry(context = captureRenderContext()) 
             ? sampleVolumeNearest(strength, p[0], p[1], p[2]) : NaN) };
       }));
     }
-    const selected = selectFieldLinesByStride(linesByMode, context.params.lineStride);
+    let selected = selectFieldLinesByStride(linesByMode, context.params.lineStride);
+    let tubeDetail = null;
     const originalPointCounts = Object.fromEntries(Object.entries(selected).map(([mode, lines]) =>
       [mode, lines.reduce((sum, line) => sum + (line.points?.length || 0), 0)]));
     const tubeReference = Number(context.params.lineTubeReference) > 0
       ? Number(context.params.lineTubeReference) : peakLineStrength(Object.values(linesByMode).flat()) || 1;
     if (context.params.lineRenderMode === "b2-tubes") {
-      for (const mode of Object.keys(selected)) {
-        selected[mode] = selected[mode].map(line => simplifyMagneticLine(line, {
-          enabled: context.params.lineTubeSimplify,
-          positionTolerance: context.params.lineTubeShapeError * Number(context.metadata.r_outer),
-          energyTolerance: context.params.lineTubeEnergyErrorPercent / 100,
-        }));
-      }
-      const bytes = estimateTubeBytes(Object.values(selected).flat(), context.params.lineTubeSides);
-      checkTubeGeometryBudget(bytes, context.params);
+      tubeDetail = await prepareTubeLinesInBackground(selected, context);
+      selected = tubeDetail.selected;
+      checkTubeGeometryBudget(tubeDetail.bytes, context.params);
     }
     for (const [mode, lines] of Object.entries(linesByMode)) {
-      const group = withCapturedRenderContext(context, () => makeFieldLineGroup(lines, mode, selected[mode], tubeReference));
+      const geometries = context.params.lineRenderMode === "b2-tubes"
+        ? await buildTubeGeometriesInBackground(lines, selected[mode], context, tubeReference) : null;
+      let group;
+      try {
+        checkTubeGeometryBudget(context.params.lineRenderMode === "b2-tubes" ? tubeDetail.bytes : 0, context.params);
+        group = withCapturedRenderContext(context, () => makeFieldLineGroup(lines, mode, selected[mode], tubeReference, geometries));
+      } catch (error) {
+        geometries?.forEach(geometry => geometry?.dispose());
+        throw error;
+      }
+      if (tubeDetail) group.userData.tubeDetail = { shapeError: tubeDetail.shapeError,
+        energyErrorPercent: tubeDetail.energyErrorPercent, automatic: tubeDetail.automatic };
       group.userData.tubeOriginalPoints = originalPointCounts[mode];
       group.userData.tubePoints = selected[mode].reduce((sum, line) => sum + (line.points?.length || 0), 0);
       group.userData.tubeEstimatedBytes = estimateTubeBytes(selected[mode], context.params.lineTubeSides);
@@ -3386,7 +3430,7 @@ async function resolveDatasetBasePath(rootPath) {
 
 async function loadSecondaryDatasetFromParams() {
   if (datasetLoadInProgress) {
-    setStatus("A dataset is already loading. Please wait for it to finish or time out.");
+    setStatus("A dataset is already loading. Use Cancel to stop the current load.");
     return false;
   }
   const previous = captureDatasetState();
@@ -3803,169 +3847,6 @@ function makeIsoMaterial(color, opacity) {
   });
   applyOpacityAndDepth(material, opacity, params.isoTransparencyMode);
   return material;
-}
-
-function sphericalPositionArray(r, theta, phi) {
-  const st = Math.sin(theta);
-  return [
-    r * st * Math.cos(phi),
-    r * st * Math.sin(phi),
-    r * Math.cos(theta),
-  ];
-}
-
-function makeSampleIndices(n, maxCount, includeLast = true) {
-  const count = Math.max(2, Math.min(n, Math.round(maxCount)));
-  const out = [];
-  if (includeLast) {
-    for (let k = 0; k < count; k++) {
-      out.push(Math.round((k * (n - 1)) / Math.max(1, count - 1)));
-    }
-  } else {
-    for (let k = 0; k < count; k++) {
-      out.push(Math.floor((k * n) / count) % n);
-    }
-  }
-  return [...new Set(out)].sort((a, b) => a - b);
-}
-
-function interpolateIsoPoint(a, b, isoValue) {
-  const denom = b.v - a.v;
-  const q = Math.abs(denom) > 1.0e-30 ? clamp((isoValue - a.v) / denom, 0.0, 1.0) : 0.5;
-  return [
-    a.p[0] + q * (b.p[0] - a.p[0]),
-    a.p[1] + q * (b.p[1] - a.p[1]),
-    a.p[2] + q * (b.p[2] - a.p[2]),
-  ];
-}
-
-function pushTri(positions, p0, p1, p2, clipOptions = null) {
-  const centroid = [
-    (p0[0] + p1[0] + p2[0]) / 3.0,
-    (p0[1] + p1[1] + p2[1]) / 3.0,
-    (p0[2] + p1[2] + p2[2]) / 3.0,
-  ];
-  if (!shouldKeepPointForIsoClip(centroid, clipOptions)) return;
-  positions.push(
-    p0[0], p0[1], p0[2],
-    p1[0], p1[1], p1[2],
-    p2[0], p2[1], p2[2]
-  );
-}
-
-function polygoniseTetra(positions, tet, isoValue, clipOptions = null) {
-  const inside = tet.map((v) => Number.isFinite(v.v) && v.v >= isoValue);
-  const insideIdx = [];
-  const outsideIdx = [];
-  for (let i = 0; i < 4; i++) {
-    if (inside[i]) insideIdx.push(i);
-    else outsideIdx.push(i);
-  }
-
-  if (insideIdx.length === 0 || insideIdx.length === 4) return;
-
-  if (insideIdx.length === 1 || insideIdx.length === 3) {
-    const singleInside = insideIdx.length === 1;
-    const a = singleInside ? insideIdx[0] : outsideIdx[0];
-    const others = singleInside ? outsideIdx : insideIdx;
-
-    const p0 = interpolateIsoPoint(tet[a], tet[others[0]], isoValue);
-    const p1 = interpolateIsoPoint(tet[a], tet[others[1]], isoValue);
-    const p2 = interpolateIsoPoint(tet[a], tet[others[2]], isoValue);
-
-    if (singleInside) pushTri(positions, p0, p1, p2, clipOptions);
-    else pushTri(positions, p0, p2, p1, clipOptions);
-    return;
-  }
-
-  // Two inside, two outside: quadrilateral split into two triangles.
-  const a = insideIdx[0];
-  const b = insideIdx[1];
-  const c = outsideIdx[0];
-  const d = outsideIdx[1];
-
-  const pAC = interpolateIsoPoint(tet[a], tet[c], isoValue);
-  const pAD = interpolateIsoPoint(tet[a], tet[d], isoValue);
-  const pBC = interpolateIsoPoint(tet[b], tet[c], isoValue);
-  const pBD = interpolateIsoPoint(tet[b], tet[d], isoValue);
-
-  pushTri(positions, pAC, pBC, pAD, clipOptions);
-  pushTri(positions, pAD, pBC, pBD, clipOptions);
-}
-
-function makeSphericalGridIsosurfaceMesh(field, isoValue, color, opacity, requestedResolution, clipOptions = null) {
-  const nr = metadata.nr;
-  const nt = metadata.ntheta;
-  const np = metadata.nphi;
-
-  const res = Math.max(8, Math.min(96, Math.round(Number(requestedResolution))));
-  const rIdx = makeSampleIndices(nr, res, true);
-  const tIdx = makeSampleIndices(nt, res, true);
-  const pIdx = makeSampleIndices(np, 2 * res, false);
-
-  const positions = [];
-  const tetrahedra = [
-    [0, 5, 1, 6],
-    [0, 1, 2, 6],
-    [0, 2, 3, 6],
-    [0, 3, 7, 6],
-    [0, 7, 4, 6],
-    [0, 4, 5, 6],
-  ];
-
-  function vertex(ir, it, ip, phiShift = 0.0) {
-    const r = radiusAtIndex(ir);
-    const theta = thetaAtIndex(it);
-    const phi = phiAtIndex(ip) + phiShift;
-    const v = field[idx(ir, it, ip)];
-    return { p: sphericalPositionArray(r, theta, phi), v };
-  }
-
-  for (let ar = 0; ar < rIdx.length - 1; ar++) {
-    const ir0 = rIdx[ar];
-    const ir1 = rIdx[ar + 1];
-
-    for (let at = 0; at < tIdx.length - 1; at++) {
-      const it0 = tIdx[at];
-      const it1 = tIdx[at + 1];
-
-      for (let ap = 0; ap < pIdx.length; ap++) {
-        const ip0 = pIdx[ap];
-        const ip1 = pIdx[(ap + 1) % pIdx.length];
-        const wraps = ip1 <= ip0;
-        const phiShift1 = wraps ? 2.0 * Math.PI : 0.0;
-
-        const cube = [
-          vertex(ir0, it0, ip0, 0.0),
-          vertex(ir1, it0, ip0, 0.0),
-          vertex(ir1, it1, ip0, 0.0),
-          vertex(ir0, it1, ip0, 0.0),
-          vertex(ir0, it0, ip1, phiShift1),
-          vertex(ir1, it0, ip1, phiShift1),
-          vertex(ir1, it1, ip1, phiShift1),
-          vertex(ir0, it1, ip1, phiShift1),
-        ];
-
-        for (const tet of tetrahedra) {
-          polygoniseTetra(
-            positions,
-            [cube[tet[0]], cube[tet[1]], cube[tet[2]], cube[tet[3]]],
-            Number(isoValue),
-            clipOptions
-          );
-        }
-      }
-    }
-  }
-
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-  geometry.computeVertexNormals();
-
-  const mesh = new THREE.Mesh(geometry, makeIsoMaterial(color, opacity));
-  mesh.name = "velocity-isosurface";
-  mesh.userData.triangleCount = positions.length / 9;
-  return mesh;
 }
 
 function rawMinMaxFromSamples(field, sampleIndexGenerator) {
@@ -6311,6 +6192,8 @@ function setStatusSummary(lastFieldName = null) {
       + `${groups.reduce((sum, g) => sum + (g.userData.tubePoints || 0), 0).toLocaleString()}`
       + `/${groups.reduce((sum, g) => sum + (g.userData.tubeOriginalPoints || 0), 0).toLocaleString()}`
       + `; mesh estimate ${(groups.reduce((sum, g) => sum + (g.userData.tubeEstimatedBytes || 0), 0) / 1024 ** 2).toFixed(1)}/${tubeGeometryLimitMiB()} MiB`
+      + (groups[0]?.userData.tubeDetail?.automatic
+        ? `; auto errors: shape ${groups[0].userData.tubeDetail.shapeError} ro, B² ${groups[0].userData.tubeDetail.energyErrorPercent}%` : "")
       + (groups.some(g => g.userData.sampledTubeStrengths) ? " (legacy strengths sampled on viewer grid)" : "")
       + (groups.some(g => g.userData.missingTubeStrengths) ? "; lines without strengths keep constant width" : "") : "";
   setStatus(`${dataset}${title}${sim}${lineMode}${fieldText}${changed}${tubeInfo} | grid ${metadata.nr} x ${metadata.ntheta} x ${metadata.nphi}`);
@@ -6772,7 +6655,7 @@ function selectFieldLinesByStride(linesByMode, requestedStride) {
   return selected;
 }
 
-function makeFieldLineGroup(lines, mode, selectedLines = lines, tubeReference = 1) {
+function makeFieldLineGroup(lines, mode, selectedLines = lines, tubeReference = 1, tubeGeometries = null) {
   const group = new THREE.Group();
   group.name = `magnetic-field-lines-${mode}`;
   group.userData.isMagneticFieldLineGroup = true;
@@ -6791,13 +6674,13 @@ function makeFieldLineGroup(lines, mode, selectedLines = lines, tubeReference = 
   group.userData.strengthRange = [vmin, vmax];
 
   try {
-    for (const line of selectedLines) {
+    for (const [lineIndex, line] of selectedLines.entries()) {
       if (!Array.isArray(line.points) || line.points.length < 2) continue;
 
       const positions = [];
       const colors = [];
       const strengths = Array.isArray(line.strength) ? line.strength : null;
-      for (let j = 0; j < line.points.length; j++) {
+      for (let j = 0; !(tubeGeometries && tubeMaterial && strengths) && j < line.points.length; j++) {
         const p = line.points[j];
         positions.push(p[0], p[1], p[2]);
         const rawStrength = strengths ? Number(strengths[j]) : NaN;
@@ -6808,7 +6691,7 @@ function makeFieldLineGroup(lines, mode, selectedLines = lines, tubeReference = 
       let object;
       if (tubeMaterial && strengths) {
         const radius = Number(metadata.r_outer);
-        const geometry = makeMagneticTubeGeometry(line.points, strengths, colors, {
+        const geometry = tubeGeometries ? tubeGeometries[lineIndex] : makeMagneticTubeGeometry(line.points, strengths, colors, {
           reference: tubeReference, diameter: params.lineTubeDiameter * radius,
           minimum: params.lineTubeMinDiameter * radius, maximum: params.lineTubeMaxDiameter * radius,
           sides: params.lineTubeSides, lengthScale: radius,
@@ -7050,6 +6933,8 @@ const VIEW_STATE_NUMBER_LIMITS = {
   radialSurfaceRadiusRo: [0, 1],
   lineTubeDiameter: [0.00001, 0.25], lineTubeReference: [0, 1e100],
   lineTubeMinDiameter: [0, 0.25], lineTubeMaxDiameter: [0.00001, 0.25], lineTubeSides: [3, 16],
+  lineTubeAutoMaxShapeError: [0.000001, 0.05],
+  lineTubeAutoMaxEnergyErrorPercent: [0.01, 20],
   lineTubeShapeError: [0.000001, 0.05], lineTubeEnergyErrorPercent: [0.01, 20],
 };
 
@@ -7431,6 +7316,10 @@ async function loadDatasetFromParams() {
   const previous = captureDatasetState();
   const controller = new AbortController();
   let committed = false;
+  const loadProgress = workProgress.begin("Opening dataset", () => {
+    controller.abort(new DOMException("Dataset loading cancelled", "AbortError"));
+    geometryClient.cancelAll();
+  });
   const loadStartedAt = performance.now();
   setDatasetLoadingState(true);
   datasetRequestSignal = controller.signal;
@@ -7445,6 +7334,7 @@ async function loadDatasetFromParams() {
     pauseSequence(false);
     setStatus(`Checking dataset ${requestedRoot}...`);
 
+    controller.signal.throwIfAborted();
     const candidateSequence = await fetchSequenceIndexForRoot(requestedRoot, true);
     const candidateBasePath = candidateSequence?.frames?.length > 0
       ? sequenceFrameBasePathForRoot(requestedRoot, candidateSequence.frames[0])
@@ -7467,6 +7357,8 @@ async function loadDatasetFromParams() {
     );
     const datasetView = await loadDatasetViewState(requestedRoot, candidateBasePath, controller.signal);
 
+    controller.signal.throwIfAborted();
+    loadProgress.update({ label: "Building dataset surfaces" });
     datasetRootPath = requestedRoot;
     dataBasePath = candidateBasePath;
     sequenceIndex = candidateSequence;
@@ -7510,6 +7402,7 @@ async function loadDatasetFromParams() {
       await rebuildAllMeshes();
       await loadFieldLines();
     }
+    controller.signal.throwIfAborted();
     updateFieldLineVisuals();
     updateOpacities();
     updateVisibility();
@@ -7523,7 +7416,9 @@ async function loadDatasetFromParams() {
     hideDatasetLauncher();
     return true;
   } catch (err) {
-    console.error(err);
+    if (err?.name !== "AbortError") console.error(err);
+    datasetRequestSignal = null;
+    loadProgress.finish();
     if (committed) {
       restoreDatasetState(previous);
       disposeHeavyPlaybackCaches();
@@ -7543,9 +7438,11 @@ async function loadDatasetFromParams() {
     const reason = err?.name === "TimeoutError"
       ? `a network request exceeded ${Math.round(DATASET_FETCH_TIMEOUT_MS / 1000)} seconds`
       : (err?.message || String(err));
-    setStatus(`Could not load dataset ${requestedRoot}: ${reason}.`, { level: "error" });
+    if (err?.name === "AbortError") setStatus("Dataset loading cancelled; previous dataset retained.");
+    else setStatus(`Could not load dataset ${requestedRoot}: ${reason}.`, { level: "error" });
     return false;
   } finally {
+    loadProgress.finish();
     window.clearInterval(progressTimer);
     datasetRequestSignal = null;
     controller.abort();
@@ -7818,6 +7715,12 @@ function buildGui() {
       .name("Shape error / ro").onFinishChange(refreshFieldLines);
     simplificationFolder.add(params, "lineTubeEnergyErrorPercent", 0.01, 20, 0.1)
       .name("B² error (%)").onFinishChange(refreshFieldLines);
+    simplificationFolder.add(params, "lineTubeAutoDetail").name("Auto fit budget").onChange(refreshFieldLines)
+      .domElement.title = "Requires Simplify tubes. Keeps every selected line and its endpoints; relaxes errors only within the automatic bounds.";
+    simplificationFolder.add(params, "lineTubeAutoMaxShapeError", 0.000001, 0.05, 0.0001)
+      .name("Auto max shape / ro").onFinishChange(refreshFieldLines);
+    simplificationFolder.add(params, "lineTubeAutoMaxEnergyErrorPercent", 0.01, 20, 0.1)
+      .name("Auto max B² error %").onFinishChange(refreshFieldLines);
     addTubeMemoryControls(lineFolder, refreshFieldLines);
     lineFolder.add(params, "lineWidthPx", 1, 12, 0.25).name("Thickness px").onChange(updateFieldLineVisuals);
     lineFolder.add(params, "lineOpacity", 0.05, 1.0, 0.01).name("Opacity").onChange(updateFieldLineVisuals);

@@ -10,6 +10,8 @@ import { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import { peakLineStrength, estimateTubeBytes, makeMagneticTubeGeometry, simplifyMagneticLine } from "../src/field-line-tubes.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
+import { prepareTubeLines, executeGeometryJob, unpackGeometry } from "../src/geometry-jobs.js";
+import { readResponseWithProgress } from "../src/work-progress.js";
 
 const source = fs.readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
 function definition(name) {
@@ -57,6 +59,15 @@ function viewer() {
     console, DOMException, Response, Blob, AbortController, performance, TextEncoder, Float32Array, btoa, atob,
     SURFACE_TEXTURES, peakLineStrength, estimateTubeBytes, makeMagneticTubeGeometry, simplifyMagneticLine,
     viewerStatus: { clear: () => {}, version: 0 },
+    geometryClient: { cancelAll() {} },
+    workProgress: { begin: () => ({ update() {}, finish() {} }) },
+    buildIsosurfaceInBackground: async (context, field, value) =>
+      ctx.makeSphericalGridIsosurfaceMesh(field, value).geometry,
+    buildTubeGeometriesInBackground: async () => null,
+    prepareTubeLinesInBackground: async (selected, context) => prepareTubeLines({
+      selected, settings: context.params, radius: Number(context.metadata.r_outer),
+      limitBytes: ctx.tubeGeometryLimitMiB() * 1024 ** 2,
+    }),
     window: { setInterval, clearInterval, setTimeout, clearTimeout },
     DEFAULT_DATASET_ROOT: "demo", DEFAULT_SECONDARY_DATASET_ROOT: "secondary",
     THREE: { Mesh, Color, MeshPhongMaterial: Material, DoubleSide: 2, NormalBlending: 1, NoBlending: 0 },
@@ -1218,6 +1229,115 @@ test("view codes and dataset defaults preserve the session's tube memory prefere
   ctx.applyDefaultDatasetView();
   assert.equal(ctx.params.lineTubeCustomMemoryLimit, true);
   assert.equal(ctx.params.lineTubeMemoryLimitMiB, 512);
+});
+
+test("automatic tube limits round-trip and geometry caching includes the fitting budget", () => {
+  const ctx = viewer();
+  Object.assign(ctx.params, { lineTubeAutoDetail: true, lineTubeAutoMaxShapeError: 0.003,
+    lineTubeAutoMaxEnergyErrorPercent: 3, lineTubeCustomMemoryLimit: true, lineTubeMemoryLimitMiB: 256 });
+  const key = ctx.getFieldLineObjectCacheKey();
+  const saved = ctx.decodeViewState(ctx.encodeViewState(ctx.collectViewState()));
+  ctx.params.lineTubeAutoDetail = false;
+  ctx.applyViewStateParams(saved);
+  assert.equal(ctx.params.lineTubeAutoDetail, true);
+  assert.equal(ctx.params.lineTubeAutoMaxShapeError, 0.003);
+  assert.equal(ctx.params.lineTubeAutoMaxEnergyErrorPercent, 3);
+  ctx.params.lineTubeMemoryLimitMiB = 512;
+  assert.notEqual(ctx.getFieldLineObjectCacheKey(), key);
+  assert.equal(ctx.applySnapshotParam("lineTubeAutoMaxShapeError", 1), false);
+  assert.equal(ctx.applySnapshotParam("lineTubeAutoMaxEnergyErrorPercent", 100), false);
+});
+
+test("the viewer uses background-prepared tube geometry with captured colours and connected lines", async () => {
+  const ctx = viewer(), fixture = pairedLineFixture(), jobs = [];
+  for (const lines of Object.values(fixture)) for (const line of lines) line.strength = line.points.map(() => 2);
+  Object.assign(ctx, {
+    THREE: RealTHREE, Line2, LineGeometry, unpackGeometry,
+    makeLineMaterial: () => new LineMaterial({ vertexColors: true }),
+    getFieldLineVertexColor: () => new RealTHREE.Color("red"),
+    loadLinesForMode: async mode => fixture[mode],
+    runGeometryJob: async (type, payload) => { jobs.push(type); return executeGeometryJob(type, structuredClone(payload)); },
+  });
+  for (const name of ["makeFieldLineGroup", "prepareTubeLinesInBackground", "buildTubeGeometriesInBackground"]) {
+    vm.runInContext(definition(name), ctx);
+  }
+  ctx.metadata.field_lines = { mode: "both" };
+  Object.assign(ctx.params, { showFieldLines: true, lineStride: 3, fieldLineDisplay: "both", lineRenderMode: "b2-tubes" });
+  await ctx.loadFieldLines();
+  assert.deepEqual(jobs, ["prepare-tubes", "tubes", "tubes"]);
+  const { shell, exterior } = ctx.fieldLineGroups;
+  assert.equal(shell.children.length, 4); assert.equal(exterior.children.length, 3);
+  for (const group of [shell, exterior]) for (const mesh of group.children) {
+    assert.ok(mesh.geometry.boundingSphere.radius > 0);
+    assert.ok(mesh.geometry.attributes.normal.array.every(Number.isFinite));
+    assert.equal(mesh.geometry.attributes.color.getX(0), 1);
+    assert.equal(mesh.geometry.attributes.color.getY(0), 0);
+    assert.equal(mesh.userData.isMagneticTube, true);
+  }
+  for (const line of exterior.userData.lines) assert.ok(shell.userData.lines.some(s => s.line_id === line.paired_shell_line_id));
+  ctx.disposeHeavyPlaybackCaches();
+});
+
+test("dataset response progress displays the logical filename and releases the operation", async () => {
+  const ctx = viewer(), updates = [];
+  Object.assign(ctx, { readResponseWithProgress });
+  for (const name of ["RESPONSE_CLEANUP", "RESPONSE_ABORT_CONTROLLER", "RESPONSE_PROGRESS"]) vm.runInContext(constant(name), ctx);
+  vm.runInContext(definition("readDatasetResponse"), ctx);
+  let finished = 0;
+  ctx.workProgress.begin = text => ({ update: p => updates.push(p), finish: () => finished++ });
+  const response = new Response(new Uint8Array([0, 1, 2, 3]), { headers: { "Content-Length": "4" } });
+  response.deepDatasetLabel = "Loading Br_volume.f32";
+  const result = await ctx.readDatasetResponse(response, "arrayBuffer");
+  assert.equal(result.byteLength, 4);
+  assert.match(updates.at(-1).label, /Br_volume\.f32/);
+  assert.equal(updates.at(-1).fraction, 1);
+  assert.equal(finished, 1);
+});
+
+test("cancelling before dataset commit keeps the previous dataset and allows retry", async () => {
+  const ctx = viewer();
+  datasetLoader(ctx, null);
+  const previousMetadata = ctx.metadata, previousCoords = ctx.coords;
+  const gate = deferred(), started = deferred();
+  let cancel, message;
+  ctx.workProgress.begin = (_, onCancel) => { cancel = onCancel; return { update() {}, finish() {} }; };
+  ctx.setStatus = text => { message = text; };
+  ctx.loadMetadataForBase = async () => { started.resolve(); await gate.promise; return previousMetadata; };
+  const pending = ctx.loadDatasetFromParams();
+  await started.promise;
+  cancel(); gate.resolve();
+  assert.equal(await pending, false);
+  assert.equal(ctx.metadata, previousMetadata); assert.equal(ctx.coords, previousCoords);
+  assert.equal(ctx.datasetRootPath, "demo"); assert.equal(ctx.datasetLoadInProgress, false);
+  assert.match(message, /cancelled/);
+  assert.equal(ctx.datasetRequestSignal, null);
+  datasetLoader(ctx, null);
+  assert.equal(await ctx.loadDatasetFromParams(), true);
+});
+
+test("cancelling after dataset commit restores the old appearance with an un-aborted read context", async () => {
+  const ctx = viewer();
+  datasetLoader(ctx, null);
+  ctx.params.backgroundColor = "#abcdef";
+  const previousMetadata = ctx.metadata;
+  let cancel, renders = 0, message;
+  ctx.workProgress.begin = (_, onCancel) => { cancel = onCancel; return { update() {}, finish() {} }; };
+  ctx.setStatus = text => { message = text; };
+  ctx.rebuildAllMeshes = async () => {
+    renders++;
+    if (renders === 1) {
+      assert.equal(ctx.datasetRootPath, "new-dataset");
+      cancel();
+      throw new DOMException("Cancelled", "AbortError");
+    }
+    assert.equal(ctx.datasetRequestSignal, null, "old uncached files can be read during rollback");
+    assert.equal(ctx.params.backgroundColor, "#abcdef");
+    assert.equal(ctx.metadata, previousMetadata);
+  };
+  assert.equal(await ctx.loadDatasetFromParams(), false);
+  assert.equal(renders, 2); assert.equal(ctx.datasetRootPath, "demo");
+  assert.equal(ctx.datasetLoadInProgress, false);
+  assert.match(message, /cancelled.*previous dataset/);
 });
 
 test("the title reports tube geometry against the user's current limit", () => {

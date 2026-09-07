@@ -94,7 +94,28 @@ takes precedence over its initial frame's view.
 
 ## Privacy model
 
+The geometry Web Worker is a static JavaScript asset emitted into `dist/assets/`
+by Vite and runs on the visitor's computer. Deploy the complete `dist/` through
+the existing Pages workflow. It requires no extra Cloudflare Worker, subscription,
+server or dataset upload.
+
 For **Open local dataset folder**, the website receives no simulation files. The browser grants the page read access only to the directory explicitly selected by the user. Data are decoded locally into browser memory for visualization.
+
+## Cloudflare proxy capacity
+
+As checked on 7 September 2026, Workers Free permits 100 Workers per account,
+sharing 100,000 incoming requests daily, resetting at midnight UTC. The CPU
+allowance is 10 ms per request and isolate memory is 128 MB; waiting for network
+I/O does not consume CPU time. See [Cloudflare's current limits](https://developers.cloudflare.com/workers/platform/limits/).
+
+The existing proxy streams Figshare record listings. Binary files download
+directly from Figshare, so their size does not pass through this Worker. Cloudflare
+does not add a separate Workers bandwidth charge; request/runtime limits still
+apply. See [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/).
+
+Check actual request totals, CPU and errors in **Workers & Pages →
+deep-figshare-proxy → Metrics**, selecting the last 24 hours. Another Worker
+shares the account quota. See [metrics instructions](https://developers.cloudflare.com/workers/observability/metrics-and-analytics/).
 
 ## Development remains unchanged
 

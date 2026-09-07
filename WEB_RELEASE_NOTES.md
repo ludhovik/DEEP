@@ -1,5 +1,23 @@
 # v0.4.0 — static hosted/local-data viewer
 
+## Loading progress and background geometry (2026-09-07)
+
+- Show file names, bytes received and calculation progress in a separate box
+  with **Cancel**, accessible even with the title collapsed. Restore the preceding
+  dataset/view on a cancelled primary switch, clearing the aborted read context
+  before rollback. Keep previous geometry on cancelled replacements.
+- Run tube simplification, tube construction and isosurface generation in a
+  browser Web Worker. Queue heavy jobs, transfer result buffers, interrupt active
+  calculations on cancellation and restart cleanly on retry. Colour preparation
+  yields periodically so controls remain available.
+- Add optional **Auto fit budget**, bounded by **Auto max shape / ro** and
+  **Auto max B² error %**. Preserve endpoints and pairing; report actual tolerances
+  in the title. Store these controls in DTV2 while retaining manual mode for
+  reproducible figures. Reject an impossible fit instead of dropping lines.
+- Deploy the viewer through the existing Pages workflow. No reconversion or
+  Cloudflare Worker update is needed. Hosting guidance distinguishes browser
+  computation from the existing record-only proxy and lists current free limits.
+
 ## Adjustable tube geometry memory (2026-09-07)
 
 - Add **Magnetic field lines → Tube memory → Custom limit**, with a configurable

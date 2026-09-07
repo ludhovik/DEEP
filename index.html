@@ -10,6 +10,12 @@
   <body>
     <div id="app"></div>
 
+    <div id="work-progress" hidden aria-label="Loading and calculation progress">
+      <span id="work-progress-label" role="status" aria-live="polite"></span>
+      <progress id="work-progress-bar" max="1" aria-label="Current operation progress"></progress>
+      <button id="cancel-work" type="button">Cancel</button>
+    </div>
+
     <div id="dataset-launcher" class="dataset-launcher">
       <div class="dataset-launcher-card">
         <div class="dataset-launcher-kicker">DEEPscope</div>
