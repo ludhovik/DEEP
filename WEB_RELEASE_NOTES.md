@@ -1,5 +1,16 @@
 # v0.4.0 — static hosted/local-data viewer
 
+## Dataset switching fixes (2026-09-07)
+
+- Successive primary or secondary folder selections load the newly selected
+  files even when their names and sequence frame paths match an earlier folder.
+- Secondary replacement redraws visible comparison fields. Failed loads
+  preserve the previous dataset and its folder access.
+- Cancelling folder selection permits another selection. Overlapping selections
+  cannot replace a folder being loaded.
+- Switching from a shell to a full sphere removes the old inner-boundary mesh;
+  sequence frames fall back when the selected isosurface field is unavailable.
+
 ## New
 
 - Static-site startup screen instead of the old path prompt.

@@ -76,6 +76,13 @@ when intentionally updating dependencies.
 Select a converted single-frame folder containing `metadata.json`, or a
 sequence root containing `sequence.json` and `frames/`.
 
+To replace the displayed dataset, use **Controls → Dataset → Select primary
+folder**. Each selection reads the chosen folder afresh, including when files
+have the same names as those in the previous folder. No page refresh is needed.
+For a path or URL, edit **Primary path / URL**, then click **Load primary path**.
+Replacing a secondary folder also redraws any displayed comparison fields.
+If loading fails, the previous dataset and its folder access remain available.
+
 This is the preferred way to inspect large private datasets. The browser reads
 the selected files directly without publishing them.
 

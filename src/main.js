@@ -444,6 +444,8 @@ let datasetRootPath = DEFAULT_DATASET_ROOT;
 let dataBasePath = DEFAULT_DATASET_ROOT;
 let secondaryDataset = null;
 const datasetFolderSources = new Map();
+let datasetFolderSourceCounter = 0;
+let datasetFolderSelectionInProgress = false;
 let activeDatasetFolderSource = null;
 let datasetViewSaveInProgress = false;
 let sequenceIndex = null;
@@ -1993,6 +1995,10 @@ function selectDirectoryUsingFileInput() {
       input.remove();
       resolve(files.size > 0 ? { type: "files", files } : null);
     }, { once: true });
+    input.addEventListener("cancel", () => {
+      input.remove();
+      resolve(null);
+    }, { once: true });
 
     input.click();
   });
@@ -2012,27 +2018,57 @@ async function chooseDatasetDirectory(role) {
 }
 
 async function selectDatasetFolder(role) {
+  if (datasetFolderSelectionInProgress || datasetLoadInProgress) {
+    setStatus("A folder is being selected or a dataset is loading. Please wait for it to finish.");
+    return false;
+  }
+  datasetFolderSelectionInProgress = true;
   try {
     const source = await chooseDatasetDirectory(role);
     if (!source) {
       setStatus("Folder selection cancelled.");
-      return;
+      return false;
+    }
+    if (datasetLoadInProgress) {
+      setStatus("A dataset is already loading. Please select the folder again after it finishes.");
+      return false;
     }
 
-    datasetFolderSources.set(role, source);
-    const syntheticPath = `fsdir:${role}`;
+    // A folder selection is a new resource, even when its filenames match the
+    // preceding folder. Keep the old source intact until loading succeeds so
+    // rollback and outstanding reads still resolve to the original files.
+    const sourceKey = `${role}-${++datasetFolderSourceCounter}`;
+    datasetFolderSources.set(sourceKey, source);
+    const syntheticPath = `fsdir:${sourceKey}`;
 
     if (role === "secondary") {
+      const previousPath = params.secondaryDatasetPath;
       params.secondaryDatasetPath = syntheticPath;
-      await loadSecondaryDatasetFromParams();
+      const ok = await loadSecondaryDatasetFromParams();
+      if (!ok) {
+        params.secondaryDatasetPath = secondaryDataset?.rootPath || previousPath;
+        buildGui();
+      }
+      return ok;
     } else {
       params.datasetPath = syntheticPath;
       const ok = await loadDatasetFromParams();
       if (ok) hideDatasetLauncher();
+      return ok;
     }
   } catch (err) {
     console.error(err);
     setStatus(`Could not select dataset folder: ${err.message}`);
+    return false;
+  } finally {
+    // Retain only the displayed primary/secondary folders (including a restored
+    // primary after failure), rather than accumulating browser File objects.
+    const activeSources = new Set([datasetRootPath, secondaryDataset?.rootPath]
+      .map((path) => parseFolderSourcePath(path)?.role).filter(Boolean));
+    for (const key of datasetFolderSources.keys()) {
+      if (!activeSources.has(key)) datasetFolderSources.delete(key);
+    }
+    datasetFolderSelectionInProgress = false;
   }
 }
 
@@ -2954,7 +2990,7 @@ async function loadFrameByIndex(index, options = {}) {
     committed = true;
 
     // Keep the current selected fields when available; otherwise fall back safely.
-    for (const key of ["cmbField", "earthField", "icbField", "radialField", "equatorField", "equator2Field", "meridianField", "meridian2Field"]) {
+    for (const key of DATASET_FIELD_PARAM_KEYS) {
       if (!validFieldForState(key, params[key])) {
         applyDefaultFields();
         break;
@@ -3244,14 +3280,25 @@ async function resolveDatasetBasePath(rootPath) {
 }
 
 async function loadSecondaryDatasetFromParams() {
-  const request = beginRenderRequest("secondary");
+  if (datasetLoadInProgress) {
+    setStatus("A dataset is already loading. Please wait for it to finish or time out.");
+    return false;
+  }
+  const previous = captureDatasetState();
+  let request = null;
+  let committed = false;
+  setDatasetLoadingState(true);
   try {
+    cancelPendingViewerTasks();
+    pauseSequence(false);
+    request = beginRenderRequest("secondary");
     const root = normaliseDatasetRoot(params.secondaryDatasetPath);
+    setStatus(`Checking secondary dataset ${root}...`);
     const basePath = await resolveDatasetBasePath(root);
     const meta2 = await loadMetadataForBase(basePath);
-    validateDatasetMetadata(meta2, "secondary metadata.json");
+    const fields = validateDatasetMetadata(meta2, "secondary metadata.json");
     const coords2 = await loadCoordinatesForBase(basePath, meta2);
-    if (!renderRequestIsCurrent(request)) return;
+    if (!renderRequestIsCurrent(request)) return false;
 
     if (!sameGridSignature(metadata, meta2) || !sameCoordinateArrays(coords, coords2)) {
       const a = primaryGridSignature(metadata);
@@ -3263,6 +3310,8 @@ async function loadSecondaryDatasetFromParams() {
       );
     }
 
+    await loadFloat32ForBase(basePath, fields[0][1], meta2.nr * meta2.ntheta * meta2.nphi);
+    if (!renderRequestIsCurrent(request)) return false;
     secondaryDataset = {
       rootPath: root,
       basePath,
@@ -3272,14 +3321,45 @@ async function loadSecondaryDatasetFromParams() {
     };
     params.secondaryDatasetPath = root;
     params.secondaryDatasetLabel = secondaryDataset.label;
+    committed = true;
 
+    // Preserve compatible comparison selections, but replace fields that the
+    // new secondary dataset does not contain before rebuilding visible meshes.
+    const selectedFields = Object.fromEntries(DATASET_FIELD_PARAM_KEYS.map((key) => [key, params[key]]));
+    applyDefaultFields();
+    for (const [key, value] of Object.entries(selectedFields)) {
+      if (validFieldForState(key, value)) params[key] = value;
+    }
     buildGui();
+    request = beginRenderRequest("secondary");
+    await rebuildAllMeshes();
+    if (!renderRequestIsCurrent(request)) return false;
+    await loadFieldLines();
+    if (!renderRequestIsCurrent(request)) return false;
+    updateVisibility();
     setStatus(`Loaded secondary dataset ${secondaryDataset.label} from ${basePath}.`);
+    return true;
   } catch (err) {
     console.error(err);
-    if (!renderRequestIsCurrent(request)) return;
+    if (request && !renderRequestIsCurrent(request)) return false;
+    if (committed) {
+      restoreDatasetState(previous);
+      invalidateRenderRequests();
+      disposeHeavyPlaybackCaches();
+      try {
+        buildGui();
+        await rebuildAllMeshes();
+        await loadFieldLines();
+        updateVisibility();
+      } catch (restoreError) {
+        console.error("Could not restore the previous comparison view", restoreError);
+      }
+    }
     buildGui();
     setStatus(`Could not load secondary dataset: ${err.message}`);
+    return false;
+  } finally {
+    setDatasetLoadingState(false);
   }
 }
 
@@ -6150,6 +6230,8 @@ async function rebuildCMB(options = {}) {
 async function rebuildICB(options = {}) {
   const request = beginRenderRequest("icb");
   if (!metadata.has_inner_core) {
+    disposeObject(icbMesh);
+    icbMesh = null;
     hideColourbarForSlot("icb");
     return;
   }
@@ -6367,7 +6449,7 @@ async function rebuildAllMeshes(options = {}) {
 
   if (!visibleOnly || params.showCMB) await rebuildCMB({ reuseGeometry });
   if (!renderContextIsCurrent(context)) return;
-  if ((!visibleOnly || params.showICB) && metadata.has_inner_core) await rebuildICB({ reuseGeometry });
+  if (!visibleOnly || params.showICB) await rebuildICB({ reuseGeometry });
   if (!renderContextIsCurrent(context)) return;
   if (!visibleOnly || params.showRadialSurface) await rebuildRadialSurface({ reuseGeometry });
   if (!renderContextIsCurrent(context)) return;
@@ -6390,7 +6472,7 @@ async function rebuildAllMeshes(options = {}) {
 
 function updateVisibility() {
   if (cmbMesh) cmbMesh.visible = params.showCMB;
-  if (icbMesh) icbMesh.visible = params.showICB;
+  if (icbMesh) icbMesh.visible = params.showICB && Boolean(metadata.has_inner_core);
   if (radialSurfaceMesh) radialSurfaceMesh.visible = params.showRadialSurface;
   if (equatorMesh) equatorMesh.visible = params.showEquator;
   if (equator2Mesh) equator2Mesh.visible = params.showEquator2;
@@ -6405,7 +6487,7 @@ function updateVisibility() {
   if (meridian2FillerMesh) meridian2FillerMesh.visible = fillerActive && params.showMeridian2;
 
   if (colourbars.cmb?.row) colourbars.cmb.row.style.display = params.showCMB && cmbMesh ? "block" : "none";
-  if (colourbars.icb?.row) colourbars.icb.row.style.display = params.showICB && icbMesh ? "block" : "none";
+  if (colourbars.icb?.row) colourbars.icb.row.style.display = params.showICB && metadata.has_inner_core && icbMesh ? "block" : "none";
   if (colourbars.radial?.row) colourbars.radial.row.style.display = params.showRadialSurface && radialSurfaceMesh ? "block" : "none";
   if (colourbars.earth?.row) {
     colourbars.earth.row.style.display = params.showEarthSurface
@@ -6751,6 +6833,7 @@ function applyDefaultFields() {
   params.equator2Field = chooseField(["C", "Comp", "Br", "Uabs"], fields);
   params.meridianField = chooseField(["C", "Comp", "Br", "Uabs"], fields);
   params.meridian2Field = chooseField(["C", "Comp", "Br", "Uabs"], fields);
+  params.isoField = chooseField([params.isoField, "ur", "C", "Comp", "Br", "Uabs"], fields);
 }
 
 function addDisplayControls(gui, slot, label, fieldParam, showParam, opacityParam, rebuildFn, availableFields) {

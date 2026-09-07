@@ -1,5 +1,21 @@
 # Integrated package validation
 
+## Switching datasets through Controls (2026-09-07)
+
+- Reproduced stale metadata, coordinates, sequence indexes and scalar volumes
+  when successive local folder selections shared the same resource path.
+- All 65 viewer tests pass. Eleven added regressions cover primary folder
+  replacement with both browser file APIs, different grids, identical sequence
+  paths, secondary comparison redraw, truncated files, render-error rollback,
+  mismatched comparison grids, concurrent selection, picker cancellation,
+  shell-to-full-sphere geometry, and unavailable isosurface fields in frames.
+- The tests exercise the actual loaders and caches with in-memory files;
+  rendering and browser dialogs use test doubles. No browser/GPU test was run.
+- `node --check src/main.js`, `git diff --check` and `npm run build` pass.
+  The existing large JavaScript chunk advisory remains.
+- After deploying, refresh the page once to load the new viewer. Then select
+  two different folders successively through Controls without refreshing.
+
 ## Remove duplicate scalar fields (2026-09-07)
 
 - All 52 converter tests pass; the synthetic MagIC bundle now verifies that

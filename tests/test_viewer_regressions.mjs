@@ -63,6 +63,7 @@ function viewer() {
     coords: { r: [0.35, 0.7, 1], theta: [0.1, 1.5, 3.0], phi: [0, Math.PI / 2, Math.PI, 3 * Math.PI / 2] },
     dataBasePath: "demo", datasetRootPath: "demo", secondaryDataset: null,
     activeDatasetFolderSource: null, datasetFolderSources: new Map(),
+    datasetFolderSourceCounter: 0, datasetFolderSelectionInProgress: false,
     datasetLoadInProgress: false, sequenceFrameLoading: false, datasetViewSaveInProgress: false,
     datasetRequestSignal: null, sequenceIndex: null,
     renderEpoch: 0, heavyCacheGeneration: 0, cacheAccessCounter: 0,
@@ -368,6 +369,260 @@ function datasetLoader(ctx, code) {
   ctx.params.datasetPath = "new-dataset";
   return { meta, grid };
 }
+
+function localDatasetViewer() {
+  const ctx = viewer(), selections = [], messages = [];
+  datasetLoader(ctx, null);
+  Object.assign(ctx, {
+    chooseDatasetDirectory: async () => selections.shift(),
+    fetchRemoteRepositoryResource: async () => null,
+    setStatus: message => messages.push(message),
+    console: { ...console, error: () => {} },
+  });
+  for (const name of [
+    "selectDatasetFolder", "fetchDatasetResource", "fetchJsonStrict", "stripLegacyCpsMetadata",
+    "loadMetadataForBase", "loadCoordinatesForBase", "loadFloat32ForBase",
+    "fetchSequenceIndexForRoot", "normaliseSequenceFramePathForRoot",
+    "resolveDatasetBasePath", "loadSecondaryDatasetFromParams", "chooseField", "applyDefaultFields",
+    "getPrimaryCmbFieldNames", "getSecondaryCmbFieldNames", "getCmbFieldNames",
+    "getPrimaryEarthFieldNames", "getSecondaryEarthFieldNames", "getEarthFieldNames",
+  ]) vm.runInContext(definition(name), ctx);
+  ctx.rebuildAllMeshes = async () => {
+    const field = ctx.resolveFieldSource(ctx.params.equatorField);
+    ctx.displayed = await ctx.loadFloat32ForBase(field.basePath, field.meta.fields[field.rawName],
+      field.meta.nr * field.meta.ntheta * field.meta.nphi);
+  };
+  return { ctx, selections, messages };
+}
+
+function selectedFolder(ctx, value, { type = "files", sequence = false, middleRadius = 0.7, nphi = ctx.metadata.nphi } = {}) {
+  const meta = { ...structuredClone(ctx.metadata), nphi, title: `Dataset ${value}`, coordinates: "coordinates.json" };
+  const grid = structuredClone(ctx.coords);
+  grid.r[1] = middleRadius;
+  grid.phi = Array.from({ length: nphi }, (_, i) => 2 * Math.PI * i / nphi);
+  const prefix = sequence ? "frames/first/" : "";
+  const files = new Map([
+    [`${prefix}metadata.json`, new Blob([JSON.stringify(meta)])],
+    [`${prefix}coordinates.json`, new Blob([JSON.stringify(grid)])],
+  ]);
+  for (const filename of Object.values(meta.fields)) {
+    files.set(prefix + filename, new Blob([new Float32Array(meta.nr * meta.ntheta * meta.nphi).fill(value)]));
+  }
+  if (sequence) files.set("sequence.json", new Blob([JSON.stringify({ frames: [{ path: "frames/first", label: `Frame ${value}` }] })]));
+  function directory(prefix = "") {
+    return {
+      getDirectoryHandle: async name => directory(`${prefix}${name}/`),
+      getFileHandle: async name => {
+        if (!files.has(prefix + name)) throw new DOMException("File not found", "NotFoundError");
+        return { getFile: async () => files.get(prefix + name) };
+      },
+    };
+  }
+  return type === "handle" ? { type, handle: directory() } : { type, files };
+}
+
+test("switching local folders reads the new metadata, coordinates and field values without a refresh", async () => {
+  for (const type of ["files", "handle"]) {
+    const { ctx, selections } = localDatasetViewer();
+    const first = selectedFolder(ctx, 1, { type }), second = selectedFolder(ctx, 2, { type, middleRadius: 0.8, nphi: 6 });
+    selections.push(first, second, first);
+    await ctx.selectDatasetFolder("primary");
+    assert.equal(ctx.displayed[0], 1);
+    const firstPath = ctx.datasetRootPath;
+    await ctx.selectDatasetFolder("primary");
+    assert.equal(ctx.displayed[0], 2);
+    assert.equal(ctx.metadata.title, "Dataset 2");
+    assert.equal(ctx.metadata.nphi, 6);
+    assert.equal(ctx.displayed.length, 54);
+    assert.equal(ctx.coords.r[1], 0.8);
+    assert.notEqual(ctx.datasetRootPath, firstPath);
+    await ctx.selectDatasetFolder("primary");
+    assert.equal(ctx.displayed[0], 1);
+    assert.equal(ctx.coords.r[1], 0.7);
+    assert.equal(ctx.activeDatasetFolderSource, first);
+    assert.equal(ctx.datasetFolderSources.size, 1);
+  }
+});
+
+test("two selected sequences with identical frame paths keep their own index and volumes", async () => {
+  const { ctx, selections } = localDatasetViewer();
+  selections.push(selectedFolder(ctx, 3, { sequence: true }), selectedFolder(ctx, 4, { sequence: true }));
+  await ctx.selectDatasetFolder("primary");
+  assert.equal(ctx.displayed[0], 3);
+  await ctx.selectDatasetFolder("primary");
+  assert.equal(ctx.displayed[0], 4);
+  assert.equal(ctx.sequenceIndex.frames[0].label, "Frame 4");
+  assert.match(ctx.dataBasePath, /\/frames\/first$/);
+});
+
+test("a failed local folder switch restores the previous source for uncached reads and saving", async () => {
+  const { ctx, selections, messages } = localDatasetViewer();
+  const first = selectedFolder(ctx, 1), second = selectedFolder(ctx, 2);
+  selections.push(first, second);
+  await ctx.selectDatasetFolder("primary");
+  const firstPath = ctx.datasetRootPath, render = ctx.rebuildAllMeshes;
+  ctx.rebuildAllMeshes = async () => {
+    if (ctx.metadata.title === "Dataset 2") throw new Error("failed new surface");
+    await render();
+  };
+  await ctx.selectDatasetFolder("primary");
+  assert.match(messages.at(-1), /failed new surface/);
+  assert.equal(ctx.datasetRootPath, firstPath);
+  assert.equal(ctx.params.datasetPath, firstPath);
+  assert.equal(ctx.displayed[0], 1);
+  assert.equal(ctx.activeDatasetFolderSource, first);
+  const fresh = await ctx.fetchDatasetResource(`${firstPath}/metadata.json`);
+  assert.equal((await fresh.json()).title, "Dataset 1");
+  assert.equal(ctx.datasetFolderSources.size, 1);
+});
+
+test("replacing a secondary folder refreshes its data while preserving the primary folder", async () => {
+  const { ctx, selections } = localDatasetViewer();
+  selections.push(selectedFolder(ctx, 1), selectedFolder(ctx, 2), selectedFolder(ctx, 3));
+  await ctx.selectDatasetFolder("primary");
+  const primaryPath = ctx.datasetRootPath;
+  await ctx.selectDatasetFolder("secondary");
+  const oldSecondary = ctx.secondaryDataset.basePath;
+  assert.equal((await ctx.loadFloat32ForBase(oldSecondary, "ur.f32", 36))[0], 2);
+  ctx.params.equatorField = "D2:ur";
+  await ctx.rebuildAllMeshes();
+  assert.equal(ctx.displayed[0], 2);
+  await ctx.selectDatasetFolder("secondary");
+  assert.equal((await ctx.loadFloat32ForBase(ctx.secondaryDataset.basePath, "ur.f32", 36))[0], 3);
+  assert.notEqual(ctx.secondaryDataset.basePath, oldSecondary);
+  assert.equal(ctx.datasetRootPath, primaryPath);
+  assert.equal(ctx.displayed[0], 3);
+  assert.equal(ctx.params.equatorField, "D2:ur");
+  assert.equal((await ctx.loadFloat32ForBase(primaryPath, "ur.f32", 36))[0], 1);
+  assert.equal(ctx.datasetFolderSources.size, 2);
+});
+
+test("an incomplete replacement folder leaves the displayed data and source intact", async () => {
+  const { ctx, selections, messages } = localDatasetViewer();
+  const first = selectedFolder(ctx, 1), broken = selectedFolder(ctx, 2);
+  broken.files.set("ur.f32", new Blob([new Float32Array(1)]));
+  selections.push(first, broken);
+  assert.equal(await ctx.selectDatasetFolder("primary"), true);
+  const original = ctx.metadata;
+  assert.equal(await ctx.selectDatasetFolder("primary"), false);
+  assert.match(messages.at(-1), /Unexpected array length/);
+  assert.equal(ctx.metadata, original);
+  assert.equal(ctx.displayed[0], 1);
+  assert.equal(ctx.activeDatasetFolderSource, first);
+  assert.equal(ctx.datasetFolderSources.size, 1);
+  assert.equal(ctx.datasetLoadInProgress, false);
+});
+
+test("a rejected secondary grid keeps the previous comparison path and files usable", async () => {
+  const { ctx, selections, messages } = localDatasetViewer();
+  selections.push(selectedFolder(ctx, 1), selectedFolder(ctx, 2), selectedFolder(ctx, 3, { middleRadius: 0.8 }));
+  await ctx.selectDatasetFolder("primary");
+  await ctx.selectDatasetFolder("secondary");
+  const previous = ctx.secondaryDataset;
+  assert.equal(await ctx.selectDatasetFolder("secondary"), false);
+  assert.match(messages.at(-1), /coordinates do not match/);
+  assert.equal(ctx.secondaryDataset, previous);
+  assert.equal(ctx.params.secondaryDatasetPath, previous.rootPath);
+  const fresh = await ctx.fetchDatasetResource(`${previous.rootPath}/metadata.json`);
+  assert.equal((await fresh.json()).title, "Dataset 2");
+  assert.equal(ctx.datasetFolderSources.size, 2);
+});
+
+test("a comparison render failure restores its previous selected field and folder", async () => {
+  const { ctx, selections, messages } = localDatasetViewer();
+  selections.push(selectedFolder(ctx, 1), selectedFolder(ctx, 2), selectedFolder(ctx, 3));
+  await ctx.selectDatasetFolder("primary");
+  await ctx.selectDatasetFolder("secondary");
+  ctx.params.equatorField = "D2:ur";
+  await ctx.rebuildAllMeshes();
+  const previous = ctx.secondaryDataset, render = ctx.rebuildAllMeshes;
+  ctx.rebuildAllMeshes = async () => {
+    if (ctx.secondaryDataset?.metadata.title === "Dataset 3") throw new Error("comparison surface unavailable");
+    await render();
+  };
+  assert.equal(await ctx.selectDatasetFolder("secondary"), false);
+  assert.match(messages.at(-1), /comparison surface unavailable/);
+  assert.equal(ctx.secondaryDataset, previous);
+  assert.equal(ctx.params.equatorField, "D2:ur");
+  assert.equal(ctx.displayed[0], 2);
+  assert.equal(ctx.datasetLoadInProgress, false);
+  const fresh = await ctx.fetchDatasetResource(`${previous.rootPath}/metadata.json`);
+  assert.equal((await fresh.json()).title, "Dataset 2");
+});
+
+test("overlapping folder selection and a load started while the picker is open cannot replace its source", async () => {
+  const { ctx, selections } = localDatasetViewer();
+  const folder = selectedFolder(ctx, 1), picker = deferred();
+  selections.push(folder);
+  await ctx.selectDatasetFolder("primary");
+  const originalPath = ctx.datasetRootPath;
+  ctx.chooseDatasetDirectory = () => picker.promise;
+  const pending = ctx.selectDatasetFolder("primary");
+  assert.equal(await ctx.selectDatasetFolder("secondary"), false);
+  ctx.datasetLoadInProgress = true;
+  picker.resolve(selectedFolder(ctx, 2));
+  assert.equal(await pending, false);
+  assert.equal(ctx.datasetRootPath, originalPath);
+  assert.equal(ctx.activeDatasetFolderSource, folder);
+  assert.equal(ctx.datasetFolderSources.size, 1);
+  assert.equal(ctx.datasetFolderSelectionInProgress, false);
+});
+
+test("cancelling the fallback directory picker releases the selection lock", async () => {
+  const { ctx, selections } = localDatasetViewer();
+  const folder = selectedFolder(ctx, 1), input = new EventTarget();
+  let removed = false;
+  Object.assign(input, { style: {}, setAttribute: () => {}, click: () => {}, remove: () => { removed = true; } });
+  ctx.document = { createElement: () => input, body: { appendChild: () => {} } };
+  for (const name of ["chooseDatasetDirectory", "selectDirectoryUsingFileInput"]) vm.runInContext(definition(name), ctx);
+  const pending = ctx.selectDatasetFolder("primary");
+  input.dispatchEvent(new Event("cancel"));
+  assert.equal(await pending, false);
+  assert.equal(removed, true);
+  assert.equal(ctx.datasetFolderSelectionInProgress, false);
+  assert.equal(ctx.datasetFolderSources.size, 0);
+  ctx.chooseDatasetDirectory = async () => selections.shift();
+  selections.push(folder);
+  assert.equal(await ctx.selectDatasetFolder("primary"), true);
+});
+
+test("a shell-to-full-sphere switch removes the preceding inner boundary", async () => {
+  const ctx = viewer();
+  const original = new Mesh(new Geometry("old shell"), new Material());
+  ctx.icbMesh = original;
+  ctx.scene.add(original);
+  ctx.metadata.has_inner_core = false;
+  for (const key of ["showCMB", "showRadialSurface", "showEquator", "showEquator2", "showMeridian", "showMeridian2", "showEarthSurface", "showIsosurfaces"]) ctx.params[key] = false;
+  ctx.params.showICB = true;
+  for (const name of ["rebuildICB", "rebuildAllMeshes"]) vm.runInContext(definition(name), ctx);
+  await ctx.rebuildAllMeshes();
+  assert.equal(ctx.icbMesh, null);
+  assert.equal(original.geometry.disposed, true);
+  assert.equal(original.material.disposed, true);
+  assert.equal(ctx.scene.objects.has(original), false);
+});
+
+test("changing frames replaces an unavailable isosurface field before rendering", async () => {
+  const ctx = viewer(), nextMetadata = structuredClone(ctx.metadata), nextCoords = structuredClone(ctx.coords);
+  ctx.metadata.fields.Comp = "Comp.f32";
+  ctx.params.isoField = "Comp";
+  Object.assign(ctx, {
+    sequenceIndex: { frames: [{ path: "frames/second" }] },
+    sequenceFrameBasePath: frame => frame.path,
+    loadMetadataForBase: async () => nextMetadata, loadCoordinatesForBase: async () => nextCoords,
+    refreshSequenceControllers: () => {}, setDeferredSequenceObjectVisibility: () => {}, formatBytes: String,
+    loadField: async name => {
+      if (!ctx.metadata.fields[name]) throw new Error(`Unavailable field ${name}`);
+      return { name };
+    },
+    rebuildAllMeshes: async () => ctx.rebuildIsosurfaces(),
+  });
+  for (const name of ["chooseField", "applyDefaultFields"]) vm.runInContext(definition(name), ctx);
+  ctx.params.showFieldLines = false;
+  assert.equal(await ctx.loadFrameByIndex(0), true);
+  assert.equal(ctx.params.isoField, "ur");
+  assert.equal(ctx.isoPositiveMesh.geometry.field.name, "ur");
+});
 
 function writableFolder(permission = "granted") {
   const state = { files: new Map(), requests: [], aborted: false };
