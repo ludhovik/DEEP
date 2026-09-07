@@ -27,6 +27,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
+try:
+    from conversion_cache import (add_incremental_arguments, cached_calculation, cached_native,
+                                  calculation_identity, register_cache_object, run_conversion)
+except ImportError:
+    from tools.conversion_cache import (add_incremental_arguments, cached_calculation, cached_native,
+                                        calculation_identity, register_cache_object, run_conversion)
+
 import numpy as np
 
 if __package__ in (None, ""):
@@ -38,9 +45,9 @@ except ImportError:
     from tools.spectral_truncation import nonnegative_lmax, cutoff_metadata
 
 try:
-    from viewer_bundle import ViewerSampling, staged_bundle_output, write_f32
+    from viewer_bundle import ViewerSampling, write_f32
 except ImportError:
-    from tools.viewer_bundle import ViewerSampling, staged_bundle_output, write_f32
+    from tools.viewer_bundle import ViewerSampling, write_f32
 
 try:
     import pyxshells
@@ -76,6 +83,7 @@ except ImportError:  # pragma: no cover - package-style invocation
     )
 
 from modules import curl_spat
+curl_spat = cached_calculation(curl_spat)
 
 
 RADIAL_ATOL = 1.0e-11
@@ -83,7 +91,7 @@ EARTH_RADIUS_KM = 6371.0
 CMB_RADIUS_KM = 3480.0
 DEFAULT_EARTH_RADIUS_SCALE = EARTH_RADIUS_KM / CMB_RADIUS_KM
 DEFAULT_EARTH_BR_LMAX = 13
-CONVERTER_PACKAGE_VERSION = "3.4.2"
+CONVERTER_PACKAGE_VERSION = "3.5.0"
 
 
 def json_number(value: Any, default: float | None = None) -> float | None:
@@ -120,6 +128,7 @@ def phi_average_volume(arr: np.ndarray) -> np.ndarray:
     return np.broadcast_to(mean, values.shape).copy()
 
 
+@cached_calculation
 def gradient_scalar_3d(
     scalar: np.ndarray,
     r: np.ndarray,
@@ -324,6 +333,7 @@ def choose_master_field(loaded: dict[str, Any]) -> tuple[str, Any]:
     return key, loaded[key]
 
 
+@cached_calculation
 def radial_remap_to_master(
     arr: np.ndarray,
     r_src: np.ndarray,
@@ -422,6 +432,7 @@ def analyse_cmb_br_coefficients(sht: Any, Br_cmb: np.ndarray) -> np.ndarray:
     return coeff
 
 
+@cached_calculation
 def synthesize_cmb_br_ltrunc_xshells(
     sht: Any,
     Br_cmb: np.ndarray,
@@ -437,6 +448,7 @@ def synthesize_cmb_br_ltrunc_xshells(
     return np.ascontiguousarray(np.asarray(sht.synth(coeff), dtype=np.float64))
 
 
+@cached_calculation
 def synthesize_earth_br_ltrunc_xshells(
     sht: Any,
     Br_cmb: np.ndarray,
@@ -466,6 +478,7 @@ def synthesize_earth_br_ltrunc_xshells(
     return np.ascontiguousarray(np.asarray(sht.synth(coeff), dtype=np.float64))
 
 
+@cached_calculation
 def external_potential_field_from_cmb_br(
     sht: Any,
     Br_cmb: np.ndarray,
@@ -641,6 +654,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Fixed requested RK4 step. Default: half the median shell spacing; exterior steps use the CMB radius and degree, growing farther out.",
     )
+    add_incremental_arguments(p)
     return p
 
 
@@ -672,6 +686,11 @@ def convert_xshells(args: argparse.Namespace) -> None:
     loaded, spectral_truncation = truncate_xshells_fields(loaded, angular_key, args.spectral_lmax)
     angular_reference = loaded[angular_key]
     configure_sht_grid(angular_reference, args.nlat, args.nphi)
+    transform_signature = {"lmax": angular_reference.lmax, "mmax": angular_reference.mmax,
+                           "mres": angular_reference.mres,
+                           "theta": np.asarray(angular_reference.theta_array()).tolist(),
+                           "phi": np.asarray(angular_reference.phi_array()).tolist()}
+    register_cache_object(angular_reference.sht, transform_signature)
     theta = np.asarray(angular_reference.theta_array(), dtype=np.float64)
     phi = np.asarray(angular_reference.phi_array(), dtype=np.float64)
     time_values = [float(getattr(field, "time", np.nan)) for field in loaded.values()]
@@ -755,7 +774,8 @@ def convert_xshells(args: argparse.Namespace) -> None:
             raise TypeError("--velocity must be an XSHELLS poloidal/toroidal field.")
         print("Synthesizing velocity...")
         with np.errstate(divide="ignore", invalid="ignore"):
-            u = np.asarray(velocity.spat_full(), dtype=np.float64)
+            u = np.ascontiguousarray(cached_native("xshells-velocity-synthesis", velocity.spat_full,
+                {"path": paths["velocity"], "transform": transform_signature}, calculation_identity(type(velocity).spat_full)), dtype=np.float64)
         ru = radial_grids["velocity"]
         u = sanitise_synthesised_field(u, ru, "velocity")
         Ur, Ut, Up = u[:, 0], u[:, 1], u[:, 2]
@@ -783,7 +803,8 @@ def convert_xshells(args: argparse.Namespace) -> None:
             raise TypeError("--magnetic must be an XSHELLS poloidal/toroidal field.")
         print("Synthesizing magnetic field, including conducting solid regions...")
         with np.errstate(divide="ignore", invalid="ignore"):
-            b = np.asarray(magnetic.spat_full(), dtype=np.float64)
+            b = np.ascontiguousarray(cached_native("xshells-magnetic-synthesis", magnetic.spat_full,
+                {"path": paths["magnetic"], "transform": transform_signature}, calculation_identity(type(magnetic).spat_full)), dtype=np.float64)
         rb = radial_grids["magnetic"]
         b = sanitise_synthesised_field(b, rb, "magnetic field")
         Br, Bt, Bp = b[:, 0], b[:, 1], b[:, 2]
@@ -830,7 +851,8 @@ def convert_xshells(args: argparse.Namespace) -> None:
             raise TypeError("--temperature must be an XSHELLS scalar field.")
         print("Synthesizing temperature...")
         with np.errstate(divide="ignore", invalid="ignore"):
-            T = np.asarray(temperature.spat_full(), dtype=np.float64)
+            T = np.ascontiguousarray(cached_native("xshells-temperature-synthesis", temperature.spat_full,
+                {"path": paths["temperature"], "transform": transform_signature}, calculation_identity(type(temperature).spat_full)), dtype=np.float64)
         rt = radial_grids["temperature"]
         T = sanitise_synthesised_field(T, rt, "temperature")
         scalar_native["C"] = (T, rt, "temperature")
@@ -849,7 +871,8 @@ def convert_xshells(args: argparse.Namespace) -> None:
             raise TypeError("--composition must be an XSHELLS scalar field.")
         print("Synthesizing composition...")
         with np.errstate(divide="ignore", invalid="ignore"):
-            Comp = np.asarray(composition.spat_full(), dtype=np.float64)
+            Comp = np.ascontiguousarray(cached_native("xshells-composition-synthesis", composition.spat_full,
+                {"path": paths["composition"], "transform": transform_signature}, calculation_identity(type(composition).spat_full)), dtype=np.float64)
         rc = radial_grids["composition"]
         Comp = sanitise_synthesised_field(Comp, rc, "composition")
         scalar_native["Comp"] = (Comp, rc, "composition")
@@ -1382,9 +1405,8 @@ def convert_xshells(args: argparse.Namespace) -> None:
 
 def main() -> None:
     args = build_arg_parser().parse_args()
-    with staged_bundle_output(args.out) as output:
-        args.out = str(output)
-        convert_xshells(args)
+    run_conversion(args, "xshells", resolve_inputs(args).values(), convert_xshells,
+                   backend_files=[sys.modules["modules"].__file__])
 
 
 if __name__ == "__main__":

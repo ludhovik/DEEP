@@ -46,6 +46,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
+try:
+    from conversion_cache import add_incremental_arguments, cached_calculation, run_conversion
+except ImportError:
+    from tools.conversion_cache import add_incremental_arguments, cached_calculation, run_conversion
+
 import numpy as np
 
 try:
@@ -54,16 +59,16 @@ except ImportError:
     from tools.spectral_truncation import nonnegative_lmax
 
 try:
-    from viewer_bundle import ViewerSampling, bundle_path, staged_bundle_output, write_f32
+    from viewer_bundle import ViewerSampling, bundle_path, write_f32
 except ImportError:
-    from tools.viewer_bundle import ViewerSampling, bundle_path, staged_bundle_output, write_f32
+    from tools.viewer_bundle import ViewerSampling, bundle_path, write_f32
 
 
 EARTH_RADIUS_KM = 6371.0
 CMB_RADIUS_KM = 3480.0
 DEFAULT_EARTH_RADIUS_SCALE = EARTH_RADIUS_KM / CMB_RADIUS_KM
 DEFAULT_EARTH_BR_LMAX = 13
-CONVERTER_PACKAGE_VERSION = "3.4.2"
+CONVERTER_PACKAGE_VERSION = "3.5.0"
 
 
 # -----------------------------------------------------------------------------
@@ -916,6 +921,7 @@ def gradient_phi_periodic(arr: np.ndarray, phi: np.ndarray) -> np.ndarray:
     return (np.roll(arr, -1, axis=2) - np.roll(arr, 1, axis=2)) / (2.0 * dphi)
 
 
+@cached_calculation
 def gradient_scalar_3d(
     field: np.ndarray,
     r: np.ndarray,
@@ -953,6 +959,7 @@ def gradient_scalar_3d(
     )
 
 
+@cached_calculation
 def compute_helicity(Ur: np.ndarray, Ut: np.ndarray, Up: np.ndarray, r: np.ndarray, theta: np.ndarray, phi: np.ndarray) -> np.ndarray:
     """Compute kinetic helicity u·(curl u), with a finite full-sphere centre."""
     rr = np.asarray(r, dtype=np.float64)
@@ -987,6 +994,7 @@ def compute_helicity(Ur: np.ndarray, Ut: np.ndarray, Up: np.ndarray, r: np.ndarr
 
 
 
+@cached_calculation
 def compute_emf(
     Ur: np.ndarray,
     Ut: np.ndarray,
@@ -1023,6 +1031,7 @@ def compute_emf(
     )
 
 
+@cached_calculation
 def compute_induction_from_emf(
     Er: np.ndarray,
     Et: np.ndarray,
@@ -1740,6 +1749,7 @@ def _trace_exterior_arc(
 
     return points, "max_steps", max_r_seen
 
+@cached_calculation(mutates=("exterior_lines",))
 def connect_exterior_return_footpoints(
     shell_lines, exterior_lines, Br, Bt, Bp, r_grid, theta, phi, step_size, max_steps,
 ):
@@ -1794,6 +1804,7 @@ def connect_exterior_return_footpoints(
     return extra, counts
 
 
+@cached_calculation
 def external_potential_field_from_BP(
     BP_lsd: np.ndarray,
     r_state: np.ndarray,
@@ -1855,6 +1866,7 @@ def external_potential_field_from_BP(
 
 
 
+@cached_calculation
 def synthesize_cmb_Br_ltrunc(
     BP_lsd: np.ndarray,
     r_state: np.ndarray,
@@ -1896,6 +1908,7 @@ def synthesize_cmb_Br_ltrunc(
     return np.ascontiguousarray(Br_cmb, dtype=np.float64), np.ascontiguousarray(theta), np.ascontiguousarray(phi)
 
 
+@cached_calculation
 def synthesize_potential_Br_surface_ltrunc(
     BP_lsd: np.ndarray,
     r_state: np.ndarray,
@@ -1951,6 +1964,7 @@ def synthesize_potential_Br_surface_ltrunc(
     )
 
 
+@cached_calculation(attributes=("last_status_counts", "last_seed_counts"))
 def compute_external_field_lines_from_cmb(
     Br_ext: np.ndarray,
     Bt_ext: np.ndarray,
@@ -2098,6 +2112,7 @@ def compute_external_field_lines_from_cmb(
     return lines
 
 
+@cached_calculation
 def compute_shell_field_lines_from_cmb(
     Br: np.ndarray,
     Bt: np.ndarray,
@@ -2498,6 +2513,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--sequence-subdir", default="frames", help="Subdirectory under --out where sequence frames are written.")
     p.add_argument("--sequence-clear", action="store_true", help="Compatibility option: sequences are always rebuilt in staging; previous output is backed up only after success.")
 
+    add_incremental_arguments(p)
     return p
 
 
@@ -2604,6 +2620,14 @@ def run_sequence_conversion(args: argparse.Namespace) -> None:
         if args.downsample_phi != 1:
             cmd += ["--downsample-phi", str(args.downsample_phi)]
 
+        if args.incremental:
+            cmd += ["--incremental", "--cache-dir", str(args.cache_dir)]
+            if args.force:
+                cmd += ["--force"]
+            previous = Path(args._incremental_source_root) / args.sequence_subdir / frame_name
+            if previous.is_dir():
+                shutil.copytree(previous, frame_out)
+
         print(f"\n=== Converting frame {frame_name}: {state_path} ===")
         subprocess.run(cmd, check=True)
 
@@ -2642,7 +2666,7 @@ def run_sequence_conversion(args: argparse.Namespace) -> None:
     first_frame_dir = frames_root / frames[0]["label"]
     for item in first_frame_dir.iterdir():
         dst = outdir / item.name
-        if item.is_file():
+        if item.is_file() and item.name not in ("view.DTV2", "conversion_manifest.json"):
             shutil.copy2(item, dst)
 
     print("\nDone.")
@@ -2681,15 +2705,21 @@ def convert_state(args: argparse.Namespace) -> None:
             "or pass --modules-dir /path/to/directory."
         ) from exc
 
-    load_state = user_modules.load_state
-    PolTor_to_spat = user_modules.PolTor_to_spat
-    SH_to_spat = user_modules.SH_to_spat
-    SH_to_spat_nom0 = user_modules.SH_to_spat_nom0
-    gradient_spat = user_modules.gradient_spat
-    curl_spat = user_modules.curl_spat
+    load_state = cached_calculation(user_modules.load_state)
+    PolTor_to_spat = cached_calculation(user_modules.PolTor_to_spat)
+    SH_to_spat = cached_calculation(user_modules.SH_to_spat)
+    SH_to_spat_nom0 = cached_calculation(user_modules.SH_to_spat_nom0)
+    gradient_spat = cached_calculation(user_modules.gradient_spat)
+    curl_spat = cached_calculation(user_modules.curl_spat)
     PolTor_to_spat_fullsphere = getattr(user_modules, "PolTor_to_spat_fullsphere", None)
+    if callable(PolTor_to_spat_fullsphere):
+        PolTor_to_spat_fullsphere = cached_calculation(PolTor_to_spat_fullsphere)
     SH_to_spat_fullsphere = getattr(user_modules, "SH_to_spat_fullsphere", None)
+    if callable(SH_to_spat_fullsphere):
+        SH_to_spat_fullsphere = cached_calculation(SH_to_spat_fullsphere)
     SH_to_spat_nom0_fullsphere = getattr(user_modules, "SH_to_spat_nom0_fullsphere", None)
+    if callable(SH_to_spat_nom0_fullsphere):
+        SH_to_spat_nom0_fullsphere = cached_calculation(SH_to_spat_nom0_fullsphere)
 
     if args.folder:
         path = latest_state_file(args.folder, args.pattern)
@@ -3738,11 +3768,20 @@ def convert_state(args: argparse.Namespace) -> None:
     print(f"Fields: {', '.join(field_files.keys())}")
 
 
+def run_leeds_conversion(args):
+    add_modules_dir(args.modules_dir)
+    user_modules = importlib.import_module("modules")
+    if args.sequence_first is not None and args.sequence_last is not None:
+        wanted = set(range(args.sequence_first, args.sequence_last + 1, max(1, args.sequence_step)))
+        inputs = [p for p in list_state_files(args.folder, args.pattern) if parse_state_number(p) in wanted]
+    else:
+        inputs = [latest_state_file(args.folder, args.pattern) if args.folder else args.state]
+    run_conversion(args, "leeds", inputs, convert_state, backend_files=[user_modules.__file__])
+
+
 def main() -> None:
     args = build_arg_parser().parse_args()
-    with staged_bundle_output(args.out) as output:
-        args.out = str(output)
-        convert_state(args)
+    run_leeds_conversion(args)
 
 
 if __name__ == "__main__":

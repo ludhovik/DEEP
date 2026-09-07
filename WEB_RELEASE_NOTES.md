@@ -1,5 +1,21 @@
 # v0.4.0 — static hosted/local-data viewer
 
+## B² magnetic tubes and incremental converters (2026-09-07)
+
+- Choose **Magnetic field lines → Render as → B² tubes** for three-dimensional
+  tubes whose local diameter is proportional to magnetic strength squared.
+  Set a reference strength, diameter, minimum/maximum diameter and tube sides.
+  Diameters use outer-radius units; colour scaling is independent.
+- Save all tube settings in DTV2 codes. Preserve connected line groups when
+  applying stride, and use a common automatic strength reference before
+  thinning. Keep the previous lines if a replacement exceeds the mesh budget.
+- Use existing converter strength samples without reconversion. Legacy shell
+  lines can sample an available `Babs` volume, with the approximation reported
+  in the status. Missing exterior strengths retain constant-width lines.
+- Add `--incremental`, `--cache-dir` and `--force` to the three converters;
+  see the README for cache reuse and initial population. DMFI time tracking
+  remains deferred.
+
 ## Dataset switching fixes (2026-09-07)
 
 - Successive primary or secondary folder selections load the newly selected

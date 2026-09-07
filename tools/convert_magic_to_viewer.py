@@ -10,6 +10,7 @@ arrays, matching the Leeds and XSHELLS converter contract.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import math
 import os
@@ -18,6 +19,12 @@ import shutil
 import sys
 from pathlib import Path
 from typing import Any
+from types import SimpleNamespace
+
+try:
+    from conversion_cache import add_incremental_arguments, cached_calculation, run_conversion
+except ImportError:
+    from tools.conversion_cache import add_incremental_arguments, cached_calculation, run_conversion
 
 import numpy as np
 from scipy.special import gammaln, lpmv
@@ -28,9 +35,9 @@ except ImportError:
     from tools.spectral_truncation import nonnegative_lmax, truncate_graphic_fields
 
 try:
-    from viewer_bundle import ViewerSampling, bundle_path, staged_bundle_output, write_f32
+    from viewer_bundle import ViewerSampling, bundle_path, write_f32
 except ImportError:
-    from tools.viewer_bundle import ViewerSampling, bundle_path, staged_bundle_output, write_f32
+    from tools.viewer_bundle import ViewerSampling, bundle_path, write_f32
 
 try:
     from convert_state_to_viewer import (
@@ -63,7 +70,7 @@ CMB_RADIUS_KM = 3480.0
 DEFAULT_EARTH_RADIUS_SCALE = EARTH_RADIUS_KM / CMB_RADIUS_KM
 DEFAULT_EARTH_BR_LMAX = 13
 RADIAL_ATOL = 1.0e-10
-CONVERTER_PACKAGE_VERSION = "3.4.2"
+CONVERTER_PACKAGE_VERSION = "3.5.0"
 
 
 def json_number(value: Any, default: float | None = None) -> float | None:
@@ -102,6 +109,7 @@ def nearest_index(values: np.ndarray, target: float) -> int:
     return int(np.argmin(np.abs(np.asarray(values, dtype=np.float64) - float(target))))
 
 
+@cached_calculation
 def radial_remap_to_master(
     arr: np.ndarray,
     r_src: np.ndarray,
@@ -378,10 +386,12 @@ def synthesize_real_surface(
     return np.ascontiguousarray(out)
 
 
+@cached_calculation
 def truncated_surface(field: np.ndarray, theta: np.ndarray, phi: np.ndarray, lmax: int) -> np.ndarray:
     return synthesize_real_surface(analyse_real_surface(field, theta, lmax), theta, phi)
 
 
+@cached_calculation
 def earth_surface_br(
     field: np.ndarray,
     theta: np.ndarray,
@@ -394,6 +404,7 @@ def earth_surface_br(
     return synthesize_real_surface(coeff, theta, phi, factors)
 
 
+@cached_calculation
 def exterior_potential_field(
     field: np.ndarray,
     theta: np.ndarray,
@@ -487,9 +498,27 @@ def clean_output_directory(outdir: Path) -> None:
             old.unlink()
 
 
+@cached_calculation
+def read_graph_data(path, magic_python_dir, precision):
+    graph = load_graph(path, magic_python_dir, precision)
+    parameters = {name: json_number(getattr(graph, name, None)) for name in
+                  ("l_max", "lmax", "ek", "pr", "sc", "ra", "raxi", "time", "prmag", "radratio")}
+    return adapt_graph(graph), parameters
+
+
+def magic_input_files(paths):
+    files = list(paths)
+    for path in paths:
+        _, tag, _ = parse_graph_filename(path)
+        log = path.with_name(f"log.{tag}")
+        if log.is_file():
+            files.append(log)
+    return files
+
+
 def convert_graph(path: Path, outdir: Path, args: argparse.Namespace) -> dict[str, Any]:
-    graph = load_graph(path, args.magic_python_dir, args.precision)
-    adapted = adapt_graph(graph)
+    adapted, graph_parameters = read_graph_data(path, args.magic_python_dir, args.precision)
+    graph = SimpleNamespace(**graph_parameters)
     r_shell = adapted["r_shell"]
     r_master = adapted["r_master"]
     theta = adapted["theta"]
@@ -500,7 +529,8 @@ def convert_graph(path: Path, outdir: Path, args: argparse.Namespace) -> dict[st
     has_cond_ic = bool(adapted["has_conducting_inner_core"])
     magnetic_extends_ic = bool(adapted["magnetic_extends_inner_core"])
     lmax = inferred_lmax(graph, len(theta))
-    raw, theta, phi, spectral_truncation = truncate_graphic_fields(
+    truncate = cached_calculation(truncate_graphic_fields) if args.spectral_lmax else truncate_graphic_fields
+    raw, theta, phi, spectral_truncation = truncate(
         raw, theta, phi, args.spectral_lmax, lmax, adapted["minc"],
     )
     lmax = spectral_truncation["lmax_effective"]
@@ -923,6 +953,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--sequence-step", type=int, default=1)
     p.add_argument("--sequence-subdir", default="frames")
     p.add_argument("--sequence-clear", action="store_true", help="Compatibility option: sequences are always rebuilt in staging; previous output is backed up only after success.")
+    add_incremental_arguments(p)
     return p
 
 
@@ -954,7 +985,18 @@ def run_sequence(args: argparse.Namespace) -> None:
         ivar, _, _ = parse_graph_filename(path)
         name = f"G_{ivar:05d}"
         frame_out = frames_root / name
-        metadata = convert_graph(path, frame_out, args)
+        frame_args = copy.copy(args)
+        frame_args.out = str(frame_out)
+        frame_args.folder = None
+        frame_args.sequence_first = frame_args.sequence_last = None
+        frame_args.graph = str(path)
+        if args.incremental:
+            previous = Path(args._incremental_source_root) / args.sequence_subdir / name
+            if previous.is_dir():
+                shutil.copytree(previous, frame_out)
+        run_conversion(frame_args, "magic", magic_input_files([path]),
+                       lambda opts: convert_graph(path, Path(opts.out), opts))
+        metadata = json.loads((frame_out / "metadata.json").read_text())
         if first_out is None:
             first_out = frame_out
         frames.append({"state_number": ivar, "time": metadata["time"],
@@ -963,7 +1005,7 @@ def run_sequence(args: argparse.Namespace) -> None:
     assert first_out is not None
     root.mkdir(parents=True, exist_ok=True)
     for item in first_out.iterdir():
-        if item.is_file():
+        if item.is_file() and item.name not in ("view.DTV2", "conversion_manifest.json"):
             shutil.copy2(item, root / item.name)
     sequence = {"version": 1, "frame_count": len(frames), "first": first, "last": last,
                 "step": step, "frames": frames}
@@ -977,14 +1019,17 @@ def main() -> None:
     if args.line_seeds is not None:
         args.line_seed_theta, args.line_seed_phi = choose_regular_seed_grid(args.line_seeds)
     sequence_requested = args.sequence_first is not None or args.sequence_last is not None
-    with staged_bundle_output(args.out) as output:
-        args.out = str(output)
-        if sequence_requested:
-            if args.sequence_first is None or args.sequence_last is None:
-                raise ValueError("Both --sequence-first and --sequence-last are required.")
-            run_sequence(args)
-        else:
-            convert_graph(resolve_single_path(args), output, args)
+    import_magic_graph(args.magic_python_dir)
+    if sequence_requested:
+        if args.sequence_first is None or args.sequence_last is None:
+            raise ValueError("Both --sequence-first and --sequence-last are required.")
+        paths = [discover_graph(Path(args.folder), args.tag, ivar, False)
+                 for ivar in range(args.sequence_first, args.sequence_last + 1, max(1, args.sequence_step))]
+        run_conversion(args, "magic", magic_input_files(paths), run_sequence)
+    else:
+        path = resolve_single_path(args)
+        run_conversion(args, "magic", magic_input_files([path]),
+                       lambda opts: convert_graph(path, Path(opts.out), opts))
 
 
 if __name__ == "__main__":

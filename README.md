@@ -18,7 +18,7 @@ with Vite. Local datasets are read in the browser and are not uploaded.
 - a spherical surface at any radius;
 - two equatorial and two meridional slices;
 - positive and negative isosurfaces;
-- internal and exterior magnetic field lines;
+- internal and exterior magnetic field lines, including tubes with diameter proportional to magnetic energy;
 - Earth, Mars, Ganymede, Mercury, Venus, Enceladus and Moon surface images, or
   an available extrapolated radial magnetic field;
 - two compatible datasets on the same grid;
@@ -250,6 +250,39 @@ When the converter wrote magnetic field lines, the viewer can display internal
 shell lines, exterior potential/poloidal lines, or both. Lines can be coloured
 by strength or CMB seed polarity, with configurable width, opacity, stride, and
 range.
+
+Choose **Magnetic field lines → Render as → B² tubes** to give each line a
+three-dimensional tube whose diameter varies along its path:
+
+```math
+d(s)=\operatorname{clip}\!\left[d_{\mathrm{ref}}
+\left(\frac{|\mathbf B(\mathbf x(s))|}{B_{\mathrm{ref}}}\right)^2,
+d_{\min},d_{\max}\right].
+```
+
+In **B² tube diameter**, diameter values are fractions of the outer radius
+`ro`. **Ref |B| (0 = auto)** sets the reference in the dataset's magnetic-field
+units; zero selects the maximum available line strength across the displayed
+domains, before stride selection. Set a positive reference to compare figures
+or frames on the same scale. The colour map and its linear/logarithmic scale
+do not change the tube diameter. All tube options are included in DTV2 codes.
+
+**Minimum / ro** can keep weak-field sections visible; **Maximum / ro** limits
+very wide sections. These are display limits. With no clipping, doubling
+`|B|` quadruples the diameter. **Tube sides** controls mesh detail. Increase
+**Line stride** or reduce tube sides if a requested mesh exceeds the geometry
+budget. Tube opacity uses stable dithered transparency, as for isosurfaces.
+
+Recent converter bundles already contain `strength = |B|` at each traced
+point and need no reconversion for tubes. For legacy internal lines, including
+the bundled demonstration, the viewer can sample an available `Babs` volume
+on the viewer grid; the status message identifies this approximation. Lines
+with no usable strength array retain constant width, and tube geometry never
+bridges missing-strength sections or extrapolates a volume into the exterior.
+
+This thickness encoding follows [Aubert, Aurnou & Wicht (2008), section 2.2](https://www.ipgp.fr/~aubert/DMFIPaper.pdf).
+It represents magnetic energy visually. Time-dependent DMFI anchor tracking
+is not implemented; each frame retains its converter-generated line paths.
 
 With **Line type → Both**, **Line stride** selects linked internal/exterior
 lines together using their identifiers. A stride of 3 retains every third
@@ -705,12 +738,54 @@ The three converters intentionally share common controls where possible:
 --earth-br-ltrunc L
 --emf
 --induction
+--incremental
+--cache-dir /path/to/conversion-cache
+--force
 --Ek VALUE --Pr VALUE --Sc VALUE --RaT VALUE --RaC VALUE
 ```
 
 Not every option applies to every source format. A converter writes only fields
 supported by its input and does not invent absent magnetic or compositional
 quantities.
+
+### Incremental conversion
+
+All three converters accept **`--incremental`**. Add it to the same conversion
+command, keeping its source and output paths:
+
+```text
+--incremental
+```
+
+The first incremental run calculates the requested bundle and saves a
+lossless cache of selected expensive operations, including native transforms,
+gradients, magnetic diagnostics, surface synthesis and field-line tracing.
+Later runs check source contents, options, calculation code, backend versions,
+and cached-file checksums before reusing results. An unchanged complete bundle
+is skipped. Changed conversions reuse matching calculations and publish a
+new validated bundle; simple arithmetic, output assembly and file I/O can
+still run. Adding a diagnostic does not require repeating cached transforms.
+
+Existing bundles without a calculation cache need an initial conversion to
+populate it. Native precision and working grids are retained: downsampled
+viewer `.f32` files are not used to reconstruct missing native calculations.
+Changing inputs, truncation, grids, or the relevant calculation invalidates
+affected results. A damaged cache entry is recomputed. Source and output checks
+still read files, so checking a large bundle takes time even when no calculation
+is needed.
+
+By default the cache is `.deepscope-cache/` at the Git project root (or beside
+the output when outside a checkout), outside the published `public/` tree.
+The cache requires additional disk space and is ignored by Git. Use
+`--cache-dir /path/to/conversion-cache` to place it elsewhere, outside the
+output and `public/`. Deleting this disposable cache leaves converted data
+intact; missing calculations will be rebuilt when needed.
+
+Combine **`--incremental --force`** to recompute and refresh cached calculations.
+Without `--incremental`, conversion runs normally. Leeds and MagIC sequence
+extensions reuse unchanged frames and preserve root and per-frame `view.DTV2`
+files. XSHELLS keeps its existing single-snapshot interface. Previous output
+backups and validation before publication also apply to incremental runs.
 
 ### Sampling and output safety
 

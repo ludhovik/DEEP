@@ -1,5 +1,31 @@
 # Validation report
 
+## Incremental calculation reuse (3.5.0, 2026-09-07)
+
+The complete converter suite passes 63 tests, including eleven new incremental
+tests. These verify lossless float64 storage and copy-on-write cache reads,
+SHA256-based source/output/entry checks, code revisions, explicit force,
+corruption repair, and retention of published output and saved views on failure.
+
+Leeds, XSHELLS and MagIC each run an initial conversion, add EMF and induction
+with incremental reuse, then run a fresh comparison. All exported `.f32` files
+match byte for byte, while native reader/transform calls are reused. The test
+uses analytical input and native-backend fixtures with the actual diagnostics,
+sampling, cache and bundle-validation code. It caught and corrected an XSHELLS
+memory-layout-dependent rounding difference between fresh and cached arrays.
+
+Dipole tests repeat actual internal/exterior tracing and return-footpoint
+connection calculations through the cache, preserving geometry, status counts,
+pairing identifiers and mutated exterior metadata. A MagIC sequence-extension
+test converts only the added frame and preserves both root and per-frame views.
+Leeds forwards the same incremental/cache/force options to its frame processes.
+
+Compiled native backends and production snapshots were not available for these
+new checks; this is not a production-simulation benchmark. Cache validation
+still reads source and output bytes, and changed conversions still perform
+uncached arithmetic, output assembly and I/O. Existing uncached bundles need an
+initial conversion; native data are never reconstructed from viewer `.f32` files.
+
 ## Spectral truncation and return branches (3.4.0, 2026-09-06)
 
 `bash run_converter_tests.sh` passes 52 tests: 37 package tests, nine exterior

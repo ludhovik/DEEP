@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.5.0
+
+- Add opt-in `--incremental` conversion to Leeds, XSHELLS and MagIC. Verify
+  source, option, code, backend and output fingerprints before skipping a
+  complete unchanged bundle.
+- Cache selected native transforms/readers, gradients, diagnostics, surface
+  synthesis and field-line calculations losslessly at their working precision.
+  Changed conversions reuse matching calculations; viewer `.f32` files are
+  never substituted for native data. Corrupt entries are recomputed.
+- Store disposable caches outside published data, with `--cache-dir` for
+  placement and `--incremental --force` for a full refresh. An existing bundle
+  without a cache needs one initial calculation pass.
+- Reuse unchanged Leeds and MagIC sequence frames while preserving root and
+  frame views, validated staging and previous-output backups.
+- Preserve tracing status counts and internal/exterior pairing metadata on
+  cache hits. Normalize XSHELLS transform array layout so fresh and cached
+  calculations give identical exported values.
+
 ## 3.4.2
 
 - Remove the duplicate `C_nom0` and `Comp_nom0` fields and physical output

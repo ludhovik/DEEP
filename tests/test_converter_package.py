@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+from contextlib import ExitStack
 import importlib.util
 import math
 import pathlib
@@ -752,18 +753,24 @@ class ConverterPackageTests(unittest.TestCase):
             with self.subTest(converter=function), tempfile.TemporaryDirectory() as folder:
                 root = pathlib.Path(folder) / "output"
                 self.minimal_bundle(root)
-                args = types.SimpleNamespace(out=str(root), line_seeds=None, sequence_first=None, sequence_last=None)
+                source = pathlib.Path(folder) / ("G_1.test" if function == "convert_graph" else "state00001.cdf.dat")
+                source.touch()
+                cli_source = ["--graph", str(source)] if function == "convert_graph" else ["--velocity", str(source)] if function == "convert_xshells" else ["--state", str(source)]
+                args = converter.build_arg_parser().parse_args(cli_source + ["--out", str(root)])
                 parser = types.SimpleNamespace(parse_args=lambda: args)
                 def fail(*arguments):
                     stage = pathlib.Path(arguments[1] if function == "convert_graph" else arguments[0].out)
                     self.assertNotEqual(stage, root)
                     self.minimal_bundle(stage, 2)
                     raise RuntimeError("simulated backend failure")
-                with mock.patch.object(converter, "build_arg_parser", return_value=parser), \
-                     mock.patch.object(converter, function, side_effect=fail), \
-                     mock.patch.object(converter, "resolve_single_path", return_value=pathlib.Path("G_1.test"), create=True), \
-                     self.assertRaises(RuntimeError):
-                    converter.main()
+                with ExitStack() as stack:
+                    stack.enter_context(mock.patch.object(converter, "build_arg_parser", return_value=parser))
+                    stack.enter_context(mock.patch.object(converter, function, side_effect=fail))
+                    stack.enter_context(mock.patch.object(converter, "import_magic_graph", create=True))
+                    if function == "convert_state":
+                        stack.enter_context(mock.patch.dict(sys.modules, {"modules": self.modules}))
+                    with self.assertRaisesRegex(RuntimeError, "simulated backend failure"):
+                        converter.main()
                 self.assertTrue(np.all(np.fromfile(root / "C_volume.f32", dtype="<f4") == 1))
 
     def test_late_sequence_failure_leaves_previous_sequence_intact(self):
@@ -788,10 +795,15 @@ class ConverterPackageTests(unittest.TestCase):
                     raise RuntimeError("second frame is broken")
                 self.minimal_bundle(output, 2)
                 completed.append(path)
-                return {"time": 1.0}
+                metadata_path = output / "metadata.json"
+                metadata = json.loads(metadata_path.read_text())
+                metadata["time"] = 1.0
+                metadata_path.write_text(json.dumps(metadata))
+                return metadata
             with mock.patch.object(self.magic, "build_arg_parser", return_value=types.SimpleNamespace(parse_args=lambda: args)), \
                  mock.patch.object(self.magic, "convert_graph", side_effect=convert), \
-                 self.assertRaises(RuntimeError):
+                 mock.patch.object(self.magic, "import_magic_graph"), \
+                 self.assertRaisesRegex(RuntimeError, "second frame is broken"):
                 self.magic.main()
             self.assertEqual(len(completed), 1)
             self.assertEqual((root / "sequence.json").read_text(), old_index)

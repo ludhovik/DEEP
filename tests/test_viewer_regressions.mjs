@@ -8,6 +8,7 @@ import { SURFACE_TEXTURES } from "../src/surface-textures.js";
 import * as RealTHREE from "three";
 import { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
+import { peakLineStrength, estimateTubeBytes, makeMagneticTubeGeometry } from "../src/field-line-tubes.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 
 const source = fs.readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
@@ -54,7 +55,7 @@ class Mesh {
 function viewer() {
   const ctx = vm.createContext({
     console, DOMException, Response, Blob, AbortController, performance, TextEncoder, Float32Array, btoa, atob,
-    SURFACE_TEXTURES,
+    SURFACE_TEXTURES, peakLineStrength, estimateTubeBytes, makeMagneticTubeGeometry,
     window: { setInterval, clearInterval, setTimeout, clearTimeout },
     DEFAULT_DATASET_ROOT: "demo", DEFAULT_SECONDARY_DATASET_ROOT: "secondary",
     THREE: { Mesh, Color, MeshPhongMaterial: Material, DoubleSide: 2, NormalBlending: 1, NoBlending: 0 },
@@ -1020,6 +1021,94 @@ test("a field-line HTTP failure does not erase the working lines", async () => {
   ctx.params.fieldLineDisplay = "exterior";
   ctx.fetchDatasetResource = async () => new Response("missing", { status: 404 });
   await assert.rejects(ctx.loadFieldLines(), /HTTP 404/);
+  assert.equal(ctx.fieldLineGroups.shell, original);
+  assert.ok(ctx.scene.objects.has(original));
+  assert.equal(original.geometry.disposed, false);
+});
+
+test("B² tube controls round-trip through DTV2 and reject invalid settings", () => {
+  const ctx = viewer();
+  const values = { lineRenderMode: "b2-tubes", lineTubeReference: 2.5, lineTubeDiameter: 0.03,
+    lineTubeMinDiameter: 0.001, lineTubeMaxDiameter: 0.1, lineTubeSides: 12 };
+  Object.assign(ctx.params, values);
+  const saved = ctx.decodeViewState(ctx.encodeViewState(ctx.collectViewState()));
+  ctx.params.lineRenderMode = "lines";
+  ctx.applyViewStateParams(saved);
+  for (const [key, value] of Object.entries(values)) assert.equal(ctx.params[key], value);
+  assert.equal(ctx.applySnapshotParam("lineRenderMode", "dmfi"), false);
+  assert.equal(ctx.applySnapshotParam("lineTubeReference", -1), false);
+  assert.equal(ctx.applySnapshotParam("lineTubeSides", 4.5), false);
+  assert.equal(ctx.applySnapshotParam("lineTubeDiameter", 1e100), false);
+});
+
+test("tube stride preserves connected groups and uses one reference before thinning", async () => {
+  const ctx = viewer(), fixture = pairedLineFixture();
+  for (const [mode, lines] of Object.entries(fixture)) {
+    for (const [index, line] of lines.entries()) line.strength = line.points.map(() => mode === "shell" && index === 1 ? 20 : 2);
+  }
+  Object.assign(ctx, {
+    THREE: RealTHREE, Line2, LineGeometry,
+    makeLineMaterial: () => new LineMaterial({ vertexColors: true }),
+    getFieldLineVertexColor: () => new RealTHREE.Color("red"),
+    loadLinesForMode: async mode => fixture[mode],
+  });
+  vm.runInContext(definition("makeFieldLineGroup"), ctx);
+  ctx.metadata.field_lines = { mode: "both" };
+  Object.assign(ctx.params, { showFieldLines: true, fieldLineDisplay: "both", lineStride: 3, lineRenderMode: "b2-tubes" });
+  await ctx.loadFieldLines();
+  const { shell, exterior } = ctx.fieldLineGroups;
+  assert.equal(shell.children.length, 4);
+  assert.equal(exterior.children.length, 3);
+  assert.equal(shell.userData.tubeReference, 20);
+  assert.equal(exterior.userData.tubeReference, 20);
+  for (const line of exterior.userData.lines) {
+    assert.ok(shell.userData.lines.some(s => s.line_id === line.paired_shell_line_id));
+  }
+  assert.ok(shell.children.every(object => object.isMesh && object.userData.isMagneticTube));
+  const key = ctx.getFieldLineObjectCacheKey();
+  ctx.params.lineTubeReference = 10;
+  assert.notEqual(ctx.getFieldLineObjectCacheKey(), key);
+  ctx.params.lineTubeReference = 0;
+  ctx.params.lineOpacity = 0.5;
+  ctx.updateFieldLineVisuals();
+  for (const group of [shell, exterior]) for (const object of group.children) {
+    assert.equal(object.material.alphaHash, true);
+    assert.equal(object.material.depthWrite, true);
+    assert.equal(object.material.transparent, false);
+  }
+  ctx.params.lineValueTransform = "log10";
+  await ctx.loadFieldLines();
+  assert.equal(ctx.fieldLineGroups.shell.userData.tubeReference, 20, "colour transform cannot change tube scaling");
+  for (const entry of ctx.fieldLineObjectCache.values()) {
+    for (const group of Object.values(entry.groups)) ctx.disposeFieldLineGroupResources(group);
+  }
+});
+
+test("legacy internal tube strengths use the captured Babs grid without mutating line data", async () => {
+  const ctx = viewer();
+  const original = [{ points: [[0.5, 0, 0], [1, 0, 0]] }];
+  ctx.metadata.fields.Babs = "Babs.f32";
+  ctx.metadata.field_lines = { mode: "shell" };
+  Object.assign(ctx.params, { fieldLineDisplay: "shell", lineRenderMode: "b2-tubes" });
+  ctx.loadLinesForMode = async () => original;
+  ctx.loadField = async name => { assert.equal(name, "Babs"); return new Float32Array([2, 4]); };
+  ctx.sampleVolumeNearest = (field, x) => field[x === 0.5 ? 0 : 1];
+  const entry = await ctx.buildFieldLineObjectCacheEntry();
+  assert.deepEqual(Array.from(entry.groups.shell.userData.lines[0].strength), [2, 4]);
+  assert.equal(entry.groups.shell.userData.lines[0].strength_source, "viewer_grid_Babs");
+  assert.equal(original[0].strength, undefined);
+});
+
+test("excessive tube geometry leaves the last displayed field lines intact", async () => {
+  const ctx = viewer();
+  ctx.metadata.field_lines = { mode: "shell" };
+  Object.assign(ctx.params, { showFieldLines: true, fieldLineDisplay: "shell", lineStride: 1 });
+  ctx.loadLinesForMode = async () => [{ points: [[0, 0, 0], [0, 0, 1]], strength: [1, 1] }];
+  await ctx.loadFieldLines();
+  const original = ctx.fieldLineGroups.shell;
+  ctx.params.lineRenderMode = "b2-tubes";
+  ctx.loadLinesForMode = async () => [{ points: { length: 10_000_000 }, strength: [1] }];
+  await assert.rejects(ctx.loadFieldLines(), /Increase Line stride/);
   assert.equal(ctx.fieldLineGroups.shell, original);
   assert.ok(ctx.scene.objects.has(original));
   assert.equal(original.geometry.disposed, false);

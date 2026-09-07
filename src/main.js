@@ -6,6 +6,7 @@ import { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import GUI from "lil-gui";
+import { makeMagneticTubeGeometry, peakLineStrength, estimateTubeBytes } from "./field-line-tubes.js";
 import { SURFACE_TEXTURES, SURFACE_TEXTURE_OPTIONS } from "./surface-textures.js";
 
 const APP_BASE_URL = new URL(import.meta.env.BASE_URL || "./", window.location.href);
@@ -321,6 +322,12 @@ const params = {
   lineMin: 0.0,
   lineMax: 1.0,
   lineWidthPx: 2.0,
+  lineRenderMode: "lines",
+  lineTubeDiameter: 0.02,
+  lineTubeReference: 0.0,
+  lineTubeMinDiameter: 0.0,
+  lineTubeMaxDiameter: 0.08,
+  lineTubeSides: 8,
   lineOpacity: 0.95,
 
   showEarthSurface: false,
@@ -1150,9 +1157,13 @@ function updateFieldLineVisuals() {
       const mat = obj.material;
       if (mat && typeof mat === "object") {
         if ("linewidth" in mat) mat.linewidth = Math.max(1.0, Number(params.lineWidthPx));
-        mat.opacity = Number(params.lineOpacity);
-        mat.transparent = Number(params.lineOpacity) < 0.999;
-        mat.depthWrite = Number(params.lineOpacity) >= 0.999;
+        if (obj.userData?.isMagneticTube) {
+          applyOpacityAndDepth(mat, params.lineOpacity, "stable");
+        } else {
+          mat.opacity = Number(params.lineOpacity);
+          mat.transparent = Number(params.lineOpacity) < 0.999;
+          mat.depthWrite = Number(params.lineOpacity) >= 0.999;
+        }
         updateLineMaterialResolution(mat);
         mat.needsUpdate = true;
       }
@@ -2471,6 +2482,10 @@ function getFieldLineObjectCacheKey(basePath = dataBasePath) {
     basePath: String(basePath),
     display: params.fieldLineDisplay,
     stride: Math.max(1, Math.round(Number(params.lineStride))),
+    renderMode: params.lineRenderMode,
+    tube: [params.lineTubeDiameter, params.lineTubeReference, params.lineTubeMinDiameter,
+           params.lineTubeMaxDiameter, params.lineTubeSides],
+    radius: metadata?.r_outer,
     colourMode: params.lineColourMode,
     colormap: params.lineColormap,
     customColours: params.lineColormap === CUSTOM_COLOURMAP
@@ -2591,9 +2606,27 @@ async function buildFieldLineObjectCacheEntry(context = captureRenderContext()) 
       if (!availableModes.includes(mode)) continue;
       linesByMode[mode] = await loadLinesForMode(mode, context);
     }
+    if (context.params.lineRenderMode === "b2-tubes" && context.metadata.fields?.Babs
+        && (linesByMode.shell || []).some(line => !Array.isArray(line.strength))) {
+      const strength = await withCapturedRenderContext(context, () => loadField("Babs"));
+      linesByMode.shell = withCapturedRenderContext(context, () => linesByMode.shell.map(line => {
+        if (Array.isArray(line.strength)) return line;
+        return { ...line, strength_source: "viewer_grid_Babs",
+          strength: (line.points || []).map(p => Array.isArray(p) && p.length >= 3
+            ? sampleVolumeNearest(strength, p[0], p[1], p[2]) : NaN) };
+      }));
+    }
     const selected = selectFieldLinesByStride(linesByMode, context.params.lineStride);
+    const tubeReference = Number(context.params.lineTubeReference) > 0
+      ? Number(context.params.lineTubeReference) : peakLineStrength(Object.values(linesByMode).flat()) || 1;
+    if (context.params.lineRenderMode === "b2-tubes") {
+      const bytes = estimateTubeBytes(Object.values(selected).flat(), context.params.lineTubeSides);
+      if (bytes > 192 * 1024 * 1024) {
+        throw new Error("B² tubes exceed the geometry budget. Increase Line stride or reduce Tube sides.");
+      }
+    }
     for (const [mode, lines] of Object.entries(linesByMode)) {
-      const group = withCapturedRenderContext(context, () => makeFieldLineGroup(lines, mode, selected[mode]));
+      const group = withCapturedRenderContext(context, () => makeFieldLineGroup(lines, mode, selected[mode], tubeReference));
       group.visible = false;
       groups[mode] = group;
       allLoadedLines = allLoadedLines.concat(group.userData.lines || []);
@@ -6199,7 +6232,12 @@ function setStatusSummary(lastFieldName = null) {
     : "";
   const fieldText = `CMB=${params.cmbField}, ICB=${params.icbField}, R=${params.radialField}@${Number(params.radialSurfaceRadiusRo).toFixed(3)}ro${earthText}, Eq1=${params.equatorField}, Eq2=${params.equator2Field}, Mer1=${params.meridianField}, Mer2=${params.meridian2Field}`;
   const changed = lastFieldName ? ` | updated=${lastFieldName}` : "";
-  setStatus(`${dataset}${title}${sim}${lineMode}${fieldText}${changed} | grid ${metadata.nr} x ${metadata.ntheta} x ${metadata.nphi}`);
+  const groups = Object.values(fieldLineGroups).filter(Boolean);
+  const tubeInfo = params.showFieldLines && params.lineRenderMode === "b2-tubes"
+    ? ` | Tube diameter ∝ B²; reference |B|=${formatNumber(groups[0]?.userData.tubeReference || 1)}`
+      + (groups.some(g => g.userData.sampledTubeStrengths) ? " (legacy strengths sampled on viewer grid)" : "")
+      + (groups.some(g => g.userData.missingTubeStrengths) ? "; lines without strengths keep constant width" : "") : "";
+  setStatus(`${dataset}${title}${sim}${lineMode}${fieldText}${changed}${tubeInfo} | grid ${metadata.nr} x ${metadata.ntheta} x ${metadata.nphi}`);
 }
 
 async function rebuildCMB(options = {}) {
@@ -6658,42 +6696,72 @@ function selectFieldLinesByStride(linesByMode, requestedStride) {
   return selected;
 }
 
-function makeFieldLineGroup(lines, mode, selectedLines = lines) {
+function makeFieldLineGroup(lines, mode, selectedLines = lines, tubeReference = 1) {
   const group = new THREE.Group();
   group.name = `magnetic-field-lines-${mode}`;
   group.userData.isMagneticFieldLineGroup = true;
   group.userData.lineMode = mode;
 
   const material = makeLineMaterial();
+  const tubeMaterial = params.lineRenderMode === "b2-tubes"
+    ? new THREE.MeshPhongMaterial({ vertexColors: true, side: THREE.DoubleSide, shininess: 20 }) : null;
+  if (tubeMaterial) applyOpacityAndDepth(tubeMaterial, params.lineOpacity, "stable");
+  group.userData.tubeReference = tubeMaterial ? tubeReference : null;
+  group.userData.sampledTubeStrengths = false;
+  group.userData.missingTubeStrengths = 0;
   const loadedLines = [];
 
   const [vmin, vmax] = getFieldLineRange(lines);
   group.userData.strengthRange = [vmin, vmax];
 
-  for (const line of selectedLines) {
-    if (!Array.isArray(line.points) || line.points.length < 2) continue;
+  try {
+    for (const line of selectedLines) {
+      if (!Array.isArray(line.points) || line.points.length < 2) continue;
 
-    const positions = [];
-    const colors = [];
-    const strengths = Array.isArray(line.strength) ? line.strength : null;
-    for (let j = 0; j < line.points.length; j++) {
-      const p = line.points[j];
-      positions.push(p[0], p[1], p[2]);
-      const rawStrength = strengths ? Number(strengths[j]) : NaN;
-      const c = getFieldLineVertexColor(rawStrength, line.polarity ?? 1, vmin, vmax);
-      colors.push(c.r, c.g, c.b);
+      const positions = [];
+      const colors = [];
+      const strengths = Array.isArray(line.strength) ? line.strength : null;
+      for (let j = 0; j < line.points.length; j++) {
+        const p = line.points[j];
+        positions.push(p[0], p[1], p[2]);
+        const rawStrength = strengths ? Number(strengths[j]) : NaN;
+        const c = getFieldLineVertexColor(rawStrength, line.polarity ?? 1, vmin, vmax);
+        colors.push(c.r, c.g, c.b);
+      }
+
+      let object;
+      if (tubeMaterial && strengths) {
+        const radius = Number(metadata.r_outer);
+        const geometry = makeMagneticTubeGeometry(line.points, strengths, colors, {
+          reference: tubeReference, diameter: params.lineTubeDiameter * radius,
+          minimum: params.lineTubeMinDiameter * radius, maximum: params.lineTubeMaxDiameter * radius,
+          sides: params.lineTubeSides, lengthScale: radius,
+        });
+        if (!geometry) continue;
+        object = new THREE.Mesh(geometry, tubeMaterial);
+        object.userData.isMagneticTube = true;
+        if (line.strength_source === "viewer_grid_Babs") group.userData.sampledTubeStrengths = true;
+      } else {
+        const geometry = new LineGeometry();
+        geometry.setPositions(positions);
+        geometry.setColors(colors);
+        object = new Line2(geometry, material);
+        object.computeLineDistances();
+        if (tubeMaterial) group.userData.missingTubeStrengths++;
+      }
+      object.userData.lineMode = mode;
+      group.add(object);
+      loadedLines.push(line);
     }
-
-    const geometry = new LineGeometry();
-    geometry.setPositions(positions);
-    geometry.setColors(colors);
-    const object = new Line2(geometry, material);
-    object.computeLineDistances();
-    object.userData.lineMode = mode;
-    group.add(object);
-    loadedLines.push(line);
+  } catch (error) {
+    disposeFieldLineGroupResources(group);
+    material.dispose();
+    tubeMaterial?.dispose();
+    throw error;
   }
 
+  if (!group.children.some(object => object.material === material)) material.dispose();
+  if (tubeMaterial && !group.children.some(object => object.material === tubeMaterial)) tubeMaterial.dispose();
   group.userData.lines = loadedLines;
   return group;
 }
@@ -6894,6 +6962,8 @@ const VIEW_STATE_NUMBER_LIMITS = {
   earthRadiusScale: [1, Infinity], isoResolution: [8, 96], lineStride: [1, 1000],
   cameraDistance: [1e-12, Infinity], cameraFovDeg: [1, 179],
   radialSurfaceRadiusRo: [0, 1],
+  lineTubeDiameter: [0.00001, 0.25], lineTubeReference: [0, 1e100],
+  lineTubeMinDiameter: [0, 0.25], lineTubeMaxDiameter: [0.00001, 0.25], lineTubeSides: [3, 16],
 };
 
 function getAvailableColormapNames() {
@@ -6944,6 +7014,8 @@ function applySnapshotParam(key, value) {
   if (key.endsWith("Colormap") && !getAvailableColormapNames().includes(value)) return false;
   if (VIEW_STATE_SCALE_KEYS.has(key) && !["symmetric", "minmax", "manual"].includes(value)) return false;
   if (!validFieldForState(key, value)) return false;
+  if (key === "lineRenderMode" && !["lines", "b2-tubes"].includes(value)) return false;
+  if (key === "lineTubeSides" && !Number.isInteger(value)) return false;
   if (key === "fieldLineDisplay" && !getAvailableFieldLineModes().includes(value)) return false;
   if (key === "earthDisplayMode" && !["texture", "magnetic"].includes(value)) return false;
   if (key === "earthTextureBody" && !Object.prototype.hasOwnProperty.call(SURFACE_TEXTURES, value)) return false;
@@ -7614,6 +7686,14 @@ function buildGui() {
     lineFolder.add(params, "lineScale", ["minmax", "manual"]).name("Range").onChange(refreshFieldLines);
     lineFolder.add(params, "lineMin").name("Manual min").onFinishChange(refreshFieldLines);
     lineFolder.add(params, "lineMax").name("Manual max").onFinishChange(refreshFieldLines);
+    lineFolder.add(params, "lineRenderMode", { "Constant-width lines": "lines", "B² tubes": "b2-tubes" })
+      .name("Render as").onChange(refreshFieldLines);
+    const tubeFolder = lineFolder.addFolder("B² tube diameter");
+    tubeFolder.add(params, "lineTubeDiameter", 0.00001, 0.25, 0.0001).name("Diameter / ro at ref").onFinishChange(refreshFieldLines);
+    tubeFolder.add(params, "lineTubeReference").min(0).name("Ref |B| (0 = auto)").onFinishChange(refreshFieldLines);
+    tubeFolder.add(params, "lineTubeMinDiameter", 0, 0.25, 0.0001).name("Minimum / ro").onFinishChange(refreshFieldLines);
+    tubeFolder.add(params, "lineTubeMaxDiameter", 0.00001, 0.25, 0.0001).name("Maximum / ro").onFinishChange(refreshFieldLines);
+    tubeFolder.add(params, "lineTubeSides", 3, 16, 1).name("Tube sides").onFinishChange(refreshFieldLines);
     lineFolder.add(params, "lineWidthPx", 1, 12, 0.25).name("Thickness px").onChange(updateFieldLineVisuals);
     lineFolder.add(params, "lineOpacity", 0.05, 1.0, 0.01).name("Opacity").onChange(updateFieldLineVisuals);
   } else {

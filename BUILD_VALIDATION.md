@@ -1,5 +1,26 @@
 # Integrated package validation
 
+## Incremental conversion and B² tubes (2026-09-07)
+
+- All 63 converter tests pass. Eleven incremental tests cover source/code
+  invalidation, force, corruption repair, precision, mutation isolation,
+  failed-output preservation, tracing metadata and sequence reuse. For each
+  converter, adding diagnostics with cached transforms produces byte-for-byte
+  identical `.f32` files to a fresh conversion. Native readers/transforms use
+  analytical fixtures; no production HPC snapshot was available for this run.
+- All 74 viewer tests pass. New tests check the B² diameter law, clipping,
+  ring radii, normals, caps, invalid samples, paired stride, shared references,
+  legacy volume sampling, DTV2 validation and retention of existing lines when
+  a replacement exceeds the memory budget. Geometry tests use real Three.js
+  objects and ray intersections; UI/network objects use test doubles.
+- Python/JavaScript syntax checks, `git diff --check` and the production build
+  pass. The existing large JavaScript chunk advisory remains. No browser/GPU
+  visual test was performed.
+- After applying, add `--incremental` to an existing converter command. Its
+  first run populates the native cache; a repeat skips an unchanged bundle.
+  In the viewer select **Render as → B² tubes** and use a positive reference
+  strength when comparing figures on the same diameter scale.
+
 ## Switching datasets through Controls (2026-09-07)
 
 - Reproduced stale metadata, coordinates, sequence indexes and scalar volumes

@@ -207,7 +207,7 @@ def validate_bundle(root):
 
 def _managed_names(root):
     root = Path(root)
-    names = {"metadata.json", "coordinates.json", "profiles.json", "sequence.json", "frames"}
+    names = {"metadata.json", "coordinates.json", "profiles.json", "sequence.json", "frames", "conversion_manifest.json"}
     for pattern in ("*_volume.f32", "*_cmb.f32", "*_earth.f32", "B_lines*.json"):
         names.update(path.name for path in root.glob(pattern))
     if (root / "sequence.json").exists():

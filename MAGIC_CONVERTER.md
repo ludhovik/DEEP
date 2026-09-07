@@ -57,6 +57,11 @@ python tools/convert_magic_to_viewer.py \
 If `--ivar` is omitted, the highest numbered matching graphic is selected. Use
 `--average` to select `G_ave.TAG`.
 
+Add `--incremental` to retain native calculation results for later reuse,
+including when adding diagnostics or extending a sequence. The first run
+populates the cache. See [Incremental conversion](README.md#incremental-conversion)
+for cache placement, validation and `--force`.
+
 After conversion, start DEEPscope and load:
 
 ```text

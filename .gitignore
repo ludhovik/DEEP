@@ -13,3 +13,5 @@ __pycache__/
 .deepscope-stage-*/
 .deepscope-backup-*/
 .deepscope-backups/
+
+.deepscope-cache/
