@@ -115,10 +115,10 @@ function viewer() {
   });
   for (const name of ["cmbMesh", "icbMesh", "radialSurfaceMesh", "equatorMesh", "equator2Mesh", "meridianMesh", "meridian2Mesh", "earthMesh", "isoPositiveMesh", "isoNegativeMesh", "equatorFillerMesh", "equator2FillerMesh", "meridianFillerMesh", "meridian2FillerMesh"]) ctx[name] = null;
   vm.runInContext(constant("params", "\n};") + "\nglobalThis.params = params;", ctx);
-  Object.assign(ctx.params, { showIsosurfaces: true, showIsoNegative: false });
-  for (const name of ["VIEW_STATE_PREFIX", "LEGACY_VIEW_STATE_PREFIX", "VIEW_STATE_EXCLUDED_PARAMS", "VIEW_STATE_PARAM_TYPES", "VIEW_STATE_SCALE_KEYS", "VIEW_STATE_NUMBER_LIMITS", "DATASET_FIELD_PARAM_KEYS", "DATASET_VIEW_FILENAME", "DATASET_VIEW_TIMEOUT_MS", "MAX_DATASET_VIEW_CODE_LENGTH", "DATASET_FETCH_TIMEOUT_MS"]) {
+  for (const name of ["VIEW_STATE_PREFIX", "LEGACY_VIEW_STATE_PREFIX", "VIEW_STATE_EXCLUDED_PARAMS", "VIEW_STATE_PARAM_TYPES", "DEFAULT_VIEW_PARAMS", "VIEW_STATE_SCALE_KEYS", "VIEW_STATE_NUMBER_LIMITS", "DATASET_FIELD_PARAM_KEYS", "DATASET_VIEW_FILENAME", "DATASET_VIEW_TIMEOUT_MS", "MAX_DATASET_VIEW_CODE_LENGTH", "DATASET_FETCH_TIMEOUT_MS"]) {
     vm.runInContext(constant(name), ctx);
   }
+  Object.assign(ctx.params, { showIsosurfaces: true, showIsoNegative: false });
   for (const name of [
     "clamp", "formatBytes", "roundedCacheNumber", "captureRenderContext", "renderContextIsCurrent",
     "withCapturedRenderContext", "renderSignature", "beginRenderRequest", "renderRequestIsCurrent",
@@ -138,7 +138,7 @@ function viewer() {
     "loadFrameByIndex", "rebuildEquator", "disposeObject", "fetchFieldLineFile",
     "getFieldLineFilename", "loadLinesForMode", "inferLineType", "fieldLinePairKey", "selectFieldLinesByStride",
     "buildFieldLineObjectCacheEntry", "ensureFieldLineObjectCacheEntry", "loadFieldLines", "updateFieldLineVisuals",
-    "applyViewStateParams", "refreshViewPresentation", "applyViewState", "loadDatasetViewState",
+    "applyViewStateParams", "applyDefaultDatasetView", "refreshViewPresentation", "applyViewState", "loadDatasetViewState",
     "updateEarthSurface", "ensureEarthTexture", "updateSurfaceAttribution",
     "viewStateBlob", "writeDatasetViewFile", "saveViewStateCode", "downloadViewStateCode",
     "parseFolderSourcePath", "fileFromDirectoryHandle", "parseLocalFilesystemPath", "encodeLocalFilesystemPath",
@@ -483,6 +483,7 @@ test("replacing a secondary folder refreshes its data while preserving the prima
   selections.push(selectedFolder(ctx, 1), selectedFolder(ctx, 2), selectedFolder(ctx, 3));
   await ctx.selectDatasetFolder("primary");
   const primaryPath = ctx.datasetRootPath;
+  Object.assign(ctx.params, { backgroundColor: "#345678", cameraDistance: 7, legendCollapsed: true });
   await ctx.selectDatasetFolder("secondary");
   const oldSecondary = ctx.secondaryDataset.basePath;
   assert.equal((await ctx.loadFloat32ForBase(oldSecondary, "ur.f32", 36))[0], 2);
@@ -495,6 +496,9 @@ test("replacing a secondary folder refreshes its data while preserving the prima
   assert.equal(ctx.datasetRootPath, primaryPath);
   assert.equal(ctx.displayed[0], 3);
   assert.equal(ctx.params.equatorField, "D2:ur");
+  assert.equal(ctx.params.backgroundColor, "#345678");
+  assert.equal(ctx.params.cameraDistance, 7);
+  assert.equal(ctx.params.legendCollapsed, true);
   assert.equal((await ctx.loadFloat32ForBase(primaryPath, "ur.f32", 36))[0], 1);
   assert.equal(ctx.datasetFolderSources.size, 2);
 });
@@ -1164,11 +1168,15 @@ test("sequence frames read their own coordinate file even when dimensions match"
   };
   ctx.rebuildAllMeshes = async options => { reuseGeometry = options.reuseGeometry; };
   ctx.params.showFieldLines = false;
+  Object.assign(ctx.params, { backgroundColor: "#345678", cameraDistance: 7, legendCollapsed: true });
   assert.equal(await ctx.loadFrameByIndex(0), true);
   assert.equal(coordinateReads, 1);
   assert.equal(ctx.coords, newCoords);
   assert.equal(reuseGeometry, false);
   assert.equal(ctx.sequenceFrameLoading, false);
+  assert.equal(ctx.params.backgroundColor, "#345678");
+  assert.equal(ctx.params.cameraDistance, 7);
+  assert.equal(ctx.params.legendCollapsed, true);
 });
 
 test("dataset view is applied before the first render, without changing its data source", async () => {
@@ -1196,22 +1204,172 @@ test("dataset view is applied before the first render, without changing its data
   assert.equal(ctx.datasetLoadInProgress, false);
 });
 
+test("reloading after deleting a Figshare or Zenodo view resets the rendered appearance and camera", async () => {
+  for (const provider of ["figshare", "zenodo"]) {
+    const { ctx, state, root } = repositoryViewLoader(provider, "33455530");
+    const readResource = ctx.fetchDatasetResource, fetch = ctx.fetchWithTimeout;
+    datasetLoader(ctx, null);
+    ctx.fetchDatasetResource = readResource;
+    ctx.params.datasetPath = root;
+    ctx.params.sequenceCacheLimitMB = 768;
+    ctx.params.secondaryDatasetPath = "keep-this-comparison-path";
+    ctx.fetchWithTimeout = (url, options, timeout) => url.includes("/view-")
+      ? Promise.resolve(new Response(presetCode(ctx, {
+        cameraDistance: 7, cameraAzimuthDeg: 25, cameraElevationDeg: 60,
+        cameraTargetX: 0.2, cameraTargetY: -0.1, cameraTargetZ: 0.5, cameraFovDeg: 30,
+        backgroundColor: "#abcdef", cmbScale: "manual", cmbMin: -8, cmbMax: 9,
+        showCMB: false, showIsosurfaces: true, isoPositiveValue: 0.8,
+        legendCollapsed: true, titleVisible: false, titleWidth: 700,
+        exportPanelCollapsed: true, earthTextureBody: "mars", lineRenderMode: "b2-tubes",
+      }))) : fetch(url, options, timeout);
+    Object.assign(ctx.THREE, { Vector3: RealTHREE.Vector3, MathUtils: RealTHREE.MathUtils });
+    ctx.camera = new RealTHREE.PerspectiveCamera(45, 1, 0.001, 100);
+    ctx.camera.position.set(0, -3, 1.35);
+    ctx.controls = { target: new RealTHREE.Vector3(), update: () => {} };
+    for (const name of ["syncCameraParamsFromCamera", "applyCameraViewFromParams"]) {
+      vm.runInContext(definition(name), ctx);
+    }
+    const renders = [];
+    ctx.rebuildAllMeshes = async () => renders.push({ ...ctx.params });
+    let message;
+    ctx.setStatusSummary = text => { message = text; };
+    assert.equal(await ctx.loadDatasetFromParams(), true);
+    assert.equal(ctx.params.cameraDistance, 7);
+    assert.equal(ctx.camera.fov, 30);
+    assert.equal(renders[0].backgroundColor, "#abcdef");
+    assert.match(message, /view\.DTV2 applied/);
+
+    state.hasView = false;
+    assert.equal(await ctx.loadDatasetFromParams(), true);
+    const displayed = renders.at(-1);
+    assert.equal(renders.length, 2);
+    assert.equal(displayed.cameraDistance, 3.29);
+    assert.equal(displayed.cameraAzimuthDeg, -90);
+    assert.equal(displayed.cameraElevationDeg, 24);
+    assert.ok(Math.abs(ctx.camera.position.length() - 3.29) < 1e-12);
+    assert.deepEqual(ctx.controls.target.toArray(), [0, 0, 0]);
+    assert.deepEqual(ctx.camera.up.toArray(), [0, 0, 1]);
+    assert.equal(ctx.camera.fov, 45);
+    assert.equal(displayed.backgroundColor, "#050505");
+    assert.equal(displayed.cmbScale, "symmetric");
+    assert.equal(displayed.cmbMin, -1);
+    assert.equal(displayed.cmbMax, 1);
+    assert.equal(displayed.showCMB, true);
+    assert.equal(displayed.showIsosurfaces, false);
+    assert.equal(displayed.isoPositiveValue, 0.1);
+    assert.equal(displayed.legendCollapsed, false);
+    assert.equal(displayed.titleVisible, true);
+    assert.equal(displayed.titleWidth, 390);
+    assert.equal(displayed.exportPanelCollapsed, false);
+    assert.equal(displayed.earthTextureBody, "earth");
+    assert.equal(displayed.lineRenderMode, "lines");
+    assert.equal(ctx.params.datasetPath, root);
+    assert.equal(ctx.params.secondaryDatasetPath, "keep-this-comparison-path");
+    assert.equal(ctx.params.sequenceCacheLimitMB, 768);
+    assert.match(message, /default view applied/);
+    assert.doesNotMatch(message, /view\.DTV2 applied/);
+  }
+});
+
+test("a new local dataset without a view starts with defaults and fields from its own metadata", async () => {
+  const { ctx, selections } = localDatasetViewer();
+  const first = selectedFolder(ctx, 1), second = selectedFolder(ctx, 2);
+  first.files.set("view.DTV2", new Blob([presetCode(ctx, {
+    cameraDistance: 7, backgroundColor: "#abcdef", showCMB: false,
+    legendCollapsed: true, isoField: "Br",
+  })]));
+  const meta = JSON.parse(await second.files.get("metadata.json").text());
+  meta.fields = { Comp: "Comp.f32" };
+  second.files.set("metadata.json", new Blob([JSON.stringify(meta)]));
+  second.files.set("Comp.f32", new Blob([new Float32Array(36).fill(2)]));
+  selections.push(first, second);
+  assert.equal(await ctx.selectDatasetFolder("primary"), true);
+  assert.equal(ctx.params.cameraDistance, 7);
+  const firstPath = ctx.datasetRootPath;
+  assert.equal(await ctx.selectDatasetFolder("primary"), true);
+  assert.notEqual(ctx.datasetRootPath, firstPath);
+  assert.equal(ctx.params.cameraDistance, 3.29);
+  assert.equal(ctx.params.backgroundColor, "#050505");
+  assert.equal(ctx.params.showCMB, true);
+  assert.equal(ctx.params.legendCollapsed, false);
+  for (const key of ["cmbField", "icbField", "equatorField", "isoField"]) {
+    assert.equal(ctx.params[key], "Comp");
+  }
+  assert.equal(ctx.displayed[0], 2);
+  assert.equal(ctx.activeDatasetFolderSource, second);
+});
+
+test("sequence view removal tries the first-frame fallback then defaults when both are absent", async () => {
+  const ctx = viewer();
+  datasetLoader(ctx, null);
+  let rootView = true, frameView = true;
+  ctx.params.datasetPath = "sequence";
+  ctx.fetchSequenceIndexForRoot = async () => ({ frames: [{ path: "frames/first" }, { path: "frames/second" }] });
+  ctx.fetchDatasetResource = async url => {
+    const isRoot = url === "sequence/view.DTV2";
+    return (isRoot ? rootView : frameView)
+      ? new Response(presetCode(ctx, { cameraDistance: isRoot ? 6 : 8 }))
+      : new Response("", { status: 404 });
+  };
+  assert.equal(await ctx.loadDatasetFromParams(), true);
+  assert.equal(ctx.params.cameraDistance, 6);
+  rootView = false;
+  assert.equal(await ctx.loadDatasetFromParams(), true);
+  assert.equal(ctx.params.cameraDistance, 8);
+  frameView = false;
+  assert.equal(await ctx.loadDatasetFromParams(), true);
+  assert.equal(ctx.params.cameraDistance, 3.29);
+  assert.equal(ctx.dataBasePath, "sequence/frames/first");
+  assert.equal(ctx.params.sequencePlaybackFirst, 0);
+  assert.equal(ctx.params.sequencePlaybackLast, 1);
+});
+
+test("a partial new dataset view starts from defaults while failed no-view loads preserve the old view", async () => {
+  const ctx = viewer();
+  datasetLoader(ctx, presetCode(ctx, { backgroundColor: "#fedcba" }));
+  Object.assign(ctx.params, { cameraDistance: 9, backgroundColor: "#123456", legendCollapsed: true });
+  assert.equal(await ctx.loadDatasetFromParams(), true);
+  assert.equal(ctx.params.backgroundColor, "#fedcba");
+  assert.equal(ctx.params.cameraDistance, 3.29);
+  assert.equal(ctx.params.legendCollapsed, false);
+  for (const stage of ["metadata", "volume", "render"]) {
+    const ctx = viewer();
+    datasetLoader(ctx, null);
+    ctx.console = { ...console, error: () => {} };
+    Object.assign(ctx.params, { cameraDistance: 9, backgroundColor: "#123456", legendCollapsed: true });
+    const oldMetadata = ctx.metadata;
+    const fail = async () => { throw new Error(`New dataset ${stage} failure`); };
+    if (stage === "metadata") ctx.loadMetadataForBase = fail;
+    else if (stage === "volume") ctx.loadFloat32ForBase = fail;
+    else ctx.rebuildAllMeshes = async () => { if (ctx.datasetRootPath === "new-dataset") await fail(); };
+    assert.equal(await ctx.loadDatasetFromParams(), false);
+    assert.equal(ctx.params.cameraDistance, 9);
+    assert.equal(ctx.params.backgroundColor, "#123456");
+    assert.equal(ctx.params.legendCollapsed, true);
+    assert.equal(ctx.datasetRootPath, "demo");
+    assert.equal(ctx.metadata, oldMetadata);
+  }
+});
+
 test("missing, malformed and unsupported optional view files do not block dataset loading", async () => {
   for (const contents of [null, "not a code", "DTV2:bad", "<!doctype html><html></html>",
     "DTV2:" + btoa(JSON.stringify({ version: 2, scope: "view-only", params: [] })),
     "DTV2:" + btoa(JSON.stringify({ version: 1, params: { cameraDistance: 9 } }))]) {
     const ctx = viewer();
     datasetLoader(ctx, contents);
-    const distance = ctx.params.cameraDistance;
+    Object.assign(ctx.params, { cameraDistance: 9, backgroundColor: "#abcdef", showCMB: false, legendCollapsed: true });
     assert.equal(await ctx.loadDatasetFromParams(), true);
-    assert.equal(ctx.params.cameraDistance, distance);
+    assert.equal(ctx.params.cameraDistance, 3.29);
+    assert.equal(ctx.params.backgroundColor, "#050505");
+    assert.equal(ctx.params.showCMB, true);
+    assert.equal(ctx.params.legendCollapsed, false);
   }
 });
 
 test("an unrenderable optional view falls back to the normal view of the new dataset", async () => {
   const ctx = viewer();
   datasetLoader(ctx, presetCode(ctx, { cameraDistance: 6, isoPositiveValue: 0.8 }));
-  const originalDistance = ctx.params.cameraDistance;
+  Object.assign(ctx.params, { cameraDistance: 9, backgroundColor: "#abcdef", legendCollapsed: true });
   const seen = [];
   ctx.rebuildAllMeshes = async () => {
     seen.push(ctx.params.cameraDistance);
@@ -1220,9 +1378,11 @@ test("an unrenderable optional view falls back to the normal view of the new dat
   let message;
   ctx.setStatus = (text, options) => { if (options?.level === "warning") message = text; };
   assert.equal(await ctx.loadDatasetFromParams(), true);
-  assert.deepEqual(seen, [6, originalDistance]);
+  assert.deepEqual(seen, [6, 3.29]);
   assert.equal(ctx.datasetRootPath, "new-dataset");
   assert.equal(ctx.params.isoPositiveValue, 0.1);
+  assert.equal(ctx.params.backgroundColor, "#050505");
+  assert.equal(ctx.params.legendCollapsed, false);
   assert.match(message, /default view used/);
 });
 
@@ -1231,6 +1391,7 @@ test("a failed dataset switch restores the previous appearance and folder save t
   ctx.activeDatasetFolderSource = old.source;
   ctx.console = { ...console, error: () => {} };
   datasetLoader(ctx, presetCode(ctx, { cameraDistance: 6, backgroundColor: "#abcdef" }));
+  Object.assign(ctx.params, { cameraDistance: 9, backgroundColor: "#123456", legendCollapsed: true });
   ctx.params.sequencePlaying = true;
   const oldMetadata = ctx.metadata, oldColour = ctx.params.backgroundColor;
   ctx.rebuildAllMeshes = async () => {
@@ -1240,6 +1401,8 @@ test("a failed dataset switch restores the previous appearance and folder save t
   assert.equal(ctx.datasetRootPath, "demo");
   assert.equal(ctx.metadata, oldMetadata);
   assert.equal(ctx.params.backgroundColor, oldColour);
+  assert.equal(ctx.params.cameraDistance, 9);
+  assert.equal(ctx.params.legendCollapsed, true);
   assert.equal(ctx.activeDatasetFolderSource, old.source);
   assert.equal(ctx.params.sequencePlaying, false);
 });
@@ -1297,13 +1460,13 @@ test("view files use existing HTTP, local filesystem, Figshare and Zenodo routin
   assert.ok(calls.every(call => call.cache === "no-store" && call.timeout === 5000));
 });
 
-function repositoryViewLoader(provider) {
+function repositoryViewLoader(provider, recordId = "33455986") {
   const ctx = viewer(), calls = [];
   const state = { revision: 1, hasView: true };
-  const root = `${provider}:33455986`;
+  const root = `${provider}:${recordId}`;
   const apiUrl = provider === "figshare"
-    ? "https://deep-figshare-proxy.ludhovik-research.workers.dev/figshare/articles/33455986"
-    : "https://zenodo.org/api/records/33455986";
+    ? `https://deep-figshare-proxy.ludhovik-research.workers.dev/figshare/articles/${recordId}`
+    : `https://zenodo.org/api/records/${recordId}`;
   ctx.remoteRepositoryIndexCache = new Map();
   ctx.fetchWithTimeout = async (url, options, timeout) => {
     calls.push({ url, ...options, timeout });

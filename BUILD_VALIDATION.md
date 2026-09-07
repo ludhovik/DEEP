@@ -1,5 +1,21 @@
 # Integrated package validation
 
+## Missing/deleted dataset view reset (2026-09-07)
+
+- All 93 viewer/proxy tests pass. New scenarios open a Figshare/Zenodo preset,
+  remove it from the record fixture, and reopen through the actual dataset
+  loader. They check the rendered parameters and real Three.js camera position,
+  target, up vector and FOV, along with colour scales, visibility and panel layout.
+- Local-folder switching checks metadata-dependent field defaults. Additional
+  scenarios cover sequence-root deletion with/without an initial-frame fallback,
+  partial presets, invalid presets, rendering fallback, and preservation of the
+  previous view when metadata, volume validation or rendering fails.
+- Existing frame and secondary-folder tests now explicitly verify that their
+  camera, background and legend settings survive those operations.
+- Production build, JavaScript syntax and whitespace checks pass. Network and
+  rendering operations use test doubles; no live record or browser/GPU validation
+  was possible. The existing large JavaScript chunk advisory remains.
+
 ## Refresh published dataset views (2026-09-07)
 
 - All 89 viewer/proxy tests pass. New fixtures publish changed download IDs or

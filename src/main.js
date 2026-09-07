@@ -7004,6 +7004,12 @@ const VIEW_STATE_PARAM_TYPES = Object.freeze(Object.fromEntries(
   Object.entries(params).filter(([, value]) => typeof value !== "function")
     .map(([key, value]) => [key, typeof value])
 ));
+// Capture the startup appearance before a dataset or user changes it. Dataset
+// paths, playback ranges, cache preferences and action callbacks stay separate.
+const DEFAULT_VIEW_PARAMS = Object.freeze(Object.fromEntries(
+  Object.entries(params).filter(([key, value]) =>
+    typeof value !== "function" && !VIEW_STATE_EXCLUDED_PARAMS.has(key))
+));
 const VIEW_STATE_SCALE_KEYS = new Set([
   "cmbScale", "icbScale", "radialScale", "earthScale", "equatorScale", "equator2Scale",
   "meridianScale", "meridian2Scale", "lineScale",
@@ -7019,6 +7025,11 @@ const VIEW_STATE_NUMBER_LIMITS = {
 
 function getAvailableColormapNames() {
   return colourMapNames;
+}
+
+function applyDefaultDatasetView() {
+  Object.assign(params, DEFAULT_VIEW_PARAMS);
+  applyDefaultFields();
 }
 
 function collectViewState() {
@@ -7444,7 +7455,9 @@ async function loadDatasetFromParams() {
     disposeHeavyPlaybackCaches();
     committed = true;
 
-    applyDefaultFields();
+    // Opening or explicitly reloading a primary dataset starts a new view.
+    // A deleted/missing preset must not leave the preceding preset in memory.
+    applyDefaultDatasetView();
     const fallbackParams = { ...params };
     let usedDatasetView = false;
     let skippedViewFields = [];
@@ -7473,7 +7486,7 @@ async function loadDatasetFromParams() {
     rememberDatasetRoot(requestedRoot);
     const viewStatus = usedDatasetView
       ? `; ${DATASET_VIEW_FILENAME} applied${skippedViewFields.length ? `; unavailable fields skipped: ${[...new Set(skippedViewFields)].join(", ")}` : ""}`
-      : "";
+      : "; default view applied";
     viewerStatus.clear(null, previousNoticeVersion);
     setStatusSummary(`dataset:${datasetRootPath}${viewStatus}`);
     if (datasetView.warnings.length) setStatus(datasetView.warnings.join("\n"), { level: "warning", scope: "Dataset view" });

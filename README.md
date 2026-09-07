@@ -456,6 +456,14 @@ automatically applies that view when opening the primary dataset, before the
 first render. The convention works with local folders, local-server paths,
 HTTP datasets, Figshare and Zenodo records that include the file.
 
+Opening a primary dataset, including **Load primary path** on the same dataset,
+starts with the default camera, colours, visibility, scales, lines and panel
+layout, then applies that dataset's saved view. Deleting the published view file
+therefore restores the default appearance when the dataset is reopened. Partial
+dataset view files also start from defaults, without inheriting the preceding
+dataset's settings. To transfer your current setup deliberately, copy its view
+code before opening another dataset and load that code afterwards.
+
 To save the current setup, use **View state → Save view.DTV2**:
 
 1. For a folder opened with **Select primary folder**, a supporting browser asks
@@ -484,10 +492,12 @@ usable view file, the initial frame's `view.DTV2` is tried. The view is applied
 once when opening the sequence, not at each playback frame. Secondary datasets
 do not replace the primary view.
 
-A missing view file leaves normal loading unchanged. Invalid/unreadable view
-files are reported without blocking the dataset; optional network lookups have
-a five-second timeout. If saved settings fail to render, the viewer retries the
-new dataset with its normal view. Compatible settings are applied, unavailable
+A missing view file uses the default appearance, reported as **default view
+applied** in the title. Invalid/unreadable view files are reported without
+blocking the dataset; optional network lookups have a five-second timeout. If
+saved settings fail to render, the viewer retries the new dataset with its
+default view. A failed dataset replacement restores the previous dataset and
+view. Compatible saved settings are applied, unavailable
 fields are skipped, and dataset paths/frame numbers embedded in a code are
 ignored. Re-running a converter preserves a `view.DTV2` at the output root.
 

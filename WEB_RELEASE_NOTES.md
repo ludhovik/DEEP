@@ -1,5 +1,16 @@
 # v0.4.0 — static hosted/local-data viewer
 
+## Reset views when opening datasets (2026-09-07)
+
+- Start each primary dataset opening/reload from the default appearance, then
+  apply its optional `view.DTV2`. Missing or deleted files no longer leave the
+  preceding view in memory. Partial dataset presets start from the same defaults.
+- Report **default view applied** when no usable preset is applied. Select fields
+  from the newly loaded metadata and retain the old view if replacement fails.
+- Preserve the current view during sequence frame changes and secondary loads.
+  The root view still takes precedence over the initial frame's optional view.
+  This update requires a viewer deployment; the existing Worker remains valid.
+
 ## Refresh published dataset views (2026-09-07)
 
 - Refresh the Figshare/Zenodo file index as well as the contents when reading
