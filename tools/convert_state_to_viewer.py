@@ -68,7 +68,7 @@ EARTH_RADIUS_KM = 6371.0
 CMB_RADIUS_KM = 3480.0
 DEFAULT_EARTH_RADIUS_SCALE = EARTH_RADIUS_KM / CMB_RADIUS_KM
 DEFAULT_EARTH_BR_LMAX = 13
-CONVERTER_PACKAGE_VERSION = "3.5.0"
+CONVERTER_PACKAGE_VERSION = "3.6.0"
 
 
 # -----------------------------------------------------------------------------
@@ -2754,6 +2754,11 @@ def convert_state(args: argparse.Namespace) -> None:
     print("Loading spectral state...")
     state = load_state(path)
     radial_representations = read_state_radial_representations(path)
+    try:
+        from inner_core import read_leeds_inner_core, extend_leeds_inner_core
+    except ImportError:
+        from tools.inner_core import read_leeds_inner_core, extend_leeds_inner_core
+    inner_core_state = read_leeds_inner_core(path)
 
     uP = state["uP"]
     uT = state["uT"]
@@ -2783,7 +2788,7 @@ def convert_state(args: argparse.Namespace) -> None:
         flow_zero_absolute_tolerance=args.flow_zero_abs_tol,
         minimum_inner_core_points=args.min_inner_core_points,
         minimum_inner_core_radius_fraction=args.min_inner_core_radius_fraction,
-        requested_geometry=args.geometry,
+        requested_geometry="shell" if inner_core_state is not None and args.geometry == "conducting-inner-core" else args.geometry,
         fluid_inner_radius=args.fluid_inner_radius,
     )
     center_mask = full_sphere_center_mask(r, args.center_tolerance)
@@ -3762,6 +3767,11 @@ def convert_state(args: argparse.Namespace) -> None:
     with open(outdir / "metadata.json", "w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2, allow_nan=False)
 
+    if inner_core_state is not None:
+        extend_leeds_inner_core(outdir, path, user_modules, inner=inner_core_state)
+        metadata = json.loads((outdir / "metadata.json").read_text())
+        nr_out = metadata["nr"]
+
     print("Done.")
     print(f"Viewer data written to: {outdir.resolve()}")
     print(f"Grid written: nr={nr_out}, ntheta={ntheta_out}, nphi={nphi_out}")
@@ -3776,7 +3786,17 @@ def run_leeds_conversion(args):
         inputs = [p for p in list_state_files(args.folder, args.pattern) if parse_state_number(p) in wanted]
     else:
         inputs = [latest_state_file(args.folder, args.pattern) if args.folder else args.state]
-    run_conversion(args, "leeds", inputs, convert_state, backend_files=[user_modules.__file__])
+    def inner_core_update(root, meta, sources):
+        try:
+            from inner_core import extend_leeds_inner_core
+        except ImportError:
+            from tools.inner_core import extend_leeds_inner_core
+        source = str(Path(meta["source_state"]).expanduser().resolve())
+        if source not in sources:
+            raise ValueError("Cannot match this frame's source_state to the verified input files.")
+        extend_leeds_inner_core(root, source, user_modules, required=True)
+    run_conversion(args, "leeds", inputs, convert_state, backend_files=[user_modules.__file__],
+                   inner_core_update=inner_core_update)
 
 
 def main() -> None:

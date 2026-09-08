@@ -70,7 +70,7 @@ CMB_RADIUS_KM = 3480.0
 DEFAULT_EARTH_RADIUS_SCALE = EARTH_RADIUS_KM / CMB_RADIUS_KM
 DEFAULT_EARTH_BR_LMAX = 13
 RADIAL_ATOL = 1.0e-10
-CONVERTER_PACKAGE_VERSION = "3.5.0"
+CONVERTER_PACKAGE_VERSION = "3.6.0"
 
 
 def json_number(value: Any, default: float | None = None) -> float | None:
@@ -297,9 +297,18 @@ def adapt_graph(graph: Any) -> dict[str, Any]:
         "magnetic_extends_inner_core": False,
     }
 
-    if all(hasattr(graph, name) for name in ("radius_ic", "Br_ic", "Btheta_ic", "Bphi_ic")):
+    core_names = ("radius_ic", "Br_ic", "Btheta_ic", "Bphi_ic")
+    if any(hasattr(graph, name) for name in core_names[1:]) and not all(hasattr(graph, name) for name in core_names):
+        raise ValueError("MagIC inner-core magnetic vector is incomplete (need radius_ic, Br_ic, Btheta_ic, Bphi_ic).")
+    if all(hasattr(graph, name) for name in core_names):
+        if not all(name in fields for name in ("Br", "Bt", "Bp")):
+            raise ValueError("MagIC inner-core magnetism needs matching outer-core magnetic components.")
         radius_ic = np.asarray(graph.radius_ic, dtype=np.float64)
-        valid = np.isfinite(radius_ic) & (radius_ic >= 0.0) & (radius_ic <= radius[-1] + RADIAL_ATOL)
+        if radius_ic.ndim != 1 or not np.isfinite(radius_ic).all() or np.any(radius_ic < 0):
+            raise ValueError("Invalid MagIC inner-core radius coordinates.")
+        if np.any(radius_ic > radius[0] + RADIAL_ATOL):
+            raise ValueError("MagIC inner-core radii extend outside the ICB.")
+        valid = np.ones(radius_ic.size, dtype=bool)
         radius_ic = radius_ic[valid]
         if radius_ic.size:
             ic_order_all = np.flatnonzero(valid)[np.argsort(radius_ic)]
@@ -311,10 +320,12 @@ def adapt_graph(graph: Any) -> dict[str, Any]:
             inner_fields: dict[str, np.ndarray] = {}
             for target, source in (("Br", "Br_ic"), ("Bt", "Btheta_ic"), ("Bp", "Bphi_ic")):
                 raw = np.asarray(getattr(graph, source))
-                if raw.ndim == 3 and raw.shape[2] >= int(np.max(ic_order)) + 1:
+                if raw.ndim == 3 and raw.shape[:2] == np.asarray(graph.vr).shape[:2] and raw.shape[2] >= int(np.max(ic_order)) + 1:
                     inner_fields[target] = unfold_magic_array(
                         raw[:, :, ic_order], np.arange(radius_ic.size), theta_order, minc
                     )
+                else:
+                    raise ValueError(f"MagIC {source} does not match its inner-core grid.")
             inner_only = radius_ic < radius[0] - RADIAL_ATOL
             if inner_fields and np.any(inner_only):
                 r_inner = radius_ic[inner_only]
@@ -898,6 +909,11 @@ def convert_graph(path: Path, outdir: Path, args: argparse.Namespace) -> dict[st
     }
     with open(outdir / "metadata.json", "w", encoding="utf-8") as stream:
         json.dump(metadata, stream, indent=2, allow_nan=False)
+    try:
+        from inner_core import describe_inner_core
+    except ImportError:
+        from tools.inner_core import describe_inner_core
+    describe_inner_core(outdir)
     print(f"Done: {outdir.resolve()} ({len(field_files)} volume fields)")
     return metadata
 

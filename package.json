@@ -12,7 +12,7 @@
     "convert-xshells": "python tools/convert_xshells_to_viewer.py",
     "convert-magic": "python tools/convert_magic_to_viewer.py",
     "test-converters": "python -m unittest discover -s tests -p 'test_*.py'",
-    "test-viewer": "node --test tests/test_viewer_regressions.mjs tests/test_earth_surface.mjs tests/test_field_line_tubes.mjs tests/test_viewer_status.mjs tests/test_figshare_proxy.mjs tests/test_geometry_jobs.mjs tests/test_work_progress.mjs"
+    "test-viewer": "node --test tests/test_viewer_regressions.mjs tests/test_earth_surface.mjs tests/test_field_line_tubes.mjs tests/test_viewer_status.mjs tests/test_figshare_proxy.mjs tests/test_geometry_jobs.mjs tests/test_work_progress.mjs tests/test_volume_domains.mjs"
   },
   "dependencies": {
     "lil-gui": "latest",

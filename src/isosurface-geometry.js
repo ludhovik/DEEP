@@ -123,7 +123,7 @@ function polygoniseTetra(positions, tet, isoValue, clipOptions = null) {
   pushTri(positions, pAD, pBC, pBD, clipOptions);
 }
 
-export function buildSphericalIsosurface({ field, metadata, coords, isoValue, requestedResolution, clipOptions = null }, report = () => {}) {
+export function buildSphericalIsosurface({ field, metadata, coords, isoValue, requestedResolution, clipOptions = null, domain = null }, report = () => {}) {
   const idx = (ir, it, ip) => (ir * metadata.ntheta + it) * metadata.nphi + ip;
   const radiusAtIndex = i => coords.r[i];
   const thetaAtIndex = i => coords.theta[i];
@@ -133,7 +133,10 @@ export function buildSphericalIsosurface({ field, metadata, coords, isoValue, re
   const np = metadata.nphi;
 
   const res = Math.max(8, Math.min(96, Math.round(Number(requestedResolution))));
-  const rIdx = makeSampleIndices(nr, res, true);
+  const start = domain?.start ?? 0;
+  const end = domain?.end ?? (nr - 1);
+  if (domain?.empty || end <= start) return new THREE.BufferGeometry();
+  const rIdx = makeSampleIndices(end - start + 1, res, true).map(i => i + start);
   const tIdx = makeSampleIndices(nt, res, true);
   const pIdx = makeSampleIndices(np, 2 * res, false);
 

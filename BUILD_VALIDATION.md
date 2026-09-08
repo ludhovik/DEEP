@@ -1,5 +1,30 @@
 # Integrated package validation
 
+## Inner-core data and isosurface legends (2026-09-08)
+
+- 75 converter tests and 125 viewer/proxy tests pass; production build passes.
+- Analytic dipole, quadrupole and toroidal tests check Leeds QST values and the
+  solenoidal identity. Marked regular coefficients recover a finite, unique
+  Cartesian vector at the centre. Classic NetCDF padding, HDF5 attributes and
+  reversed radial ordering are tested with generated state files.
+- The actual Leeds entry point is exercised with synthetic native transforms:
+  an older outer-only output gains IC rows without reloading the outer state,
+  and its binaries match a fresh complete conversion. Existing outer samples
+  are byte-identical; field lines, profiles and views remain intact. Repeated
+  updates, sequences, changed inputs and a failed ICB check are covered.
+- XSHELLS/MagIC core-only metadata updates run without native calculations.
+  Tests preserve native MagIC IC vector components, reject incomplete vectors
+  and invalid radii, and avoid advertising padding as measured core data.
+- Real Three.js slice and isosurface geometries obey native radial domains.
+  A constant fluid field produces no artificial isosurface against solid-core
+  zero padding; magnetic IC-only geometry stays inside the ICB. DTV2 round
+  trips, cached geometry replacement, committed-mesh legend values, colour
+  edits, hidden/empty meshes and PNG/PDF canvas legend composition are tested.
+- No production Leeds state file or native SHTns runtime was supplied for an
+  end-to-end simulation check. Tests use analytic angular-transform adapters;
+  browser UI tests use DOM doubles, without GPU profiling. The existing
+  large-chunk Vite advisory remains. Cloudflare deployment is unchanged.
+
 ## Loading progress, geometry workers and automatic tube detail (2026-09-07)
 
 - All 118 viewer/proxy tests pass, including actual worker-thread execution of

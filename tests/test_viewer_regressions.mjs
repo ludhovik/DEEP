@@ -6,6 +6,8 @@ import vm from "node:vm";
 import test from "node:test";
 import { SURFACE_TEXTURES } from "../src/surface-textures.js";
 import * as RealTHREE from "three";
+import { fieldRadialDomain } from "../src/volume-domain.js";
+import { isosurfaceLegendEntries, updateIsosurfaceLegend } from "../src/isosurface-legend.js";
 import { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import { peakLineStrength, estimateTubeBytes, makeMagneticTubeGeometry, simplifyMagneticLine } from "../src/field-line-tubes.js";
@@ -56,6 +58,7 @@ class Mesh {
 
 function viewer() {
   const ctx = vm.createContext({
+    fieldRadialDomain, isosurfaceLegendEntries, updateIsosurfaceLegend, isoLegendEl: null,
     console, DOMException, Response, Blob, AbortController, performance, TextEncoder, Float32Array, btoa, atob,
     SURFACE_TEXTURES, peakLineStrength, estimateTubeBytes, makeMagneticTubeGeometry, simplifyMagneticLine,
     viewerStatus: { clear: () => {}, version: 0 },
@@ -132,7 +135,7 @@ function viewer() {
   }
   Object.assign(ctx.params, { showIsosurfaces: true, showIsoNegative: false });
   for (const name of [
-    "clamp", "formatBytes", "roundedCacheNumber", "captureRenderContext", "renderContextIsCurrent",
+    "fieldDisplayDomain", "refreshIsosurfaceLegend", "clamp", "formatBytes", "roundedCacheNumber", "captureRenderContext", "renderContextIsCurrent",
     "withCapturedRenderContext", "renderSignature", "beginRenderRequest", "renderRequestIsCurrent",
     "invalidateRenderRequests", "loadForRender", "pinHeavyCacheEntry", "isEffectivelyOpaque", "applyOpacityAndDepth",
     "normaliseDatasetLabel", "secondaryPrefix", "isSecondaryFieldName", "rawSecondaryFieldName", "prefixedSecondaryFieldName",
@@ -1962,4 +1965,94 @@ test("Save refuses a half-loaded dataset", async () => {
   ctx.saveBlob = async () => { throw new Error("No save during loading"); };
   await ctx.saveViewStateCode();
   assert.equal(ctx.datasetViewSaveInProgress, false);
+});
+
+
+test("inner-core magnetic region survives view codes and rejects invalid values", () => {
+  const ctx = viewer();
+  ctx.params.magneticVolumeDomain = "inner-core";
+  const snapshot = ctx.decodeViewState(ctx.encodeViewState(ctx.collectViewState()));
+  ctx.params.magneticVolumeDomain = "all";
+  ctx.applyViewStateParams(snapshot);
+  assert.equal(ctx.params.magneticVolumeDomain, "inner-core");
+  ctx.applySnapshotParam("magneticVolumeDomain", "unrecognised");
+  assert.equal(ctx.params.magneticVolumeDomain, "inner-core");
+});
+
+test("isosurface legend follows committed meshes through pending, failed, hidden and recoloured views", async () => {
+  const ctx = viewer();
+  ctx.THREE = RealTHREE;
+  ctx.buildIsosurfaceInBackground = async () => new RealTHREE.SphereGeometry(.5,8,8);
+  ctx.params.showIsoNegative = true;
+  await ctx.rebuildIsosurfaces();
+  let entries = isosurfaceLegendEntries([ctx.isoPositiveMesh,ctx.isoNegativeMesh]);
+  assert.equal(entries.length,2);
+  assert.equal(entries[0].value,.1);
+  assert.equal(entries[1].value,-.1);
+  const waiting = deferred();
+  ctx.params.isoPositiveValue = .2;
+  ctx.buildIsosurfaceInBackground = () => waiting.promise;
+  const pending = ctx.rebuildIsosurfaces();
+  assert.equal(isosurfaceLegendEntries([ctx.isoPositiveMesh])[0].value,.1);
+  waiting.reject(new Error("failed replacement"));
+  await assert.rejects(pending,/failed replacement/);
+  assert.equal(isosurfaceLegendEntries([ctx.isoPositiveMesh])[0].value,.1);
+  ctx.isoPositiveMesh.material.color.set("#123456");
+  assert.equal(isosurfaceLegendEntries([ctx.isoPositiveMesh])[0].color,"#123456");
+  ctx.isoNegativeMesh.visible = false;
+  assert.equal(isosurfaceLegendEntries([ctx.isoPositiveMesh,ctx.isoNegativeMesh]).length,1);
+  ctx.detachActiveIsosurfaces();
+  assert.equal(isosurfaceLegendEntries([ctx.isoPositiveMesh,ctx.isoNegativeMesh]).length,0);
+});
+
+test("actual radial and meridional meshes expose IC magnetism and exclude fluid zero padding", async () => {
+  const ctx = viewer();
+  ctx.THREE = RealTHREE;
+  ctx.metadata = {nr:5,ntheta:3,nphi:4,r_inner:0,r_outer:1,r_icb:.5,has_inner_core:true,
+    fields:{Br:"B.f32", C:"C.f32"},field_domains:{Br:{r_min:0,r_max:1},C:{r_min:.5,r_max:1}}};
+  ctx.coords.r = [0,.25,.5,.75,1];
+  ctx.loadFloat32ForBase = async () => new Float32Array(60).fill(1);
+  ctx.colourMap = () => new RealTHREE.Color("red");
+  for (const name of ["loadField","idx","radiusAtIndex","thetaAtIndex","phiAtIndex","normalizePhi","angularDistance",
+    "nearestRadiusIndex","nearestThetaIndex","nearestPhiIndex","radialSurfaceSampling","radialSurfaceValue",
+    "makeMeridionalSliceMesh","makeHorizontalSliceMesh","updateSampledMeshColours","updateMeshColourBuffer"])
+    vm.runInContext(definition(name),ctx);
+  const magnetic = await ctx.loadField("Br"), fluid = await ctx.loadField("C");
+  const firstRadius = mesh => {
+    const a=mesh.geometry.attributes.position.array;
+    return Math.hypot(a[0],a[1],a[2]);
+  };
+  assert.equal(firstRadius(ctx.makeMeridionalSliceMesh(magnetic,0,1,0,1,"viridis")),0);
+  assert.ok(Math.abs(firstRadius(ctx.makeMeridionalSliceMesh(fluid,0,1,0,1,"viridis"))-.5)<1e-6);
+  const fluidSlice=ctx.makeHorizontalSliceMesh(fluid,0,1,0,1,"viridis");
+  assert.ok(Math.abs(firstRadius(fluidSlice)-.5)<1e-6);
+  assert.equal(ctx.updateSampledMeshColours(fluidSlice,magnetic,"horizontal",0,1,"viridis"),false,
+    "a shell-only mesh cannot be reused for a field extending into the core");
+  ctx.params.magneticVolumeDomain="inner-core";
+  const core=ctx.makeMeridionalSliceMesh(magnetic,0,1,0,1,"viridis");
+  const p=core.geometry.attributes.position.array;
+  for(let i=0;i<p.length;i+=3) assert.ok(Math.hypot(p[i],p[i+1],p[i+2])<=.500001);
+  ctx.params.radialSurfaceRadiusRo=.2;
+  assert.ok(Math.abs(ctx.radialSurfaceSampling(magnetic).radius-.2)<1e-10);
+  assert.equal(ctx.radialSurfaceSampling(fluid).radius,.5);
+  ctx.params.magneticVolumeDomain="fluid";
+  assert.equal(ctx.radialSurfaceSampling(magnetic).radius,.5);
+});
+
+test("isovalue swatches are included in export even when no colourbars are visible", () => {
+  const ctx=viewer(); ctx.THREE=RealTHREE;
+  ctx.params.legendVisible=true;ctx.params.legendCollapsed=false;
+  ctx.getVisibleColourbarSlots=()=>[];
+  ctx.isoPositiveMesh=new RealTHREE.Mesh(new RealTHREE.SphereGeometry(.5,8,8),new RealTHREE.MeshBasicMaterial({color:"#abc123"}));
+  ctx.isoPositiveMesh.userData.isoLegend={field:"Br",value:.125};
+  ctx.drawRoundedRectPath=()=>{};
+  ctx.window.innerWidth=1000;
+  vm.runInContext(definition("drawExportColourbars"),ctx);
+  const labels=[],swatches=[];
+  const canvas={save(){},restore(){},fill(){},stroke(){},fillText(label){labels.push(label)},fillRect(){swatches.push(this.fillStyle)}};
+  ctx.drawExportColourbars(canvas,1000,700);
+  assert.ok(labels.includes("Br = 0.125"));assert.ok(swatches.includes("#abc123"));
+  labels.length=0;ctx.params.legendCollapsed=true;
+  ctx.drawExportColourbars(canvas,1000,700);
+  assert.equal(labels.length,0);
 });

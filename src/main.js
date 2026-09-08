@@ -1,6 +1,8 @@
 import "./style.css";
 
 import * as THREE from "three";
+import { fieldRadialDomain } from "./volume-domain.js";
+import { isosurfaceLegendEntries, updateIsosurfaceLegend } from "./isosurface-legend.js";
 import { TrackballControls } from "three/examples/jsm/controls/TrackballControls.js";
 import { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
@@ -66,7 +68,8 @@ async function runGeometryJob(type, payload, label) {
 
 async function buildIsosurfaceInBackground(context, field, isoValue) {
   const clipOptions = withCapturedRenderContext(context, () => getActiveIsoClipOptions());
-  const data = await runGeometryJob("isosurface", { field, metadata: context.metadata,
+  const domain = withCapturedRenderContext(context, () => fieldDisplayDomain(field));
+  const data = await runGeometryJob("isosurface", { field, domain, metadata: context.metadata,
     coords: context.coords, isoValue, requestedResolution: context.params.isoResolution, clipOptions },
     `Building ${context.params.isoField} isosurface`);
   return unpackGeometry(data);
@@ -155,6 +158,8 @@ const colourbars = Object.fromEntries(
     },
   ])
 );
+
+const isoLegendEl = document.getElementById("iso-legend");
 
 const lineLegendEl = document.getElementById("line-legend");
 
@@ -295,6 +300,7 @@ const params = {
 
   showCMB: true,
   showICB: true,
+  magneticVolumeDomain: "all",
   showRadialSurface: false,
   radialSurfaceRadiusRo: 0.70,
   showEquator: true,
@@ -702,7 +708,7 @@ function renderSignature(slot) {
     const clip = ["cmb", "earth"].includes(slot) && (key.startsWith("quarter")
       || key.startsWith("cmbClip") || key === "cmbRearSide"
       || key === "meridianPhiDeg" || key === "meridian2PhiDeg");
-    return own || key === visibility || clip;
+    return own || key === visibility || clip || key === "magneticVolumeDomain";
   }));
 }
 
@@ -1136,6 +1142,11 @@ function scheduleCustomColourRefresh() {
   }, 120);
 }
 
+
+function refreshIsosurfaceLegend() {
+  updateIsosurfaceLegend(isoLegendEl, isosurfaceLegendEntries([isoPositiveMesh, isoNegativeMesh]));
+  if (isoLegendEl) applyLegendLayout();
+}
 
 function setLineLegendMode(mode) {
   if (!lineLegendEl) return;
@@ -2526,6 +2537,7 @@ function detachActiveIsosurfaces() {
   }
   isoPositiveMesh = null;
   isoNegativeMesh = null;
+  refreshIsosurfaceLegend();
 }
 
 function detachActiveFieldLineGroups() {
@@ -2581,6 +2593,8 @@ function getIsosurfaceObjectCacheKey(basePath = dataBasePath) {
       Number(metadata?.nphi),
     ],
     coordinates: coords,
+    magneticVolumeDomain: params.magneticVolumeDomain,
+    fieldDomain: source.meta?.field_domains?.[source.rawName],
   });
 }
 
@@ -3088,6 +3102,7 @@ function setDeferredSequenceObjectVisibility(hidden) {
       && (requested === "both" || requested === mode);
   }
 
+  refreshIsosurfaceLegend();
   if (hideFieldLines) hideFieldLineColourbar();
 }
 
@@ -3595,7 +3610,16 @@ async function loadField(fieldName) {
     throw new Error(`Field ${fieldName} is on a grid that does not match the primary dataset.`);
   }
   const expectedLength = ref.meta.nr * ref.meta.ntheta * ref.meta.nphi;
-  return await loadFloat32ForBase(ref.basePath, filename, expectedLength);
+  const field = await loadFloat32ForBase(ref.basePath, filename, expectedLength);
+  Object.defineProperty(field, "viewerDomain", { configurable: true, value: {
+    ...ref.meta.field_domains?.[ref.rawName],
+    magnetic: /^(Br|Bt|Bp|Babs)(_|$)/.test(ref.rawName),
+  } });
+  return field;
+}
+
+function fieldDisplayDomain(field) {
+  return fieldRadialDomain(metadata, coords, field?.viewerDomain, params.magneticVolumeDomain);
 }
 
 async function loadCmbDisplayField(fieldName) {
@@ -3691,7 +3715,7 @@ function phiAtIndex(ip) {
 }
 
 
-function radialSurfaceSampling() {
+function radialSurfaceSampling(field = null) {
   const nr = Math.max(1, Number(metadata.nr) || 1);
   const rOuter = Number(metadata.r_outer);
   const requestedRatio = clamp(Number(params.radialSurfaceRadiusRo), 0.0, 1.0);
@@ -3703,8 +3727,9 @@ function radialSurfaceSampling() {
     return { i0: 0, i1: 0, weight: 0.0, requestedRadius, radius: requestedRadius, clamped: false };
   }
 
-  const rMin = Math.min(...finiteRadii);
-  const rMax = Math.max(...finiteRadii);
+  const domain = field ? fieldDisplayDomain(field) : null;
+  const rMin = domain ? domain.rMin : Math.min(...finiteRadii);
+  const rMax = domain ? domain.rMax : Math.max(...finiteRadii);
   const radius = clamp(requestedRadius, rMin, rMax);
   const clampedRadius = Math.abs(radius - requestedRadius) > 1.0e-12 * Math.max(1.0, Math.abs(rMax));
 
@@ -3952,9 +3977,10 @@ function cmbDisplayRange(fieldObject, radiusIndex, slot) {
 }
 
 function equatorRange(field, slot) {
+  const domain = fieldDisplayDomain(field);
   const it = nearestThetaIndex(0.5 * Math.PI);
   const raw = rawMinMaxFromSamples(field, function* () {
-    for (let ir = 0; ir < metadata.nr; ir++) {
+    for (let ir = domain.start; ir <= domain.end; ir++) {
       for (let ip = 0; ip < metadata.nphi; ip++) yield [ir, it, ip];
     }
   });
@@ -3962,12 +3988,13 @@ function equatorRange(field, slot) {
 }
 
 function meridianRange(field, phiDeg, slot) {
+  const domain = fieldDisplayDomain(field);
   const phi0 = THREE.MathUtils.degToRad(phiDeg);
   const ip0 = nearestPhiIndex(phi0);
   const ip1 = nearestPhiIndex(phi0 + Math.PI);
   const raw = rawMinMaxFromSamples(field, function* () {
     for (const ip of [ip0, ip1]) {
-      for (let ir = 0; ir < metadata.nr; ir++) {
+      for (let ir = domain.start; ir <= domain.end; ir++) {
         for (let it = 0; it < metadata.ntheta; it++) yield [ir, it, ip];
       }
     }
@@ -5666,8 +5693,9 @@ function makeCmbSurfaceMesh(fieldObject, radiusIndex, opacity, vmin, vmax, color
 }
 
 function sampleFieldNearest(field, radius, theta, phi) {
-  const rOuter = metadata.r_outer;
-  const rInner = metadata.r_inner;
+  const domain = fieldDisplayDomain(field);
+  const rOuter = domain.rMax;
+  const rInner = domain.rMin;
   if (radius < rInner || radius > rOuter) return NaN;
 
   const ir = nearestRadiusIndex(radius);
@@ -5679,8 +5707,9 @@ function sampleFieldNearest(field, radius, theta, phi) {
 function horizontalSliceRawRange(field, z) {
   const nr = metadata.nr;
   const np = metadata.nphi;
-  const rInner = metadata.r_inner;
-  const rOuter = metadata.r_outer;
+  const domain = fieldDisplayDomain(field);
+  const rInner = domain.rMin;
+  const rOuter = domain.rMax;
   const zAbs = Math.abs(z);
 
   if (zAbs >= rOuter) return [-1.0, 1.0];
@@ -5854,8 +5883,9 @@ function horizontalSliceRange(field, z, slot) {
 function makeHorizontalSliceMesh(field, z, opacity, vmin, vmax, colormap) {
   const nr = metadata.nr;
   const np = metadata.nphi;
-  const rInner = metadata.r_inner;
-  const rOuter = metadata.r_outer;
+  const domain = fieldDisplayDomain(field);
+  const rInner = domain.rMin;
+  const rOuter = domain.rMax;
   const zAbs = Math.abs(z);
 
   const positions = [];
@@ -5916,6 +5946,7 @@ function makeHorizontalSliceMesh(field, z, opacity, vmin, vmax, colormap) {
 
   const mesh = new THREE.Mesh(geometry, material);
   mesh.userData.viewerTopology = {
+    domainKey: JSON.stringify(fieldDisplayDomain(field)),
     kind: "horizontal",
     z,
     sampleA: Int32Array.from(sampleIndices),
@@ -5925,7 +5956,8 @@ function makeHorizontalSliceMesh(field, z, opacity, vmin, vmax, colormap) {
 }
 
 function makeMeridionalSliceMesh(field, phiDeg, opacity, vmin, vmax, colormap) {
-  const nr = metadata.nr;
+  const domain = fieldDisplayDomain(field);
+  const nr = Math.max(0, domain.end - domain.start + 1);
   const nt = metadata.ntheta;
   const requestedPhi = THREE.MathUtils.degToRad(phiDeg);
   const ipFront = nearestPhiIndex(requestedPhi);
@@ -5991,7 +6023,7 @@ function makeMeridionalSliceMesh(field, phiDeg, opacity, vmin, vmax, colormap) {
   const cosPhi = Math.cos(requestedPhi);
   const sinPhi = Math.sin(requestedPhi);
 
-  for (let ir = 0; ir < nr; ir++) {
+  for (let ir = domain.start; ir <= domain.end; ir++) {
     const r = radiusAtIndex(ir);
 
     for (const colInfo of columns) {
@@ -6042,6 +6074,7 @@ function makeMeridionalSliceMesh(field, phiDeg, opacity, vmin, vmax, colormap) {
 
   const mesh = new THREE.Mesh(geometry, material);
   mesh.userData.viewerTopology = {
+    domainKey: JSON.stringify(domain),
     kind: "meridian",
     phiDeg,
     sampleA: Int32Array.from(sampleA),
@@ -6110,6 +6143,7 @@ function updateCmbMeshColours(mesh, fieldObject, radiusIndex, vmin, vmax, colorm
 function updateSampledMeshColours(mesh, field, expectedKind, vmin, vmax, colormap) {
   const topology = mesh?.userData?.viewerTopology;
   if (!topology || topology.kind !== expectedKind || !topology.sampleA) return false;
+  if (topology.domainKey !== JSON.stringify(fieldDisplayDomain(field))) return false;
   const a = topology.sampleA;
   const b = topology.sampleB;
   return updateMeshColourBuffer(mesh, (i) => {
@@ -6258,7 +6292,7 @@ async function rebuildRadialSurface(options = {}) {
   const reuseGeometry = Boolean(options.reuseGeometry);
   const field = await loadForRender(request, () => loadField(params.radialField));
   if (!renderRequestIsCurrent(request)) return;
-  const sampling = radialSurfaceSampling();
+  const sampling = radialSurfaceSampling(field);
   const [vmin, vmax] = radialSurfaceRange(field, sampling, "radial");
   setColourbarForSlot("radial", params.radialField, vmin, vmax);
 
@@ -6418,6 +6452,8 @@ async function rebuildIsosurfaces() {
     detachActiveIsosurfaces();
     isoPositiveMesh = positive;
     isoNegativeMesh = negative;
+    if (positive) positive.userData.isoLegend = { field: params.isoField, value: Number(params.isoPositiveValue) };
+    if (negative) negative.userData.isoLegend = { field: params.isoField, value: Number(params.isoNegativeValue) };
 
     if (isoPositiveMesh) {
       isoPositiveMesh.visible = params.showIsosurfaces && params.showIsoPositive;
@@ -6427,6 +6463,7 @@ async function rebuildIsosurfaces() {
       isoNegativeMesh.visible = params.showIsosurfaces && params.showIsoNegative;
       scene.add(isoNegativeMesh);
     }
+    refreshIsosurfaceLegend();
 
     setStatusSummary(
       `Isosurfaces:${params.isoField}, triangles=${Math.round(entry.triangleCount || 0)}`
@@ -6477,6 +6514,7 @@ function updateVisibility() {
   if (meridian2Mesh) meridian2Mesh.visible = params.showMeridian2;
   if (isoPositiveMesh) isoPositiveMesh.visible = params.showIsosurfaces && params.showIsoPositive;
   if (isoNegativeMesh) isoNegativeMesh.visible = params.showIsosurfaces && params.showIsoNegative;
+  refreshIsosurfaceLegend();
   const fillerActive = params.showEarthSurface && params.showSliceGapFiller;
   if (equatorFillerMesh) equatorFillerMesh.visible = fillerActive && params.showEquator;
   if (equator2FillerMesh) equator2FillerMesh.visible = fillerActive && params.showEquator2;
@@ -6529,6 +6567,7 @@ function updateOpacities() {
   if (earthMesh) applyOpacityAndDepth(earthMesh.material, params.earthOpacity);
   if (isoPositiveMesh) applyOpacityAndDepth(isoPositiveMesh.material, params.isoOpacity, params.isoTransparencyMode);
   if (isoNegativeMesh) applyOpacityAndDepth(isoNegativeMesh.material, params.isoOpacity, params.isoTransparencyMode);
+  refreshIsosurfaceLegend();
   if (equatorFillerMesh) applyOpacityAndDepth(equatorFillerMesh.material, params.sliceGapFillerOpacity);
   if (equator2FillerMesh) applyOpacityAndDepth(equator2FillerMesh.material, params.sliceGapFillerOpacity);
   if (meridianFillerMesh) applyOpacityAndDepth(meridianFillerMesh.material, params.sliceGapFillerOpacity);
@@ -6997,6 +7036,7 @@ function applySnapshotParam(key, value) {
   if (key === "earthDisplayMode" && !["texture", "magnetic"].includes(value)) return false;
   if (key === "earthTextureBody" && !Object.prototype.hasOwnProperty.call(SURFACE_TEXTURES, value)) return false;
   if (key === "isoTransparencyMode" && !["stable", "smooth"].includes(value)) return false;
+  if (key === "magneticVolumeDomain" && !["all", "fluid", "inner-core"].includes(value)) return false;
   if (["legendPosition", "titlePosition", "exportPanelPosition"].includes(key) && !PANEL_POSITIONS.has(value)) return false;
   params[key] = value;
   return true;
@@ -7576,6 +7616,13 @@ function buildGui() {
   const cmbFields = getCmbFieldNames();
 
   const cmbFolder = addDisplayControls(gui, "cmb", "CMB surface", "cmbField", "showCMB", "cmbOpacity", rebuildCMB, cmbFields);
+  if (metadata.inner_core?.available || (metadata.has_inner_core && metadata.r_inner < metadata.r_icb)) {
+    gui.add(params, "magneticVolumeDomain", { "Whole core": "all", "Fluid outer core": "fluid", "Inner core only": "inner-core" })
+      .name("Magnetic volume region").onChange(() => runViewerTask("Magnetic region", async () => {
+        await rebuildAllMeshes({ visibleOnly: true });
+        updateVisibility();
+      }));
+  }
   const icbFolder = addDisplayControls(gui, "icb", "ICB surface", "icbField", "showICB", "icbOpacity", rebuildICB, volumeFields);
   const radialFolder = addDisplayControls(gui, "radial", "Radial spherical surface", "radialField", "showRadialSurface", "radialOpacity", rebuildRadialSurface, volumeFields);
   radialFolder.add(params, "radialSurfaceRadiusRo", 0.0, 1.0, 0.001).name("Radius r / r_o").onFinishChange(() => rebuildRadialSurface({ reuseGeometry: false }));
@@ -7739,10 +7786,10 @@ function buildGui() {
   isoFolder.add(params, "isoClipOffsetMeridian2", -1.0, 1.0, 0.01).name("Clip offset M2").onFinishChange(refreshIsosurfaces);
   isoFolder.add(params, "showIsoPositive").name("Show positive").onChange(refreshIsosurfaces);
   isoFolder.add(params, "isoPositiveValue").name("Positive value").onFinishChange(refreshIsosurfaces);
-  isoFolder.addColor(params, "isoPositiveColor").name("Positive color").onChange(() => { if (isoPositiveMesh) isoPositiveMesh.material.color.set(params.isoPositiveColor); });
+  isoFolder.addColor(params, "isoPositiveColor").name("Positive color").onChange(() => { if (isoPositiveMesh) isoPositiveMesh.material.color.set(params.isoPositiveColor); refreshIsosurfaceLegend(); });
   isoFolder.add(params, "showIsoNegative").name("Show negative").onChange(refreshIsosurfaces);
   isoFolder.add(params, "isoNegativeValue").name("Negative value").onFinishChange(refreshIsosurfaces);
-  isoFolder.addColor(params, "isoNegativeColor").name("Negative color").onChange(() => { if (isoNegativeMesh) isoNegativeMesh.material.color.set(params.isoNegativeColor); });
+  isoFolder.addColor(params, "isoNegativeColor").name("Negative color").onChange(() => { if (isoNegativeMesh) isoNegativeMesh.material.color.set(params.isoNegativeColor); refreshIsosurfaceLegend(); });
   isoFolder.add(params, "isoOpacity", 0.05, 1.0, 0.01).name("Opacity").onChange(updateOpacities);
   isoFolder.add(params, "isoTransparencyMode", {
     "Stable (dithered)": "stable",
@@ -7898,13 +7945,16 @@ function getVisibleColourbarSlots() {
 
 function drawExportColourbars(ctx, width, height) {
   const slots = getVisibleColourbarSlots();
-  if (slots.length === 0) return;
+  const isoEntries = params.legendVisible && !params.legendCollapsed
+    ? isosurfaceLegendEntries([isoPositiveMesh, isoNegativeMesh]) : [];
+  if (slots.length === 0 && isoEntries.length === 0) return;
 
   const scale = clamp(width / Math.max(1, window.innerWidth), 1.0, 4.0);
   const panelWidth = clamp(Number(params.legendWidth) || 330, 220, 900) * scale;
   const panelHeight = 58 * scale;
   const gap = 8 * scale;
-  const totalHeight = slots.length * panelHeight + (slots.length - 1) * gap;
+  const rowCount = slots.length + (isoEntries.length ? 1 : 0);
+  const totalHeight = rowCount * panelHeight + (rowCount - 1) * gap;
   const margin = 18 * scale;
   const maxX = Math.max(margin, width - panelWidth - margin);
   const maxY = Math.max(margin, height - totalHeight - margin);
@@ -7962,6 +8012,21 @@ function drawExportColourbars(ctx, width, height) {
     ctx.textAlign = "left";
 
     y += panelHeight + gap;
+  }
+  if (isoEntries.length) {
+    ctx.fillStyle = "rgba(255,255,255,0.88)";
+    drawRoundedRectPath(ctx, x, y, panelWidth, panelHeight, 8 * scale);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "black";
+    ctx.font = `${Math.round(12 * scale)}px system-ui, sans-serif`;
+    ctx.fillText("Isosurfaces", x + 9 * scale, y + 6 * scale);
+    isoEntries.forEach((entry, i) => {
+      const yy = y + (24 + i * 16) * scale;
+      ctx.fillStyle = entry.color;
+      ctx.fillRect(x + 9 * scale, yy, 18 * scale, 11 * scale);
+      ctx.fillStyle = "black";
+      ctx.fillText(entry.label, x + 34 * scale, yy, panelWidth - 43 * scale);
+    });
   }
   ctx.restore();
 }

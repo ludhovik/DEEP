@@ -91,7 +91,7 @@ EARTH_RADIUS_KM = 6371.0
 CMB_RADIUS_KM = 3480.0
 DEFAULT_EARTH_RADIUS_SCALE = EARTH_RADIUS_KM / CMB_RADIUS_KM
 DEFAULT_EARTH_BR_LMAX = 13
-CONVERTER_PACKAGE_VERSION = "3.5.0"
+CONVERTER_PACKAGE_VERSION = "3.6.0"
 
 
 def json_number(value: Any, default: float | None = None) -> float | None:
@@ -1396,6 +1396,11 @@ def convert_xshells(args: argparse.Namespace) -> None:
     }
     with open(outdir / "metadata.json", "w", encoding="utf-8") as stream:
         json.dump(metadata, stream, indent=2, allow_nan=False)
+    try:
+        from inner_core import describe_inner_core
+    except ImportError:
+        from tools.inner_core import describe_inner_core
+    describe_inner_core(outdir)
 
     print("Done.")
     print(f"Viewer data written to: {outdir.resolve()}")

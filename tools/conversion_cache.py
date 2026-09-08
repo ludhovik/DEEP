@@ -29,9 +29,9 @@ sys.modules.setdefault("conversion_cache", sys.modules[__name__])
 sys.modules.setdefault("tools.conversion_cache", sys.modules[__name__])
 
 try:
-    from viewer_bundle import bundle_path, staged_bundle_output, validate_bundle
+    from viewer_bundle import bundle_path, staged_bundle_output, validate_bundle, _managed_names
 except ImportError:
-    from tools.viewer_bundle import bundle_path, staged_bundle_output, validate_bundle
+    from tools.viewer_bundle import bundle_path, staged_bundle_output, validate_bundle, _managed_names
 
 
 MANIFEST = "conversion_manifest.json"
@@ -248,6 +248,7 @@ def register_cache_object(obj, signature):
 
 def add_incremental_arguments(parser):
     parser.add_argument("--incremental", action="store_true", help="Reuse checked outputs and native-precision calculation caches; compute missing or changed results.")
+    parser.add_argument("--inner-core-only", action="store_true", help="Update only inner-core coverage of an existing, source-verified bundle (no outer-core calculations). Uses the bundle's saved sampling and truncation; other conversion options are not applied.")
     parser.add_argument("--cache-dir", help="Calculation cache directory outside public/. Default: .deepscope-cache at the project root.")
     parser.add_argument("--force", action="store_true", help="Recompute even with --incremental, refreshing its cache.")
 
@@ -280,10 +281,15 @@ def _backend_identity(extra_files=()):
             "machine": platform.machine(), "byteorder": sys.byteorder}
 
 
-def run_conversion(args, kind, inputs, convert, *, backend_files=()):
+def run_conversion(args, kind, inputs, convert, *, backend_files=(), inner_core_update=None):
     """Run one complete conversion or sequence, using its real (not staged) path."""
     output = Path(args.out).expanduser().resolve()
     sources = {str(Path(p).expanduser().resolve()): file_digest(p) for p in inputs if p is not None}
+    if getattr(args, "inner_core_only", False):
+        if getattr(args, "force", False):
+            raise ValueError("--force conflicts with --inner-core-only, which preserves existing calculations.")
+        update_inner_core_bundle(output, sources, kind, inner_core_update)
+        return
     backend = _backend_identity(backend_files)
     options = {k: v for k, v in vars(args).items() if k not in ("out", "incremental", "cache_dir", "force", "sequence_clear") and not k.startswith("_")}
     tools_root = Path(__file__).resolve().parent
@@ -314,6 +320,12 @@ def run_conversion(args, kind, inputs, convert, *, backend_files=()):
         with staged_bundle_output(output) as stage:
             args.out = str(stage)
             convert(args)
+            try:
+                from inner_core import describe_inner_core
+            except ImportError:
+                from tools.inner_core import describe_inner_core
+            for meta_path in stage.rglob("metadata.json"):
+                describe_inner_core(meta_path.parent)
             validate_bundle(stage)
             # Never bless results if a source was overwritten during conversion.
             if any(file_digest(path) != digest for path, digest in sources.items()):
@@ -327,3 +339,69 @@ def run_conversion(args, kind, inputs, convert, *, backend_files=()):
         _active_cache.reset(token)
         if cache is not None:
             print(f"Calculation cache: {cache.hits} reused, {cache.misses} computed. {root}", flush=True)
+
+
+def update_inner_core_bundle(output, sources, kind, update):
+    """Add only core data, even without a calculation cache, preserving outer bytes.
+
+    Explicit mode intentionally uses the existing output options. Source hashes
+    and every managed output are checked first; failed updates never publish.
+    """
+    try:
+        from inner_core import describe_inner_core
+    except ImportError:
+        from tools.inner_core import describe_inner_core
+    try:
+        saved = json.loads((output / MANIFEST).read_text())
+        if saved["source_sha256"] != sources:
+            raise ValueError("Simulation inputs differ from the existing bundle.")
+        if not saved["files"] or any(file_digest(bundle_path(output, name)) != digest
+                                     for name, digest in saved["files"].items()):
+            raise ValueError("Existing converted files were changed or are incomplete.")
+        validate_bundle(output)
+    except (OSError, KeyError, TypeError) as exc:
+        raise ValueError("--inner-core-only requires an existing validated conversion_manifest.json "
+                         "for these exact simulation inputs.") from exc
+    with staged_bundle_output(output) as stage:
+        # Publication preserves unmanaged root files (including view.DTV2).
+        # Sequence directories are managed and retain their per-frame views.
+        for item in output.iterdir():
+            if item.name not in _managed_names(output):
+                continue
+            if item.is_dir():
+                shutil.copytree(item, stage / item.name)
+            else:
+                shutil.copy2(item, stage / item.name)
+        targets = [stage]
+        if (stage / "sequence.json").exists():
+            sequence = json.loads((stage / "sequence.json").read_text())
+            targets = [bundle_path(stage, frame["path"]) for frame in sequence["frames"]]
+        for target in targets:
+            meta = json.loads((target / "metadata.json").read_text())
+            if meta.get("source_format") != kind:
+                raise ValueError("The converter does not match this existing bundle's source format.")
+            if update is not None:
+                update(target, meta, sources)
+            elif not describe_inner_core(target):
+                raise ValueError("This bundle has no stored magnetic data below the ICB. "
+                                 "Rerun the full converter with native inner-core data and --incremental.")
+            validate_bundle(target)
+            child_manifest = target / MANIFEST
+            if child_manifest.exists():
+                manifest = json.loads(child_manifest.read_text())
+                manifest["request"] = "inner-core-update-v1"
+                manifest["files"] = {str(p.relative_to(target)): file_digest(p) for p in sorted(target.rglob("*"))
+                    if p.is_file() and p.name not in (MANIFEST, "view.DTV2")}
+                child_manifest.write_text(json.dumps(manifest, indent=2) + "\n")
+        if targets != [stage]:
+            # Root displays the first frame; keep the sequence and all saved views.
+            for item in targets[0].iterdir():
+                if item.is_file() and item.name not in (MANIFEST, "view.DTV2"):
+                    shutil.copy2(item, stage / item.name)
+        if any(file_digest(path) != digest for path, digest in sources.items()):
+            raise ValueError("Simulation input changed during the inner-core update.")
+        saved["request"] = "inner-core-update-v1"
+        saved["files"] = {str(p.relative_to(stage)): file_digest(p) for p in sorted(stage.rglob("*"))
+            if p.is_file() and p.name not in (MANIFEST, "view.DTV2")}
+        (stage / MANIFEST).write_text(json.dumps(saved, indent=2) + "\n")
+    print(f"Inner-core update complete: {output}. No outer-core calculations were run.", flush=True)

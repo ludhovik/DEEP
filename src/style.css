@@ -295,7 +295,8 @@ canvas {
 }
 
 
-#line-legend {
+#line-legend,
+#iso-legend {
   position: relative;
   width: 100%;
   box-sizing: border-box;
@@ -546,4 +547,12 @@ canvas {
 .dataset-url-controls input:disabled {
   cursor: progress;
   opacity: 0.55;
+}
+
+.iso-legend-swatch {
+  width: 24px;
+  height: 12px;
+  border: 1px solid rgba(255,255,255,0.5);
+  border-radius: 3px;
+  flex-shrink: 0;
 }

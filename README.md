@@ -17,7 +17,8 @@ with Vite. Local datasets are read in the browser and are not uploaded.
 - CMB and ICB fields;
 - a spherical surface at any radius;
 - two equatorial and two meridional slices;
-- positive and negative isosurfaces;
+- positive and negative isosurfaces with colour/value legends;
+- magnetic slices and isosurfaces inside a resolved inner core;
 - internal and exterior magnetic field lines, including tubes with diameter proportional to magnetic energy;
 - Earth, Mars, Ganymede, Mercury, Venus, Enceladus and Moon surface images, or
   an available extrapolated radial magnetic field;
@@ -867,7 +868,7 @@ new validated bundle; simple arithmetic, output assembly and file I/O can
 still run. Adding a diagnostic does not require repeating cached transforms.
 
 Existing bundles without a calculation cache need an initial conversion to
-populate it. Native precision and working grids are retained: downsampled
+populate it, except for the dedicated inner-core-only update below. Native precision and working grids are retained: downsampled
 viewer `.f32` files are not used to reconstruct missing native calculations.
 Changing inputs, truncation, grids, or the relevant calculation invalidates
 affected results. A damaged cache entry is recomputed. Source and output checks
@@ -886,6 +887,98 @@ Without `--incremental`, conversion runs normally. Leeds and MagIC sequence
 extensions reuse unchanged frames and preserve root and per-frame `view.DTV2`
 files. XSHELLS keeps its existing single-snapshot interface. Previous output
 backups and validation before publication also apply to incremental runs.
+
+### Magnetic fields inside the inner core
+
+The same `Br`, `Bt`, `Bp`, `Babs`, magnetic azimuthal means and fluctuations
+can cover both the fluid outer core and the solid inner core. Only stored
+magnetic data are used:
+
+- **Leeds:** separate `icr`, `icBP` and `icBT` arrays in classic NetCDF or HDF5
+  states are detected automatically. Padded IC arrays are read using the length
+  of `icr`. Older unmarked potentials are conventional coefficients; marked
+  `regular_r_power_g_x` potentials use their saved radial power offsets.
+- **XSHELLS:** the native `fieldB` radial domain must extend below the fluid ICB.
+- **MagIC:** the graphic file must contain `radius_ic`, `Br_ic`, `Btheta_ic` and
+  `Bphi_ic`. Incomplete core vectors or radii outside the ICB are rejected.
+
+In the viewer, choose **Magnetic volume region → Inner core only** to restrict
+magnetic radial spheres, equatorial/meridional slices and isosurfaces to that
+region. **Whole core** displays both domains; **Fluid outer core** excludes the
+solid interior. Choose a magnetic field on the desired slice and hide the
+**ICB surface** (and CMB surface if necessary) to expose the interior. The
+region choice is saved in DTV2. On datasets without resolved inner-core data,
+it falls back to the available radial domain.
+
+Fluid-only scalar, velocity and derived fields remain restricted to their
+native domain. Their zero padding is excluded from slices and isosurface
+interpolation. This avoids artificial isosurfaces at the solid/fluid boundary.
+The output keeps one shared radial grid, without duplicate ICB coordinates;
+the shared ICB sample comes from the existing outer-core output. Field lines
+remain the existing fluid-shell/exterior traces. No unmeasured central region
+is extrapolated: an `icr` grid starting above zero retains that smallest radius.
+
+#### Add the core to an existing conversion
+
+Append this option to the **same source/output command**:
+
+```text
+--inner-core-only
+```
+
+It works with or without `--incremental` and needs no calculation cache. It
+requires the existing `conversion_manifest.json` to match the simulation
+inputs, and verifies the existing converted files before making changes.
+For example, from the repository root:
+
+```bash
+python tools/convert_state_to_viewer.py \
+  --state simulation/state00001.cdf.dat \
+  --modules-dir . \
+  --out public/my_data \
+  --inner-core-only
+```
+
+Use your existing paths in this example. Keep the existing sequence range for
+a Leeds or MagIC sequence; each saved frame is checked and updated, including
+the first-frame copy at the sequence root. XSHELLS retains its single-snapshot
+interface.
+
+This mode **uses the existing bundle's angular truncation and sampling**.
+Other calculation options are not applied; `--force` is incompatible. Leeds
+synthesizes only the separate inner-core magnetic data and prepends their
+samples. Existing outer-core `.f32` samples are copied byte for byte; profiles,
+surface fields, field-line files and saved views are retained. Binaries become
+larger because the common grid gains radial rows. Reading checksums, copying
+files and retaining the preceding output backup still require time and disk
+space. A repeated core update does not synthesize the core again.
+
+XSHELLS and MagIC normally already export the available inner-core data. Their
+core-only update adds the explicit domain metadata to an older bundle without
+running native transforms or diagnostics. If an old bundle has no core data
+and the format requires reconversion, the update reports that instead of
+inventing an internal field; use a normal `--incremental` conversion with the
+native magnetic input. Changed simulation files or incomplete outputs require
+a normal conversion as well.
+
+The Leeds conventional reconstruction uses direct SHTns coefficients
+`Q = l(l+1) P/r`, `S = P/r + dP/dr`, `T = T`, with a local physical-radius
+polynomial derivative (KL=3). Marked regular potentials use the nonsingular
+powers in `r` and derivatives in `x=r²`. The native layout and derivative
+convention can be checked in the Leeds
+[state writer](https://github.com/Leeds-Spherical-Dynamo/leeds-code/blob/main/program/io.F90),
+[radial operators](https://github.com/Leeds-Spherical-Dynamo/leeds-code/blob/main/modules/meshs.F90)
+and [magnetic QST conversion](https://github.com/Leeds-Spherical-Dynamo/leeds-code/blob/main/modules/variables.F90).
+
+### Isosurface legends
+
+When an isosurface has visible geometry, the movable legend panel shows its
+colour swatch, field name and threshold (for example, `ur = 0.1` and
+`ur = -0.1`). Only enabled, displayed surfaces appear. Colour edits update the
+swatches; a pending or failed rebuild keeps the values of the preceding mesh.
+PNG/PDF exports include the same swatches and values when legends are visible
+and expanded. Collapsing or hiding the legend follows the existing export
+behaviour.
 
 ### Sampling and output safety
 

@@ -1,5 +1,15 @@
 # v0.4.0 — static hosted/local-data viewer
 
+## Inner-core volumes and isosurface legends (2026-09-08)
+
+- Select Whole core, Fluid outer core or Inner core only for magnetic slices,
+  radial spheres and isosurfaces; save the choice in DTV2. Respect native
+  fluid-field support so solid-core padding cannot create false isosurfaces.
+- Add isosurface colour swatches and numeric thresholds to the existing
+  movable/collapsible legend, including PNG/PDF exports. Labels follow the
+  displayed meshes through failed replacements, recolouring and visibility.
+- Deploy through the existing Pages workflow. No Cloudflare update is needed.
+
 ## Loading progress and background geometry (2026-09-07)
 
 - Show file names, bytes received and calculation progress in a separate box

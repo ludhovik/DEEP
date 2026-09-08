@@ -1,5 +1,18 @@
 # Changelog
 
+## 3.6.0
+
+- Detect separate Leeds `icr`/`icBP`/`icBT` data, including padded NetCDF arrays
+  and marked regular coefficients, and extend magnetic volumes below the ICB.
+- Add `--inner-core-only` to all three converters. Verify source/output hashes
+  and reuse existing outer-core samples, field lines, profiles and saved views;
+  no calculation cache is needed for this additive update. Sequences retain
+  their per-frame views and refresh the first-frame copy at the root.
+- Record magnetic and fluid radial support for all three source formats.
+  MagIC rejects incomplete core vectors and core radii outside its ICB.
+- Keep shared ICB samples from the outer core and preserve native core radii;
+  no potential continuation is substituted for unavailable inner-core data.
+
 ## 3.5.0
 
 - Add opt-in `--incremental` conversion to Leeds, XSHELLS and MagIC. Verify
