@@ -7,8 +7,8 @@ and convection simulations. It includes converters for:
 - XSHELLS through `pyxshells`;
 - MagIC `G_#.TAG` and `G_ave.TAG` graphic files through MagIC's `MagicGraph`
   reader;
-- Calypso merged ASCII spectral restarts (`*.fst` / `*.fst.gz`) with their
-  matching grid controls.
+- Calypso merged ASCII/binary spectral restarts (`*.fst` / `*.fsb`, also
+  native gzip) with their matching grid controls.
 
 Open the hosted viewer at
 [the DEEPscope viewer](https://ludhovik.github.io/DEEP/), or run it locally
@@ -829,7 +829,7 @@ extraction command, physical parameters, and detailed caveats.
 
 ## Calypso converter
 
-The Calypso converter reads merged ASCII spectral restarts with their original
+The Calypso converter reads merged ASCII/binary spectral restarts with their original
 `control_MHD` and linked spherical-grid controls. No Calypso installation or
 SHTns is required. Keep the extracted archive's directory structure intact.
 
@@ -849,10 +849,15 @@ All source degrees are retained by default. For the supplied L=63 benchmark,
 Add `--sequence-first 0 --sequence-last 1 --sequence-step 1` to convert both
 supplied restarts. Temperature is `C`; composition, when present, is `Comp`.
 
-Full-sphere centre handling and stored inner-core magnetic fields are
-supported. The supplied shell run is validated against its analytic initial
-field and independent physical snapshot. Full-sphere validation currently
-uses analytic fixtures; a real full-sphere sample is still needed.
+Full-sphere `half_Chebyshev` grids and native `merged_bin_gz` restarts are
+supported, including the separately stored centre node. For the supplied
+full-sphere run, use `--folder /path/to/full_sphere/sph_shell_842`; the same
+export options apply. Restart file indices and solver timestep numbers are
+stored separately: `rst.99.fsb.gz` contains simulation step 990000.
+The shell run is checked against its analytic initial field and independent
+physical snapshot; the real full-sphere restart is checked for binary layout,
+grid/centre consistency and a complete export. Analytic fixtures check the
+full-sphere vector reconstruction.
 See [CALYPSO_CONVERTER.md](CALYPSO_CONVERTER.md) for native format requirements,
 N2 normalization, equations and supported control layouts.
 

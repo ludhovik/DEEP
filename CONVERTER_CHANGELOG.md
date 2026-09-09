@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.7.2
+
+- Support Calypso full-sphere half-Chebyshev grids and their separate centre
+  node, including the native explicit-grid ICB=0 convention.
+- Read merged binary `.fsb` and native block-compressed `.fsb.gz` restarts,
+  validating both byte orders, MPI node/byte stacks, block sizes and CRCs.
+- Distinguish restart filename indices from solver timestep numbers in
+  discovery, sequence selection and metadata.
+- Validate the supplied 48-rank full-sphere restart, with analytic binary
+  fixtures for centre reconstruction, diagnostics and incremental reuse.
+
 ## 3.7.1
 
 - Speed up the shared Leeds, XSHELLS, MagIC and Calypso line tracer by preparing

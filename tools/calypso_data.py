@@ -1,4 +1,4 @@
-"""Read Calypso merged ASCII restart data and reconstruct spherical fields.
+"""Read Calypso merged restart data and reconstruct spherical fields.
 
 Conventions follow Calypso/Kemorin: zonal_wavenumber_4_legendre.f90,
 copy_rj_phys_data_4_IO.f90, schmidt.f90 and legendre_bwd_trans_org.f90.
@@ -10,6 +10,7 @@ import gzip
 import math
 from pathlib import Path
 import shlex
+import zlib
 
 import numpy as np
 
@@ -77,6 +78,95 @@ def read_merged_ascii(path, selected=None):
     return {"ranks": ranks, "step": step, "time": float(clock[0]),
             "dt": float(clock[1]), "counts": np.diff(np.r_[0, counts]),
             "fields": fields, "field_names": names}
+
+
+def _binary_block(stream, size, compressed):
+    """Read one native gzip member or an uncompressed block, checking its size.
+
+    merged_bin_gz compresses each header and each MPI rank separately; the
+    compressed rank offsets must not be mistaken for ordinary binary data.
+    """
+    if not compressed:
+        data = stream.read(size)
+    else:
+        decoder = zlib.decompressobj(31)
+        chunks, length = [], 0
+        while not decoder.eof:
+            chunk = stream.read(65536)
+            if not chunk:
+                raise ValueError("Truncated Calypso gzip block.")
+            try:
+                decoded = decoder.decompress(chunk, size - length + 1)
+            except zlib.error as exc:
+                raise ValueError("Invalid Calypso gzip block or checksum.") from exc
+            chunks.append(decoded)
+            length += len(decoded)
+            if length > size:
+                raise ValueError("Calypso gzip block exceeds its declared size.")
+        if decoder.unused_data:
+            stream.seek(-len(decoder.unused_data), 1)
+        data = b"".join(chunks)
+    if len(data) != size:
+        raise ValueError("Truncated or incorrectly sized Calypso binary block.")
+    return data
+
+
+def read_merged_binary(path, selected=None):
+    """Read native merged .fsb/.fsb.gz: int64, float64, 255-byte names.
+
+    Each MPI block is Fortran (node, all components), unlike the ASCII
+    per-field layout. Native compressed byte stacks and CRCs are validated.
+    """
+    path = Path(path)
+    compressed = path.suffix == ".gz"
+    with path.open("rb") as stream:
+        block = lambda n: _binary_block(stream, int(n), compressed)
+        marker = block(4)
+        if marker not in (b"XINU", b"UNIX"):
+            raise ValueError("Invalid Calypso binary byte-order marker.")
+        endian = "<" if marker == b"XINU" else ">"
+        ints = lambda n: np.frombuffer(block(8*n), dtype=endian+"i8")
+        ranks, step = int(ints(1)[0]), int(ints(1)[0])
+        clock = [float(np.frombuffer(block(8), dtype=endian+"f8")[0]) for _ in range(2)]
+        if not 1 <= ranks <= 1000000 or step < 0 or not np.isfinite(clock).all():
+            raise ValueError("Invalid Calypso binary rank count, step or time.")
+        stack = ints(ranks)
+        counts = np.diff(np.r_[0, stack])
+        nf = int(ints(1)[0])
+        if np.any(counts < 0) or stack[-1] <= 0 or not 1 <= nf <= 4096:
+            raise ValueError("Invalid Calypso binary node/field counts.")
+        components = ints(nf)
+        if np.any(components < 1) or np.any(components > 4096):
+            raise ValueError("Invalid Calypso binary component counts.")
+        labels = block(255*nf)
+        names = [labels[i*255:(i+1)*255].decode("ascii").strip() for i in range(nf)]
+        if any(not name or '\x00' in name for name in names) or len(set(names)) != nf:
+            raise ValueError("Invalid or duplicate Calypso binary field names.")
+        zipped = np.diff(np.r_[0, ints(ranks)]) if compressed else None
+        if zipped is not None and np.any(zipped < 0):
+            raise ValueError("Invalid Calypso compressed rank offsets.")
+        nc = int(components.sum())
+        columns = np.r_[0, np.cumsum(components)]
+        pieces = {name: [] for name in names if selected is None or name in selected}
+        for rank, count in enumerate(counts):
+            start = stream.tell()
+            if count == 0 and compressed and zipped[rank] == 0:
+                continue
+            payload = block(int(count)*nc*8)
+            if compressed and stream.tell() - start != zipped[rank]:
+                raise ValueError(f"Invalid compressed byte offset for Calypso rank {rank}.")
+            values = np.frombuffer(payload, dtype=endian+"f8").reshape((int(count), nc), order="F")
+            if not np.isfinite(values).all():
+                raise ValueError(f"Nonfinite Calypso binary field data in rank {rank}.")
+            for i, name in enumerate(names):
+                if name in pieces:
+                    pieces[name].append(values[:, columns[i]:columns[i+1]])
+        if stream.read(1):
+            raise ValueError("Unexpected trailing data in Calypso merged binary file.")
+    return {"ranks": ranks, "step": step, "time": clock[0], "dt": clock[1],
+            "counts": counts, "field_names": names,
+            "fields": {name: np.concatenate(parts).astype(np.float64, copy=False)
+                       for name, parts in pieces.items()}}
 
 
 def read_controls(path):
@@ -255,6 +345,7 @@ def grid_from_controls(records, geometry="auto"):
     kind = get("radial_grid_type_ctl", "Chebyshev").lower()
     boundaries = {args[0].lower(): int(args[1]) - 1 for _, key, args in records
                   if key == "boundaries_ctl" and len(args) == 2}
+    explicit_centre_boundary = kind == "explicit" and boundaries.get("icb") == -1
     if kind == "explicit":
         entries = [(int(args[0]), number(args[1])) for _, key, args in records
                    if key == "r_layer" and len(args) == 2]
@@ -265,8 +356,12 @@ def grid_from_controls(records, geometry="auto"):
         icb = boundaries.get("icb", 0)
         cmb = boundaries.get("cmb", len(r) - 1)
         center = get("sph_coef_type_ctl", "").lower() == "with_center"
+        if explicit_centre_boundary:
+            if not center:
+                raise ValueError("Explicit full-sphere ICB=0 needs sph_coef_type_ctl with_center.")
+            icb = 0  # Native ICB=0 denotes the separate origin, not r[-1].
     else:
-        if kind not in ("chebyshev", "equi_distance"):
+        if kind not in ("chebyshev", "half_chebyshev", "equi_distance"):
             raise ValueError(f"Unsupported generated Calypso radial grid {kind!r}; supply explicit r_layer controls.")
         inner, outer = get("icb_radius_ctl"), get("cmb_radius_ctl")
         if inner is not None and outer is not None:
@@ -285,7 +380,16 @@ def grid_from_controls(records, geometry="auto"):
         if not 0 <= rmin <= ri or rmax < ro:
             raise ValueError("Invalid Calypso minimum/maximum radial extension.")
         width = ro - ri
-        if kind == "equi_distance":
+        if kind == "half_chebyshev":
+            if ri != 0 or rmin != 0:
+                raise ValueError("Calypso half_Chebyshev requires zero ICB/minimum radius.")
+            if rmax != ro or int(get("increment_cheby_ctl", 1)) > 1:
+                raise ValueError("Extended/adjusted half_Chebyshev grids require explicit native r_layer controls.")
+            # Native nlayer_CMB = num_fluid_grid_ctl, nlayer_ICB = 0.
+            # The origin is a separate restart node, not a spectral radius.
+            r = ro * np.sin(0.5 * math.pi * np.arange(1, intervals + 1) / intervals)
+            icb, cmb = 0, intervals - 1
+        elif kind == "equi_distance":
             dr = width / intervals
             nin = max(0, int((ri-rmin) / dr))
             nout = max(0, int((rmax-ro) / dr) + 1) if rmax > ro else 0
@@ -328,7 +432,8 @@ def grid_from_controls(records, geometry="auto"):
         raise ValueError("Invalid Calypso radial grid or ICB/CMB indices.")
     centre_velocity = any(key == "bc_velocity" and any("center" in arg.lower() for arg in args[:1])
                           for _, key, args in records)
-    full = bool(r[icb] == 0 or centre_velocity or (geometry == "full-sphere" and center and icb == 0))
+    full = bool(kind == "half_chebyshev" or explicit_centre_boundary or r[icb] == 0 or centre_velocity
+                or (geometry == "full-sphere" and center and icb == 0))
     if geometry == "full-sphere" and not full:
         raise ValueError("A positive-radius Calypso shell cannot be relabelled full-sphere; need centre controls.")
     if geometry in ("shell", "conducting-inner-core") and full:
@@ -345,7 +450,8 @@ NATIVE_FIELDS = ("velocity", "temperature", "composition", "magnetic_field", "pr
 
 @cached_calculation
 def read_restart(path, grid):
-    merged = read_merged_ascii(path, NATIVE_FIELDS)
+    reader = read_merged_binary if ".fsb" in Path(path).suffixes else read_merged_ascii
+    merged = reader(path, NATIVE_FIELDS)
     modes = spectral_rank_modes(grid["lmax"], grid["radial_domains"],
                                 grid["horizontal_domains"], grid["minc"], grid["mode_distribution"])
     if merged["ranks"] != len(modes):

@@ -1,5 +1,45 @@
 # Integrated package validation
 
+## Calypso full-sphere binary restart (2026-09-09)
+
+- All 108 converter tests pass with both supplied Calypso archives enabled.
+  Seven new cases cover binary layout, byte order, compressed blocks,
+  half-Chebyshev/explicit centre grids, diagnostics, cache reuse, selection
+  and the real full-sphere restart. The older shell checks remain enabled.
+- Real input: `sph_shell_842/rst_48/rst.99.fsb.gz`, L=31, 48 MPI ranks (6×8),
+  192 positive spectral radii plus a separate centre node, 108×216 angular
+  samples. Header simulation step 990000 is kept separately from file index
+  99; time is 2.474999999948594 and dt is 2.5e-6.
+- The native grid is `r_k=sin(pi*k/(2*192))`, k=1..192. Positive radial node
+  counts and the sole extra centre record agree with all 48 MPI blocks.
+  An independent raw-byte address verifies the stored centre temperature.
+  Cubic-spline derivatives of stored poloidal coefficients agree with the
+  independently stored P-prime column to relative L2 errors 4.16e-4 (velocity)
+  and 2.76e-4 (magnetic), excluding three samples at each radial boundary.
+  This is a radial-consistency check, not a full physical-field error bound.
+- The user's complete command (EMF, induction, CMB l<=13, both line domains,
+  360 seeds, exterior-rmax=40, exterior-nr=192, 4000 steps per branch) exports
+  a validated 193×108×216 bundle with 46 volume fields, 364 internal seed
+  lines, 358 exterior arcs and 358 internal return branches (1080 segments).
+  All retained exterior arcs return to the CMB and all return connections
+  succeed. Two internal lines lack a traced CMB intersection; four exterior
+  traces reach the r=40 limit and are excluded by the closed-arc selection.
+- A real-data rerun reuses all 65 calculations. Its 48 f32 files and three
+  line JSON files are byte-identical to the fresh conversion.
+- Binary fixtures use independently encoded Fortran rank blocks with multiple
+  components, including empty MPI ranks, little/big endian and plain/native
+  gzip formats. Bad offsets, CRCs, truncated blocks, trailing bytes, duplicate
+  format selection and nonfinite data are rejected. Analytic full-sphere
+  exports recover T=1-r²+0.1x, constant Cartesian B and solid rotation at the
+  centre and throughout the grid. Incremental addition of EMF/induction
+  preserves existing field bytes and view files, and then skips unchanged work.
+- The real full-sphere archive contains no independent physical snapshot;
+  pointwise physical reconstruction is tested analytically, unlike the shell
+  archive's independent physical-node comparison. Extended or adjusted native
+  half-Chebyshev grids require explicit matching radii. Rank-local binary and
+  non-native single-member gzip wrappers are unsupported. No viewer or Worker
+  changes are needed.
+
 ## Field-line performance and progress (2026-09-09)
 
 - All 101 converter tests pass with the supplied Calypso sample enabled.

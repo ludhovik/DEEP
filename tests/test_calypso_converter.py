@@ -34,12 +34,14 @@ def write_ascii(path, fields, counts, step=0):
                 f.write(("".join(f"{v:25.15E}" for v in row) + "\n").encode())
 
 
-def make_run(root, geometry="shell", steps=(0,), magnetic=True):
+def make_run(root, geometry="shell", steps=(0,), magnetic=True, radius=None):
     """Independent one-rank native encoding of Cartesian B=(.4,-.2,1),
     solid rotation u=(-y,x,0), T=1-r²+.1x and composition=2+.1r².
     """
     root = Path(root); root.mkdir(parents=True, exist_ok=True)
     r = np.array([.05, .15, .35, .5, .7, 1.]) if geometry != "shell" else np.array([.35,.5,.7,1.])
+    if radius is not None:
+        r = np.asarray(radius, dtype=float)
     icb = 2 if geometry == "core" else 0
     centre = geometry != "shell"
     extra = "sph_coef_type_ctl with_center\n" if centre else ""

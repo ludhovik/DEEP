@@ -1,8 +1,8 @@
 # Calypso converter
 
 Convert native Calypso spectral restarts to the same DEEPscope bundle used by
-Leeds, XSHELLS and MagIC. The converter reads merged ASCII `*.fst` files,
-including gzip-compressed `*.fst.gz`, together with their original controls.
+Leeds, XSHELLS and MagIC. The converter reads merged ASCII `*.fst` and binary
+`*.fsb` files, including native `*.fst.gz` / `*.fsb.gz`, with their original controls.
 It reconstructs physical fields directly from the spectral coefficients.
 
 ## Quick start with the supplied shell archive
@@ -44,6 +44,33 @@ To export both supplied steps as a sequence, use the same command with:
 
 Every requested step must exist. The converter does not invent missing
 timesteps. Root and per-frame `view.DTV2` files survive incremental updates.
+
+## Full-sphere binary restart
+
+For the supplied `full_sphere/sph_shell_842` run, use that folder with the
+same export options. The reader discovers `rst_48/rst.99.fsb.gz` through
+`control_MHD`. No manual decompression or control-file edits are needed.
+
+The native `half_Chebyshev` grid has positive radii
+`r_k = r_CMB sin(pi k / (2 N))`, `k=1..N`, where `N=num_fluid_grid_ctl`.
+The origin is stored separately on the MPI rank owning the l=m=0 mode.
+Thus 192 spectral radial nodes become 193 exported radial coordinates,
+including one centre. This grid type is automatically classified full-sphere.
+Keep the native `half_Chebyshev` label; substituting ordinary `Chebyshev`
+would assign different radii to the spectral coefficients.
+
+The restart filename counts saved outputs, not solver timesteps. Use index
+99 with `--state-number` or sequence controls for this file. Its metadata
+records `state_number=99`, `calypso.simulation_step=990000`, and time≈2.475.
+
+Binary input follows native `field_block_MPI_IO_b` and
+`gz_field_block_MPI_IO_b`: four-byte UNIX byte-order marker, 64-bit integers
+and reals, 255-byte field labels, and rank-local Fortran `(node, component)`
+blocks. Native gzip files contain separate members for header blocks and MPI
+rank data, plus compressed-byte offsets. The reader validates those offsets,
+block sizes, CRCs, node counts and finite values. Both byte orders are supported.
+Wrapping an ordinary `.fsb` file in a single gzip stream is a different layout
+from native `merged_bin_gz` and is not supported.
 
 ## Options and output
 
@@ -169,16 +196,22 @@ an unstored conductive background is not invented.
 
 ## Supported inputs and current validation limits
 
-- Merged ASCII spectral restarts and gzip-compressed equivalents. Rank-local
-  files, binary restarts and physical `*.fld` files are not converter inputs.
-  Calypso can export merged ASCII restarts; preserve their original controls.
+- Merged ASCII and binary spectral restarts, including their native gzip
+  variants. Rank-local files and physical `*.fld` files are not converter
+  inputs. Preserve the matching original controls.
 - Standard `num_radial_domain_ctl` / `num_horizontal_domain_ctl` decomposition,
   horizontal RJ inner loop, `cyclic_eq_mode`, `original` or `simple` mode
   distribution; folded longitude symmetry is supported. Custom decomposition
   arrays and unknown ordering are rejected instead of guessed.
 - Generated Chebyshev or equally spaced radial grids, including native
-  extensions, and explicit `r_layer` grids with ICB/CMB indices. Other generated
-  radial grid types require equivalent explicit radial controls.
+  extensions, and explicit `r_layer` grids with ICB/CMB indices. An explicit
+  full-sphere `ICB=0` means the separate origin and requires
+  `sph_coef_type_ctl with_center`.
+- Generated full-sphere `half_Chebyshev` grids with zero ICB/minimum radius,
+  no stored exterior extension, and default `increment_cheby_ctl=1`.
+  Extended or adjusted half-Chebyshev grids require explicit native radial
+  controls. This restriction concerns the source grid; `--external-rmax`
+  still controls the separately calculated exterior magnetic field.
 - Full-sphere geometry must follow the source's centre grid/boundary controls.
   `--geometry full-sphere` cannot turn an ordinary positive-radius shell into
   a full sphere. Inner-core output requires stored magnetic coefficients at
@@ -191,10 +224,15 @@ Cartesian physical snapshot on all owned MPI nodes within `5e-16` for
 temperature, `9e-9` for velocity and `8e-8` for magnetic components. Tests
 include non-axisymmetric phase, not only the axisymmetric dipole.
 
-Full-sphere and conducting-core paths are tested with generated native-format
-analytic fixtures. **The supplied archive contains only a shell run; a real
-Calypso full-sphere archive is still needed for end-to-end validation of that
-format variant.**
+The supplied full-sphere `rst.99.fsb.gz` has L=31, 48 MPI ranks, 192 positive
+radial nodes and a separate centre, with 108 × 216 angular nodes. Tests check
+the native node stacks, binary layout and an independently addressed stored
+centre temperature. A complete conversion exercises the real restart.
+Analytic fixtures check full-sphere scalar/vector reconstruction, byte order,
+multiple-rank layout, diagnostics and incremental reuse. This full-sphere
+archive contains no independent physical snapshot, so it does not provide the
+same point-by-point physical validation as the shell archive. Conducting-core
+paths retain their analytic fixture coverage.
 
 Run the ordinary tests with `npm run test-converters`. To repeat the optional
 checks against this particular supplied archive:
@@ -202,4 +240,9 @@ checks against this particular supplied archive:
 ```bash
 CALYPSO_SAMPLE_DIR=/path/to/shell/dynamobench_case_1 \
   python3 tests/test_calypso_converter.py
+```
+
+```bash
+CALYPSO_FULL_SPHERE_SAMPLE_DIR=/path/to/full_sphere/sph_shell_842 \
+  python3 tests/test_calypso_binary.py
 ```

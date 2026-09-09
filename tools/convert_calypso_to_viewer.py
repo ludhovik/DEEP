@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Convert Calypso merged ASCII spectral restarts to DEEPscope bundles.
+"""Convert Calypso merged ASCII/binary spectral restarts to DEEPscope bundles.
 
 Uses NumPy/SciPy only. The native control_MHD and spherical-grid controls are
-required because .fst files do not contain their radial coordinates or (l,m)
+required because restart files do not contain their radial coordinates or (l,m)
 ordering. See CALYPSO_CONVERTER.md for conventions and supported formats.
 """
 from __future__ import annotations
@@ -35,15 +35,15 @@ except ImportError:
     from tools.viewer_bundle import bundle_path
 
 
-CONVERTER_PACKAGE_VERSION = "3.7.0"
-RESTART_RE = re.compile(r"^.+\.(\d+)\.fst(?:\.gz)?$")
+CONVERTER_PACKAGE_VERSION = "3.7.2"
+RESTART_RE = re.compile(r"^.+\.(\d+)\.fs[tb](?:\.gz)?$")
 
 
 def build_arg_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--folder", "-folder", help="Calypso run folder containing control_MHD.")
-    parser.add_argument("--state", "--restart", help="Explicit merged rst.<step>.fst[.gz] file.")
-    parser.add_argument("--state-number", "--ivar", type=int, help="Restart step; default is the latest available.")
+    parser.add_argument("--state", "--restart", help="Explicit merged rst.<index>.fst/.fsb file (also native gzip).")
+    parser.add_argument("--state-number", "--ivar", type=int, help="Restart filename index; default is the latest available.")
     parser.add_argument("--control", help="Explicit control_MHD path; otherwise found in the run folder.")
     parser.add_argument("--modules-dir", help="Accepted for command compatibility; the Calypso reader needs no modules.py.")
     return add_viewer_arguments(parser, "public/data_calypso")
@@ -72,7 +72,7 @@ def find_control(args):
 def restart_step(path):
     match = RESTART_RE.match(Path(path).name)
     if not match:
-        raise ValueError("Expected a merged Calypso rst.<step>.fst or .fst.gz file. Binary/rank-local files need native export to merged ASCII.")
+        raise ValueError("Expected a merged Calypso rst.<index>.fst/.fsb file, optionally .gz; rank-local files are unsupported.")
     return int(match[1])
 
 
@@ -88,7 +88,7 @@ def discover_states(args, control, records):
     prefix = Path(control_value(records, "restart_file_prefix", "restart/rst"))
     prefix = prefix if prefix.is_absolute() else control.parent / prefix
     found = {}
-    for path in prefix.parent.glob(prefix.name + ".*.fst*"):
+    for path in prefix.parent.glob(prefix.name + ".*.fs*"):
         if not path.is_file() or not RESTART_RE.match(path.name):
             continue
         step = restart_step(path)
@@ -96,7 +96,7 @@ def discover_states(args, control, records):
             raise ValueError(f"Two Calypso restarts have step {step}: {found[step]} and {path}. Select one with --state.")
         found[step] = path.resolve()
     if not found:
-        raise FileNotFoundError(f"No merged ASCII restarts at {prefix}.<step>.fst[.gz]. Keep restart and control files together.")
+        raise FileNotFoundError(f"No merged restarts at {prefix}.<index>.fst/.fsb (also .gz). Keep restart and control files together.")
     first, last = args.sequence_first, args.sequence_last
     if first is not None or last is not None:
         if first is None or last is None or last < first or args.sequence_step < 1:
@@ -178,8 +178,8 @@ def physical_parameters(records, args, radius, r_icb=None):
 def convert_state(path, outdir, args, records, grid, control_files):
     print(f"Calypso restart: {path}", flush=True)
     spectra, centres, header = read_restart(path, grid)
-    if header["step"] != restart_step(path):
-        raise ValueError("Calypso restart header step does not match its filename.")
+    # Filenames count restart outputs, while the header counts solver steps.
+    state_number = restart_step(path)
     native_mmax = grid["lmax"] // grid["minc"] * grid["minc"]
     info = cutoff_metadata(args.spectral_lmax, grid["lmax"], native_mmax)
     lmax = info["lmax_effective"]
@@ -245,9 +245,10 @@ def convert_state(path, outdir, args, records, grid, control_files):
                "metadata": {
                    "description": "Calypso spectral restart reconstructed with native Schmidt harmonics.",
                    "source_format": "calypso", "converter_version": CONVERTER_PACKAGE_VERSION,
-                   "source_state": str(path.resolve()), "state_number": header["step"],
+                   "source_state": str(path.resolve()), "state_number": state_number,
                    "source_fields": {"restart": str(path.resolve()), "controls": [str(p) for p in control_files]},
-                   "calypso": {**normalization, "dt": header["dt"], "source_field_names": header["field_names"],
+                   "calypso": {**normalization, "dt": header["dt"], "simulation_step": header["step"],
+                               "source_field_names": header["field_names"],
                                "restart_vector_columns": ["poloidal", "toroidal", "d_poloidal_dr"],
                                "harmonics": "Schmidt semi-normalized, no Condon-Shortley; positive m cosine, negative m sine",
                                "centre_policy": "scalar stored centre; vector l=1 nearest-shell regular limit" if add_centre else "no centre sample"},
