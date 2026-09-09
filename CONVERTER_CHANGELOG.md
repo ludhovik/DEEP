@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.7.0
+
+- Add a Calypso merged ASCII/gzip spectral restart converter using NumPy/SciPy.
+  Restore native MPI ordering, Schmidt harmonics, P/T/P-prime vector fields,
+  folded longitude symmetry, centre samples and stored core magnetic domains.
+- Share MagIC's output controls and physical-field pipeline: diagnostics,
+  spectral cutoff, downsampling, maps, paired field lines and incremental reuse.
+- Derive Calypso N2 from native equation coefficients; retain modified Rayleigh
+  numbers under their own names. Validate source/control agreement and reject
+  unsupported layouts before publishing output.
+- Add shell benchmark and independent physical-snapshot validation, plus
+  analytic full-sphere/core, cache reuse, sequence and rollback tests.
+- Full-sphere production-file validation awaits a supplied native example.
+
 ## 3.6.0
 
 - Detect separate Leeds `icr`/`icBP`/`icBT` data, including padded NetCDF arrays

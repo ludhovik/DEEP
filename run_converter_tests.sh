@@ -5,3 +5,5 @@ python3 tests/test_converter_package.py
 python3 tests/test_exterior_tracing.py
 python3 tests/test_spectral_truncation.py
 python3 tests/test_incremental_conversion.py
+python3 tests/test_inner_core.py
+python3 tests/test_calypso_converter.py

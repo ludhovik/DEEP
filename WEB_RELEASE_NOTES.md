@@ -1,5 +1,12 @@
 # v0.4.0 — static hosted/local-data viewer
 
+## Calypso dataset conversion (2026-09-09)
+
+- Add Calypso to the converter list and document its native restart workflow.
+  Converted bundles use the existing fields, inner-core regions, B² tubes,
+  pairing, local/remote loading and saved views without a new viewer format.
+- No Cloudflare Worker update is needed.
+
 ## Inner-core volumes and isosurface legends (2026-09-08)
 
 - Select Whole core, Fluid outer core or Inner core only for magnetic slices,

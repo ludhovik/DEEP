@@ -6,7 +6,9 @@ and convection simulations. It includes converters for:
 - the Leeds Spherical Dynamo code;
 - XSHELLS through `pyxshells`;
 - MagIC `G_#.TAG` and `G_ave.TAG` graphic files through MagIC's `MagicGraph`
-  reader.
+  reader;
+- Calypso merged ASCII spectral restarts (`*.fst` / `*.fst.gz`) with their
+  matching grid controls.
 
 Open the hosted viewer at
 [the DEEPscope viewer](https://ludhovik.github.io/DEEP/), or run it locally
@@ -378,7 +380,7 @@ Older bundles without line identifiers retain independent stride selection;
 new converter output already contains the pairing information. Shell lines
 without an exported exterior partner remain available for display.
 
-All three converters trace a line in Cartesian coordinates with arclength-like
+All four converters trace a line in Cartesian coordinates with arclength-like
 parameter `s`:
 
 ```text
@@ -402,7 +404,7 @@ Bphi_lm(r)   = -q_lm (R/r)^(l+2)/(l+1)/sin(theta) dY_lm/dphi
 ```
 
 This field is divergence-free and curl-free. Leeds obtains `q_lm` from its CMB
-poloidal coefficients, while XSHELLS and MagIC analyse the physical CMB `Br`.
+poloidal coefficients, while XSHELLS, MagIC and Calypso analyse the physical CMB `Br`.
 The SHTns spheroidal coefficient is fixed analytically to
 `S_lm = -Q_lm/(l+1)`; it is no longer selected from line appearance.
 
@@ -675,18 +677,19 @@ Install only the requirements needed for the selected converter:
 python -m pip install -r requirements-converters.txt  # Leeds
 python -m pip install -r requirements-xshells.txt     # XSHELLS
 python -m pip install -r requirements-magic.txt       # MagIC bridge
+python -m pip install -r requirements-calypso.txt     # Calypso (NumPy/SciPy)
 ```
 
 Run any converter with `--help` for the complete and current option list.
 
 ### Angular spectral truncation
 
-All three converters accept `--spectral-lmax L`. **The default is 0: keep all
+All four converters accept `--spectral-lmax L`. **The default is 0: keep all
 available source degrees.** Omitting the option is equivalent to setting it to
 0. This changes the Leeds converter's previous default of 128; specify 128
 explicitly to retain that cutoff.
 
-For example, add this to a Leeds, XSHELLS or MagIC conversion command:
+For example, add this to a Leeds, XSHELLS, MagIC or Calypso conversion command:
 
 ```bash
 --spectral-lmax 128
@@ -700,7 +703,7 @@ above the available degree leaves the original grid and fields unchanged.
 `metadata.json` records the requested and effective cutoff under
 `spectral_truncation`.
 
-Leeds and XSHELLS truncate their native scalar and poloidal/toroidal
+Leeds, XSHELLS and Calypso truncate their native scalar and poloidal/toroidal
 coefficients before physical-space synthesis. XSHELLS retains radial ghost
 coefficients and each field's radial domain. Omit explicit `--nlat`/`--nphi`
 when you want XSHELLS to choose its smaller grid automatically.
@@ -718,7 +721,7 @@ Gradients, EMF, induction and field lines are then calculated from the
 truncated source fields. Nonlinear products can contain higher degrees than
 the input cutoff; reduced output grids do not preserve all native nonlinear
 detail. Check convergence for the quantities you use. CMB/Earth map cutoffs
-and MagIC's `--external-lmax` (default 32) remain separate controls.
+and MagIC/Calypso's `--external-lmax` (default 32) remain separate controls.
 
 ## Leeds converter
 
@@ -824,9 +827,38 @@ An open validation source is Yifan Wu's MagIC dataset on
 [`MAGIC_CONVERTER.md`](MAGIC_CONVERTER.md) for the tested archive member,
 extraction command, physical parameters, and detailed caveats.
 
+## Calypso converter
+
+The Calypso converter reads merged ASCII spectral restarts with their original
+`control_MHD` and linked spherical-grid controls. No Calypso installation or
+SHTns is required. Keep the extracted archive's directory structure intact.
+
+```bash
+python3 tools/convert_calypso_to_viewer.py \
+  --folder /path/to/shell/dynamobench_case_1 \
+  --out public/data_calypso \
+  --incremental --emf --induction \
+  --cmb-br-ltrunc 13 --field-line-mode both \
+  --line-seeds 360 --external-rmax 40 --external-nr 192 \
+  --line-max-steps 4000
+```
+
+The latest restart is selected; `--state-number 0` selects the initial state.
+All source degrees are retained by default. For the supplied L=63 benchmark,
+`--spectral-lmax 32` reduces the angular output grid from 96 × 192 to 34 × 66.
+Add `--sequence-first 0 --sequence-last 1 --sequence-step 1` to convert both
+supplied restarts. Temperature is `C`; composition, when present, is `Comp`.
+
+Full-sphere centre handling and stored inner-core magnetic fields are
+supported. The supplied shell run is validated against its analytic initial
+field and independent physical snapshot. Full-sphere validation currently
+uses analytic fixtures; a real full-sphere sample is still needed.
+See [CALYPSO_CONVERTER.md](CALYPSO_CONVERTER.md) for native format requirements,
+N2 normalization, equations and supported control layouts.
+
 ## Useful converter options
 
-The three converters intentionally share common controls where possible:
+The four converters intentionally share common controls where possible:
 
 ```text
 --spectral-lmax L
@@ -851,7 +883,7 @@ quantities.
 
 ### Incremental conversion
 
-All three converters accept **`--incremental`**. Add it to the same conversion
+All four converters accept **`--incremental`**. Add it to the same conversion
 command, keeping its source and output paths:
 
 ```text
@@ -883,7 +915,7 @@ output and `public/`. Deleting this disposable cache leaves converted data
 intact; missing calculations will be rebuilt when needed.
 
 Combine **`--incremental --force`** to recompute and refresh cached calculations.
-Without `--incremental`, conversion runs normally. Leeds and MagIC sequence
+Without `--incremental`, conversion runs normally. Leeds, MagIC and Calypso sequence
 extensions reuse unchanged frames and preserve root and per-frame `view.DTV2`
 files. XSHELLS keeps its existing single-snapshot interface. Previous output
 backups and validation before publication also apply to incremental runs.
@@ -901,6 +933,8 @@ magnetic data are used:
 - **XSHELLS:** the native `fieldB` radial domain must extend below the fluid ICB.
 - **MagIC:** the graphic file must contain `radius_ic`, `Br_ic`, `Btheta_ic` and
   `Bphi_ic`. Incomplete core vectors or radii outside the ICB are rejected.
+- **Calypso:** native spectral magnetic data must extend below the fluid ICB,
+  with matching radial and boundary controls.
 
 In the viewer, choose **Magnetic volume region → Inner core only** to restrict
 magnetic radial spheres, equatorial/meridional slices and isosurfaces to that

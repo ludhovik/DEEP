@@ -529,21 +529,29 @@ def magic_input_files(paths):
 
 def convert_graph(path: Path, outdir: Path, args: argparse.Namespace) -> dict[str, Any]:
     adapted, graph_parameters = read_graph_data(path, args.magic_python_dir, args.precision)
+    return convert_adapted_snapshot(path, outdir, args, adapted, graph_parameters)
+
+
+def convert_adapted_snapshot(path, outdir, args, adapted, graph_parameters, *,
+                             source_label="MagIC", source_format="magic_graph"):
+    """Export native spherical fields through the common diagnostics/line pipeline."""
     graph = SimpleNamespace(**graph_parameters)
     r_shell = adapted["r_shell"]
     r_master = adapted["r_master"]
     theta = adapted["theta"]
     phi = adapted["phi"]
     raw = adapted["fields"]
-    r_icb, r_cmb = float(r_shell[0]), float(r_shell[-1])
+    r_icb, r_cmb = float(adapted.get("r_fluid_inner", r_shell[0])), float(r_shell[-1])
     has_inner_core = r_icb > RADIAL_ATOL
     has_cond_ic = bool(adapted["has_conducting_inner_core"])
     magnetic_extends_ic = bool(adapted["magnetic_extends_inner_core"])
     lmax = inferred_lmax(graph, len(theta))
-    truncate = cached_calculation(truncate_graphic_fields) if args.spectral_lmax else truncate_graphic_fields
-    raw, theta, phi, spectral_truncation = truncate(
-        raw, theta, phi, args.spectral_lmax, lmax, adapted["minc"],
-    )
+    spectral_truncation = adapted.get("spectral_truncation")
+    if spectral_truncation is None:
+        truncate = cached_calculation(truncate_graphic_fields) if args.spectral_lmax else truncate_graphic_fields
+        raw, theta, phi, spectral_truncation = truncate(
+            raw, theta, phi, args.spectral_lmax, lmax, adapted["minc"],
+        )
     lmax = spectral_truncation["lmax_effective"]
     if spectral_truncation["enabled"]:
         print(f"Angular spectral truncation: lmax {spectral_truncation['lmax_original']} -> {lmax}; "
@@ -555,19 +563,19 @@ def convert_graph(path: Path, outdir: Path, args: argparse.Namespace) -> dict[st
         if abs(float(args.fluid_inner_radius) - r_icb) > tolerance:
             raise ValueError(
                 f"--fluid-inner-radius={args.fluid_inner_radius} does not match "
-                f"the MagIC ICB radius {r_icb} within {tolerance}."
+                f"the {source_label} ICB radius {r_icb} within {tolerance}."
             )
     if args.geometry == "full-sphere" and has_inner_core:
-        raise ValueError("--geometry full-sphere conflicts with the native MagIC shell grid.")
+        raise ValueError(f"--geometry full-sphere conflicts with the native {source_label} shell grid.")
     if args.geometry in ("shell", "conducting-inner-core") and not has_inner_core:
         raise ValueError(f"--geometry {args.geometry} conflicts with the native full-sphere grid.")
     if args.geometry == "conducting-inner-core" and not has_cond_ic:
         raise ValueError(
-            "--geometry conducting-inner-core was requested, but MagIC's sigma value is zero."
+            f"--geometry conducting-inner-core was requested, but {source_label} has no conducting inner core."
         )
 
     print(
-        f"MagIC grid: shell nr={len(r_shell)}, master nr={len(r_master)}, "
+        f"{source_label} grid: shell nr={len(r_shell)}, master nr={len(r_master)}, "
         f"ntheta={len(theta)}, nphi={len(phi)}, minc={adapted['minc']}, lmax~{lmax}"
     )
     native: dict[str, tuple[np.ndarray, np.ndarray, str]] = {}
@@ -606,20 +614,24 @@ def convert_graph(path: Path, outdir: Path, args: argparse.Namespace) -> dict[st
     scalars: dict[str, tuple[np.ndarray, np.ndarray, str]] = {}
     if "C" in raw:
         C = raw["C"]
-        scalars["C"] = (C, r_shell, "entropy")
-        register("C", C, r_shell, "entropy")
-        register("T", C, r_shell, "entropy")
-        register("Cnom0", remove_m0_phi(C), r_shell, "entropy")
-        register("C_phiavg", phi_average_volume(C), r_shell, "entropy")
-        if not args.no_m0_fields:
+        thermal_source = adapted.get("thermal_source", "entropy")
+        scalars["C"] = (C, r_shell, thermal_source)
+        register("C", C, r_shell, thermal_source)
+        if source_format == "magic_graph":
+            register("T", C, r_shell, "entropy")
+        if source_format == "magic_graph" or not args.no_m0_fields:
+            register("Cnom0", remove_m0_phi(C), r_shell, thermal_source)
+            register("C_phiavg", phi_average_volume(C), r_shell, thermal_source)
+        if source_format == "magic_graph" and not args.no_m0_fields:
             register("T_nom0", remove_m0_phi(C), r_shell, "entropy")
             register("T_phiavg", phi_average_volume(C), r_shell, "entropy")
     if "Comp" in raw:
         Comp = raw["Comp"]
         scalars["Comp"] = (Comp, r_shell, "composition")
         register("Comp", Comp, r_shell, "composition")
-        register("Compnom0", remove_m0_phi(Comp), r_shell, "composition")
-        register("Comp_phiavg", phi_average_volume(Comp), r_shell, "composition")
+        if source_format == "magic_graph" or not args.no_m0_fields:
+            register("Compnom0", remove_m0_phi(Comp), r_shell, "composition")
+            register("Comp_phiavg", phi_average_volume(Comp), r_shell, "composition")
     for optional in ("Phase", "P"):
         if optional in raw:
             register(optional, raw[optional], r_shell, optional.lower())
@@ -684,13 +696,19 @@ def convert_graph(path: Path, outdir: Path, args: argparse.Namespace) -> dict[st
     RaT = parameter_value(args, graph, "RaT", ("ra",))
     RaC = parameter_value(args, graph, "RaC", ("raxi",))
     N2_full = None
-    if gradients and np.isfinite(Ek):
+    n2_factors = adapted.get("n2_factors")
+    if gradients and (np.isfinite(Ek) or n2_factors is not None):
         N2_full = np.zeros_like(next(iter(gradients.values()))[0], dtype=np.float64)
         used = False
-        if "C" in gradients and np.isfinite(Pr) and Pr != 0.0 and np.isfinite(RaT):
+        if n2_factors is not None:
+            for scalar, factor in n2_factors.items():
+                if scalar in gradients:
+                    N2_full += np.asarray(factor)[:, None, None] * gradients[scalar][0]
+                    used = True
+        elif "C" in gradients and np.isfinite(Pr) and Pr != 0.0 and np.isfinite(RaT):
             N2_full += r_shell[:, None, None] * (Ek**2 * RaT / Pr) * gradients["C"][0]
             used = True
-        if "Comp" in gradients and np.isfinite(Sc) and Sc != 0.0 and np.isfinite(RaC):
+        if n2_factors is None and "Comp" in gradients and np.isfinite(Sc) and Sc != 0.0 and np.isfinite(RaC):
             N2_full += r_shell[:, None, None] * (Ek**2 * RaC / Sc) * gradients["Comp"][0]
             used = True
         if used:
@@ -742,7 +760,7 @@ def convert_graph(path: Path, outdir: Path, args: argparse.Namespace) -> dict[st
         surface_fields[name] = {
             "file": filename, "surface": "cmb", "layout": "theta_phi",
             "l_trunc": requested, "effective_l_trunc": effective,
-            "source": "MagIC Br at the CMB",
+            "source": f"{source_label} Br at the CMB",
         }
     if not args.no_earth_br and Br_cmb is not None:
         requested = max(0, int(args.earth_br_ltrunc))
@@ -758,7 +776,7 @@ def convert_graph(path: Path, outdir: Path, args: argparse.Namespace) -> dict[st
             "file": filename, "surface": "earth", "layout": "theta_phi",
             "l_trunc": requested, "effective_l_trunc": effective,
             "radius_scale": scale, "radius": r_cmb * scale,
-            "source": "MagIC CMB Br continued as an external potential field",
+            "source": f"{source_label} CMB Br continued as an external potential field",
             "radial_decay": "(r_cmb/r)^(l+2)",
         }
 
@@ -866,7 +884,7 @@ def convert_graph(path: Path, outdir: Path, args: argparse.Namespace) -> dict[st
     }
     metadata = {
         "description": "Converted physical-space quantities from a MagIC graphic snapshot using MagicGraph.",
-        "source_format": "magic_graph",
+        "source_format": source_format,
         "converter_version": CONVERTER_PACKAGE_VERSION,
         "sampling": sampling.description(),
         "invalid_value_policy": "reject_nonfinite_and_float32_overflow",
@@ -886,7 +904,7 @@ def convert_graph(path: Path, outdir: Path, args: argparse.Namespace) -> dict[st
                      "classification": "magnetic" if has_magnetic else "non_magnetic",
                      "has_conducting_inner_core": has_cond_ic,
                      "extends_into_inner_core": magnetic_extends_ic},
-        "title": f"MagIC, t={time if time is not None else float('nan'):.3e}",
+        "title": f"{source_label}, t={time if time is not None else float('nan'):.3e}",
         "nr": len(r_out), "ntheta": len(theta_out), "nphi": len(phi_out),
         "r_inner": json_number(r_out[0]), "r_outer": json_number(r_out[-1]),
         "r_icb": json_number(r_icb), "icb_radius": json_number(r_icb),
@@ -907,6 +925,7 @@ def convert_graph(path: Path, outdir: Path, args: argparse.Namespace) -> dict[st
         "coordinates": "coordinates.json", "profiles": "profiles.json",
         "field_lines": field_lines_meta,
     }
+    metadata.update(adapted.get("metadata", {}))
     with open(outdir / "metadata.json", "w", encoding="utf-8") as stream:
         json.dump(metadata, stream, indent=2, allow_nan=False)
     try:
@@ -929,7 +948,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     source.add_argument("--magic-python-dir", help="MagIC python directory, normally $MAGIC_HOME/python.")
     source.add_argument("--precision", choices=["float32", "float64"], default="float32")
 
-    p.add_argument("--out", default="public/data_magic")
+    return add_viewer_arguments(p, "public/data_magic")
+
+
+def add_viewer_arguments(p, default_output):
+    """Shared output, diagnostics, sampling, tracing and incremental options."""
+    p.add_argument("--out", default=default_output)
     p.add_argument("--spectral-lmax", type=nonnegative_lmax, default=0,
                    help="Maximum spherical-harmonic degree; 0 (default) retains all native samples. Positive cutoffs filter scalar/vector harmonics and reduce the angular grid.")
     p.add_argument("--downsample-r", type=int, default=1)
@@ -937,11 +961,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--downsample-phi", type=int, default=1)
     p.add_argument("--no-gradients", action="store_true")
     p.add_argument("--no-m0-fields", action="store_true")
-    p.add_argument("--no-parameter-prompt", action="store_true", help="Accepted for CLI parity; MagIC parameters come from the G header.")
+    p.add_argument("--no-parameter-prompt", action="store_true", help="Accepted for CLI parity; native parameters come from the input header/control.")
     p.add_argument("--emf", action="store_true")
     p.add_argument("--induction", action="store_true")
     p.add_argument("--geometry", choices=["auto", "full-sphere", "shell", "conducting-inner-core"], default="auto")
-    p.add_argument("--fluid-inner-radius", type=float, help="Validate the MagIC ICB radius against this value.")
+    p.add_argument("--fluid-inner-radius", type=float, help="Validate the native ICB radius against this value.")
     p.add_argument("--Ek", "--E", dest="Ek", type=float)
     p.add_argument("--Pr", "--PrT", "--Pr_T", dest="Pr", type=float)
     p.add_argument("--Sc", "--PrC", "--Pr_C", dest="Sc", type=float)
@@ -958,7 +982,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--external-lmax", type=int, default=32, help="Maximum degree used for exterior field-line reconstruction.")
     p.add_argument("--external-closed-only", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--external-btheta-sign", choices=["auto", "plus", "minus"], default="auto",
-                   help="Accepted for CLI parity; MagIC potential-field signs are fixed analytically.")
+                   help="Accepted for CLI parity; potential-field signs are fixed analytically.")
     p.add_argument("--line-seeds", type=int)
     p.add_argument("--line-seed-theta", type=int, default=9)
     p.add_argument("--line-seed-phi", type=int, default=18)

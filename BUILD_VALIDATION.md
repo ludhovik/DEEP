@@ -1,5 +1,39 @@
 # Integrated package validation
 
+## Calypso converter (2026-09-09)
+
+- 91 converter tests pass with the supplied Calypso data enabled (75 existing
+  tests plus 16 Calypso tests). Without CALYPSO_SAMPLE_DIR, the two external
+  sample tests are skipped. All 125 viewer/proxy tests and production build
+  pass; the existing Vite chunk-size advisory remains.
+- Real input: the supplied shell/dynamobench_case_1 archive, restarts 0 and 1,
+  L=63, six MPI ranks, 73 radial nodes, 96 Gauss latitudes, 192 longitudes.
+  Native ASCII byte/node stacks and the active signed-harmonic ordering are
+  checked. Restart 0 reproduces the analytic dynamo benchmark magnetic field
+  to within 4e-14 in all components. Restart 1 is independently compared with
+  out.1.fld on every owned MPI node, including Cartesian vector conversion:
+  maximum absolute discrepancies <5e-16 (temperature), <9e-9 (velocity),
+  <8e-8 (magnetic components).
+- A complete, untruncated restart-1 conversion writes 46 volume fields,
+  gradients, N2, EMF, induction and surface maps. At external-rmax=40,
+  external-nr=192 and line-max-steps=1000, all 12 test exterior seeds return
+  to the CMB and all 12 receive internal return branches (36 total segments).
+  The bundle passes binary-size/coordinate/metadata validation.
+- Analytic native-format fixtures check non-axisymmetric cosine/sine phase,
+  P/T/P-prime normalization, solid rotation, constant Cartesian magnetic
+  fields, full-sphere centre continuity, conducting-core field domains,
+  convection-only inputs, spectral cutoff, downsampling, optional fields,
+  native buoyancy coefficients and explicit parameter overrides.
+- Incremental tests verify whole-bundle skipping, reuse of native transforms
+  when adding EMF/induction, core-only updates preserving field bytes, sequence
+  extension preserving root/frame views, and rollback after corrupt input.
+  Gzip input, truncated records, incompatible controls and cyclic references
+  are checked.
+- Full-sphere and conducting-core tests use generated native-format analytic
+  fixtures. No real Calypso full-sphere dataset was supplied. Binary/rank-local
+  restarts and custom MPI index layouts are explicitly unsupported. No new
+  browser rendering algorithm or Cloudflare deployment is required.
+
 ## Inner-core data and isosurface legends (2026-09-08)
 
 - 75 converter tests and 125 viewer/proxy tests pass; production build passes.
