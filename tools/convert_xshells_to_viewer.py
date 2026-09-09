@@ -45,9 +45,9 @@ except ImportError:
     from tools.spectral_truncation import nonnegative_lmax, cutoff_metadata
 
 try:
-    from viewer_bundle import ViewerSampling, write_f32
+    from viewer_bundle import ViewerSampling, write_f32, write_field_lines
 except ImportError:
-    from tools.viewer_bundle import ViewerSampling, write_f32
+    from tools.viewer_bundle import ViewerSampling, write_f32, write_field_lines
 
 try:
     import pyxshells
@@ -1195,8 +1195,7 @@ def convert_xshells(args: argparse.Namespace) -> None:
             )
             shell_count = len(shell_lines)
             combined_lines.extend(shell_lines)
-            with open(outdir / "B_lines_shell.json", "w", encoding="utf-8") as stream:
-                json.dump(shell_lines, stream, allow_nan=False)
+            write_field_lines(outdir / "B_lines_shell.json", shell_lines)
             field_lines_meta["shell"] = "B_lines_shell.json"
             field_lines_meta["B_lines_shell"] = "B_lines_shell.json"
             field_lines_meta["counts"]["shell"] = shell_count
@@ -1259,8 +1258,7 @@ def convert_xshells(args: argparse.Namespace) -> None:
             _, selected_sign, exterior_lines, exterior_statuses = best_choice
             exterior_count = len(exterior_lines)
             combined_lines.extend(exterior_lines)
-            with open(outdir / "B_lines_exterior_poloidal.json", "w", encoding="utf-8") as stream:
-                json.dump(exterior_lines, stream, allow_nan=False)
+            write_field_lines(outdir / "B_lines_exterior_poloidal.json", exterior_lines)
             field_lines_meta["exterior"] = "B_lines_exterior_poloidal.json"
             field_lines_meta["exterior_poloidal"] = "B_lines_exterior_poloidal.json"
             field_lines_meta["B_lines_exterior_poloidal"] = "B_lines_exterior_poloidal.json"
@@ -1292,16 +1290,16 @@ def convert_xshells(args: argparse.Namespace) -> None:
             field_lines_meta["counts"]["shell_seed_lines"] = len(shell_lines)
             field_lines_meta["counts"]["shell_return_branches"] = len(returns)
             field_lines_meta["return_connection_counts"] = return_counts
+            # A cache hit replaces exterior records with their annotated copies.
+            # Reassemble after connection so the combined file keeps those labels.
+            combined_lines = [*shell_lines, *exterior_lines, *returns]
             shell_lines.extend(returns)
-            combined_lines.extend(returns)
             shell_count = len(shell_lines)
             field_lines_meta["counts"]["shell"] = shell_count
             for filename, records in (("B_lines_shell.json", shell_lines),
                                       ("B_lines_exterior_poloidal.json", exterior_lines)):
-                with open(outdir / filename, "w", encoding="utf-8") as stream:
-                    json.dump(records, stream, allow_nan=False)
-        with open(outdir / "B_lines.json", "w", encoding="utf-8") as stream:
-            json.dump(combined_lines, stream, allow_nan=False)
+                write_field_lines(outdir / filename, records)
+        write_field_lines(outdir / "B_lines.json", combined_lines)
         field_lines_meta["B_lines"] = "B_lines.json"
         field_lines_meta["count"] = len(combined_lines)
         print(

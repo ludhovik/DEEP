@@ -920,6 +920,38 @@ extensions reuse unchanged frames and preserve root and per-frame `view.DTV2`
 files. XSHELLS keeps its existing single-snapshot interface. Previous output
 backups and validation before publication also apply to incremental runs.
 
+### Field-line runtime and progress
+
+All four converters use the shared serial CPU tracer. They now report the
+internal, exterior and return-branch stages, completed seed counts, current
+integration step and elapsed time approximately every five seconds. Writing
+large line files, saving completed line calculations and final validation
+are also announced.
+Line JSON is encoded in memory before writing, so peak memory includes the
+largest encoded line file.
+
+`--line-seeds 360` selects a 13 × 28 grid (364 seeds). Internal lines are traced
+in both directions; `--line-max-steps 4000` is a limit per branch, not a total
+for the dataset. Lines that wind inside the fluid can use the full budget.
+The seed counter can therefore advance unevenly. Exterior lines and return
+branches run afterwards. `--external-rmax` controls the exterior domain and
+does not explain time spent tracing inside the shell.
+
+A prepared interpolator reuses the fixed longitude spacing and one set of
+cell weights for all three magnetic components. It preserves the existing
+trilinear interpolation, RK4 steps, boundary rules and sampled strengths.
+
+With `--incremental`, calculations already saved to cache survive Ctrl+C.
+An interrupted field-line stage is not checkpointed per seed: that stage starts
+again, while cached native fields and diagnostics are reused. Keep the cache
+and rerun the same command. Publication occurs only after bundle validation,
+so interruption leaves the preceding published dataset intact.
+
+For a quick volume-only preview, append `--skip-field-lines`. Remove that flag
+on a later incremental run to add field lines without repeating matching
+cached transforms. An existing complete output with lines will be replaced
+by the requested volume-only bundle if this preview flag is used.
+
 ### Magnetic fields inside the inner core
 
 The same `Br`, `Bt`, `Bp`, `Babs`, magnetic azimuthal means and fluctuations

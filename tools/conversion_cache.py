@@ -180,6 +180,9 @@ class CalculationCache:
                 pass
         result = compute()
         self.misses += 1
+        if label in ("compute_shell_field_lines_from_cmb", "compute_external_field_lines_from_cmb",
+                     "connect_exterior_return_footpoints"):
+            print(f"  Saving completed field-line calculation to cache: {label}", flush=True)
         directory.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=".writing-", dir=directory.parent) as tmp:
             stage = Path(tmp) / "entry"
@@ -320,6 +323,7 @@ def run_conversion(args, kind, inputs, convert, *, backend_files=(), inner_core_
         with staged_bundle_output(output) as stage:
             args.out = str(stage)
             convert(args)
+            print("Validating converted data before publication...", flush=True)
             try:
                 from inner_core import describe_inner_core
             except ImportError:

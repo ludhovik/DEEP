@@ -1,5 +1,38 @@
 # Integrated package validation
 
+## Field-line performance and progress (2026-09-09)
+
+- All 101 converter tests pass with the supplied Calypso sample enabled.
+  Ten new regressions cover interpolation equivalence, grid lifetime, tracing,
+  progress, line serialization, interruption and cached return connections.
+- The prepared sampler matches the unchanged scalar interpolator exactly at
+  seams, poles and radial boundaries, with float32/float64 samples and shifted
+  longitude grids. Internal/exterior coordinates, sampled strengths, terminal
+  statuses and short-arc refinements match the reference path bit for bit.
+- An unprofiled 400-step internal branch from the supplied restart-1 magnetic
+  field takes median 0.533 s with reference interpolation and 0.075 s with the
+  prepared sampler (7.1 times faster, two runs each with order reversed).
+  This is a tracing benchmark, not a whole-conversion speedup guarantee.
+- The user's full configuration (360 requested seeds, external-rmax=40,
+  external-nr=192, line-max-steps=4000, EMF and induction) completes and passes
+  bundle validation. With cached volumes/diagnostics and fresh tracing, it
+  takes 170 s here: 364 seed lines, 336 closed exterior arcs, 336 connected
+  internal return branches and 46 volume fields. Twenty-eight internal lines
+  have no traced CMB intersection and do not seed exterior arcs.
+- A subsequent run reuses all 65 calculations. All 48 f32 files and all three
+  line JSON files match the fresh-tracing output byte for byte. The combined
+  file now retains return-connection labels when cached exterior records are
+  restored, matching the separate exterior file.
+- Injected Ctrl+C during tracing preserves the existing published bundle and
+  view. A retry reuses completed native transforms; unfinished seed tracing is
+  restarted. No per-seed checkpointing is claimed.
+- An earlier streamed-JSON trial failed final JSON validation and was withheld
+  from publication; its isolated write failure was not diagnosed. The full
+  run with one-pass encoding and its cached rerun both pass strict validation.
+- The shared changes apply to Leeds, XSHELLS, MagIC and Calypso. The real
+  performance run uses Calypso; other native backends retain their existing
+  regression coverage. No viewer JavaScript or Worker deployment changes.
+
 ## Calypso converter (2026-09-09)
 
 - 91 converter tests pass with the supplied Calypso data enabled (75 existing

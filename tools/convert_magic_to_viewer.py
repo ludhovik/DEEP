@@ -35,9 +35,9 @@ except ImportError:
     from tools.spectral_truncation import nonnegative_lmax, truncate_graphic_fields
 
 try:
-    from viewer_bundle import ViewerSampling, bundle_path, write_f32
+    from viewer_bundle import ViewerSampling, bundle_path, write_f32, write_field_lines
 except ImportError:
-    from tools.viewer_bundle import ViewerSampling, bundle_path, write_f32
+    from tools.viewer_bundle import ViewerSampling, bundle_path, write_f32, write_field_lines
 
 try:
     from convert_state_to_viewer import (
@@ -810,8 +810,7 @@ def convert_adapted_snapshot(path, outdir, args, adapted, graph_parameters, *,
                 seed_offset=1.5 * shell_step, full_sphere=not has_inner_core,
             )
             combined.extend(shell_lines)
-            with open(outdir / "B_lines_shell.json", "w", encoding="utf-8") as stream:
-                json.dump(shell_lines, stream, allow_nan=False)
+            write_field_lines(outdir / "B_lines_shell.json", shell_lines)
             field_lines_meta.update({"shell": "B_lines_shell.json", "B_lines_shell": "B_lines_shell.json"})
             field_lines_meta["counts"]["shell"] = len(shell_lines)
         if args.field_line_mode in ("exterior", "both"):
@@ -823,6 +822,7 @@ def convert_adapted_snapshot(path, outdir, args, adapted, graph_parameters, *,
                 r_cmb, rmax, args.external_nr, ext_lmax, args.line_step_size,
             )
             field_lines_meta["exterior_sampling"] = exterior_sampling
+            print("Synthesizing exterior potential field...", flush=True)
             Br_ext, Bt_ext, Bp_ext = exterior_potential_field(
                 Br_cmb, theta, phi, r_cmb, r_ext, ext_lmax
             )
@@ -835,8 +835,7 @@ def convert_adapted_snapshot(path, outdir, args, adapted, graph_parameters, *,
                 adaptive_step=args.line_step_size is None,
             )
             combined.extend(lines)
-            with open(outdir / "B_lines_exterior_poloidal.json", "w", encoding="utf-8") as stream:
-                json.dump(lines, stream, allow_nan=False)
+            write_field_lines(outdir / "B_lines_exterior_poloidal.json", lines)
             field_lines_meta.update({
                 "exterior": "B_lines_exterior_poloidal.json",
                 "exterior_poloidal": "B_lines_exterior_poloidal.json",
@@ -865,15 +864,15 @@ def convert_adapted_snapshot(path, outdir, args, adapted, graph_parameters, *,
             field_lines_meta["counts"]["shell_seed_lines"] = len(shell_lines)
             field_lines_meta["counts"]["shell_return_branches"] = len(returns)
             field_lines_meta["return_connection_counts"] = return_counts
+            # A cache hit replaces exterior records with their annotated copies.
+            # Reassemble after connection so the combined file keeps those labels.
+            combined = [*shell_lines, *lines, *returns]
             shell_lines.extend(returns)
-            combined.extend(returns)
             field_lines_meta["counts"]["shell"] = len(shell_lines)
             for filename, records in (("B_lines_shell.json", shell_lines),
                                       ("B_lines_exterior_poloidal.json", lines)):
-                with open(outdir / filename, "w", encoding="utf-8") as stream:
-                    json.dump(records, stream, allow_nan=False)
-        with open(outdir / "B_lines.json", "w", encoding="utf-8") as stream:
-            json.dump(combined, stream, allow_nan=False)
+                write_field_lines(outdir / filename, records)
+        write_field_lines(outdir / "B_lines.json", combined)
         field_lines_meta["B_lines"] = "B_lines.json"
         field_lines_meta["count"] = len(combined)
 

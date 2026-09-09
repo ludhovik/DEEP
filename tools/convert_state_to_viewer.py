@@ -54,14 +54,19 @@ except ImportError:
 import numpy as np
 
 try:
+    from field_line_progress import TraceProgress
+except ImportError:
+    from tools.field_line_progress import TraceProgress
+
+try:
     from spectral_truncation import nonnegative_lmax
 except ImportError:
     from tools.spectral_truncation import nonnegative_lmax
 
 try:
-    from viewer_bundle import ViewerSampling, bundle_path, write_f32
+    from viewer_bundle import ViewerSampling, bundle_path, write_f32, write_field_lines
 except ImportError:
-    from tools.viewer_bundle import ViewerSampling, bundle_path, write_f32
+    from tools.viewer_bundle import ViewerSampling, bundle_path, write_f32, write_field_lines
 
 
 EARTH_RADIUS_KM = 6371.0
@@ -1322,6 +1327,54 @@ def interp_spherical_field(
     return float(c0 * (1.0 - wr) + c1 * wr)
 
 
+class _FieldLineSampler:
+    """Reuse a fixed longitude spacing and one interpolation cell for B_r,t,p.
+
+    Scoped to one tracing operation; there is no global cache keyed by array
+    identity. Keep the grids fixed for its lifetime. The scalar interpolator
+    above remains the reference implementation, with the same arithmetic.
+    """
+    def __init__(self, Br, Bt, Bp, r_grid, theta_grid, phi_grid):
+        if Br.shape != Bt.shape or Br.shape != Bp.shape:
+            raise ValueError("Field-line vector component grids must match.")
+        self.fields = (Br, Bt, Bp)
+        self.r, self.theta = r_grid, theta_grid
+        self.nr, self.nt, self.np = Br.shape
+        if len(phi_grid) == self.np and self.np > 1:
+            self.dphi = float(np.median(np.diff(np.unwrap(phi_grid))))
+            self.phi0 = float(phi_grid[0])
+            if not math.isfinite(self.dphi) or abs(self.dphi) <= 1.0e-300:
+                self.dphi, self.phi0 = 2.0 * math.pi / self.np, 0.0
+        else:
+            self.dphi, self.phi0 = 2.0 * math.pi / self.np, 0.0
+
+    def sample(self, r, theta, phi):
+        r = radial_coordinate_in_domain(r, float(self.r[0]), float(self.r[-1]))
+        if r is None:
+            return (float("nan"),) * 3
+        theta = max(float(self.theta[0]), min(float(self.theta[-1]), theta))
+        phi = phi % (2.0 * math.pi)
+        ir0 = max(0, min(self.nr - 2, int(np.searchsorted(self.r, r, side="right")) - 1))
+        it0 = max(0, min(self.nt - 2, int(np.searchsorted(self.theta, theta, side="right")) - 1))
+        ir1, it1 = ir0 + 1, it0 + 1
+        fp = ((phi - self.phi0) % (2.0 * math.pi)) / self.dphi
+        ip0 = int(math.floor(fp)) % self.np
+        ip1 = (ip0 + 1) % self.np
+        wr = (r - self.r[ir0]) / (self.r[ir1] - self.r[ir0] + 1.0e-300)
+        wt = (theta - self.theta[it0]) / (self.theta[it1] - self.theta[it0] + 1.0e-300)
+        wp = fp - math.floor(fp)
+        result = []
+        for arr in self.fields:
+            c00 = arr[ir0, it0, ip0] * (1.0 - wp) + arr[ir0, it0, ip1] * wp
+            c01 = arr[ir0, it1, ip0] * (1.0 - wp) + arr[ir0, it1, ip1] * wp
+            c10 = arr[ir1, it0, ip0] * (1.0 - wp) + arr[ir1, it0, ip1] * wp
+            c11 = arr[ir1, it1, ip0] * (1.0 - wp) + arr[ir1, it1, ip1] * wp
+            c0 = c00 * (1.0 - wt) + c01 * wt
+            c1 = c10 * (1.0 - wt) + c11 * wt
+            result.append(float(c0 * (1.0 - wr) + c1 * wr))
+        return tuple(result)
+
+
 def interpolate_B_cartesian(
     x: np.ndarray,
     Br: np.ndarray,
@@ -1330,6 +1383,7 @@ def interpolate_B_cartesian(
     r_grid: np.ndarray,
     theta_grid: np.ndarray,
     phi_grid: np.ndarray,
+    sampler=None,
 ) -> np.ndarray | None:
     r, theta, phi = cart_to_sph(x)
 
@@ -1337,9 +1391,12 @@ def interpolate_B_cartesian(
     if r is None:
         return None
 
-    br = interp_spherical_field(Br, r_grid, theta_grid, phi_grid, r, theta, phi)
-    bt = interp_spherical_field(Bt, r_grid, theta_grid, phi_grid, r, theta, phi)
-    bp = interp_spherical_field(Bp, r_grid, theta_grid, phi_grid, r, theta, phi)
+    if sampler is None:
+        br = interp_spherical_field(Br, r_grid, theta_grid, phi_grid, r, theta, phi)
+        bt = interp_spherical_field(Bt, r_grid, theta_grid, phi_grid, r, theta, phi)
+        bp = interp_spherical_field(Bp, r_grid, theta_grid, phi_grid, r, theta, phi)
+    else:
+        br, bt, bp = sampler.sample(r, theta, phi)
 
     if not np.isfinite([br, bt, bp]).all():
         return None
@@ -1363,6 +1420,8 @@ def sample_line_strengths(
     r_grid: np.ndarray,
     theta_grid: np.ndarray,
     phi_grid: np.ndarray,
+    sampler=None,
+    progress=None,
 ) -> list[float | None]:
     """
     Sample |B| along a traced field line.
@@ -1371,12 +1430,14 @@ def sample_line_strengths(
     as None, which becomes null in JSON and is safely ignored by the viewer.
     """
     strengths: list[float | None] = []
-    for p in points:
+    if sampler is None:
+        sampler = _FieldLineSampler(Br, Bt, Bp, r_grid, theta_grid, phi_grid)
+    for index, p in enumerate(points):
+        if progress is not None and index % 128 == 0:
+            progress.tick(f"sampling strength {index}/{len(points)}")
         x = np.asarray(p, dtype=np.float64)
         r, theta, phi = cart_to_sph(x)
-        br = interp_spherical_field(Br, r_grid, theta_grid, phi_grid, r, theta, phi)
-        bt = interp_spherical_field(Bt, r_grid, theta_grid, phi_grid, r, theta, phi)
-        bp = interp_spherical_field(Bp, r_grid, theta_grid, phi_grid, r, theta, phi)
+        br, bt, bp = sampler.sample(r, theta, phi)
         if not np.isfinite([br, bt, bp]).all():
             strengths.append(None)
         else:
@@ -1455,6 +1516,7 @@ def boundary_limited_rk4_step(
     step_size: float,
     boundary_mode: str,
     boundary_margin: float = 0.20,
+    sampler=None,
 ) -> tuple[np.ndarray | None, str, float | None]:
     """
     Boundary-aware RK4 step for dx/ds = +/-B/|B|.
@@ -1480,7 +1542,7 @@ def boundary_limited_rk4_step(
     if r_now is None:
         return None, "interpolation_stop", None
 
-    k1 = interpolate_B_cartesian(x, Br, Bt, Bp, r_grid, theta_grid, phi_grid)
+    k1 = interpolate_B_cartesian(x, Br, Bt, Bp, r_grid, theta_grid, phi_grid, sampler)
     if k1 is None:
         return None, "interpolation_stop", None
     velocity = float(direction) * k1
@@ -1518,7 +1580,7 @@ def boundary_limited_rk4_step(
 
     h = h_requested
     while abs(h) >= h_min:
-        x_new = rk4_step_cartesian(x, direction, Br, Bt, Bp, r_grid, theta_grid, phi_grid, h)
+        x_new = rk4_step_cartesian(x, direction, Br, Bt, Bp, r_grid, theta_grid, phi_grid, h, sampler)
         if x_new is None:
             h *= 0.5
             continue
@@ -1548,6 +1610,9 @@ def trace_one_line(
     phi_grid: np.ndarray,
     step_size: float,
     max_steps: int,
+    sampler=None,
+    progress=None,
+    branch="internal",
 ) -> list[list[float]]:
     """Trace one shell field-line branch with RK4 and exact shell-boundary endpoints."""
     points: list[list[float]] = []
@@ -1556,8 +1621,12 @@ def trace_one_line(
     rmin = float(r_grid[0])
     rmax = float(r_grid[-1])
     min_sep = 1.0e-6 * max(abs(rmax), 1.0)
+    if sampler is None:
+        sampler = _FieldLineSampler(Br, Bt, Bp, r_grid, theta_grid, phi_grid)
 
-    for _ in range(max_steps):
+    for step in range(max_steps):
+        if progress is not None and step % 64 == 0:
+            progress.tick(f"{branch}, step {step + 1}/{max_steps}")
         r_now = radius_of(x)
         if radial_coordinate_in_domain(r_now, rmin, rmax) is None:
             break
@@ -1575,6 +1644,7 @@ def trace_one_line(
             phi_grid,
             step_size,
             boundary_mode="shell",
+            sampler=sampler,
         )
         if x_new is None:
             break
@@ -1598,24 +1668,25 @@ def rk4_step_cartesian(
     theta_grid: np.ndarray,
     phi_grid: np.ndarray,
     step_size: float,
+    sampler=None,
 ) -> np.ndarray | None:
     """One RK4 step for dx/ds = +/- B/|B| in Cartesian coordinates."""
-    k1 = interpolate_B_cartesian(x, Br, Bt, Bp, r_grid, theta_grid, phi_grid)
+    k1 = interpolate_B_cartesian(x, Br, Bt, Bp, r_grid, theta_grid, phi_grid, sampler)
     if k1 is None:
         return None
     k1 *= direction
 
-    k2 = interpolate_B_cartesian(x + 0.5 * step_size * k1, Br, Bt, Bp, r_grid, theta_grid, phi_grid)
+    k2 = interpolate_B_cartesian(x + 0.5 * step_size * k1, Br, Bt, Bp, r_grid, theta_grid, phi_grid, sampler)
     if k2 is None:
         return None
     k2 *= direction
 
-    k3 = interpolate_B_cartesian(x + 0.5 * step_size * k2, Br, Bt, Bp, r_grid, theta_grid, phi_grid)
+    k3 = interpolate_B_cartesian(x + 0.5 * step_size * k2, Br, Bt, Bp, r_grid, theta_grid, phi_grid, sampler)
     if k3 is None:
         return None
     k3 *= direction
 
-    k4 = interpolate_B_cartesian(x + step_size * k3, Br, Bt, Bp, r_grid, theta_grid, phi_grid)
+    k4 = interpolate_B_cartesian(x + step_size * k3, Br, Bt, Bp, r_grid, theta_grid, phi_grid, sampler)
     if k4 is None:
         return None
     k4 *= direction
@@ -1636,6 +1707,8 @@ def trace_exterior_cmb_to_cmb_arc(
     max_steps: int,
     min_points: int,
     adaptive_step: bool = False,
+    sampler=None,
+    progress=None,
 ) -> tuple[list[list[float]], str, float]:
     """Trace an exterior arc, refining short returns instead of deleting them.
 
@@ -1645,10 +1718,13 @@ def trace_exterior_cmb_to_cmb_arc(
     """
     if not math.isfinite(step_size) or step_size <= 0.0 or max_steps < 1:
         raise ValueError("Exterior tracing requires a positive step and max_steps >= 1.")
+    if sampler is None:
+        sampler = _FieldLineSampler(Br, Bt, Bp, r_grid, theta_grid, phi_grid)
     for refinement in range(9):
         result = _trace_exterior_arc(
             seed, direction, Br, Bt, Bp, r_grid, theta_grid, phi_grid,
             step_size * 0.5**refinement, max_steps, max(3, int(min_points)), adaptive_step,
+            sampler, progress,
         )
         if result[1] not in ("short_arc", "immediate_cmb"):
             return result
@@ -1660,6 +1736,7 @@ def _trace_exterior_arc(
     Br: np.ndarray, Bt: np.ndarray, Bp: np.ndarray,
     r_grid: np.ndarray, theta_grid: np.ndarray, phi_grid: np.ndarray,
     step_size: float, max_steps: int, min_points: int, adaptive_step: bool,
+    sampler=None, progress=None,
 ) -> tuple[list[list[float]], str, float]:
     """
     Trace one exterior potential-field arc as a CMB-to-CMB segment.
@@ -1688,7 +1765,9 @@ def _trace_exterior_arc(
     outward_threshold = r_outer + 4.0 * tolerance
     min_sep = tolerance
 
-    for _ in range(max_steps):
+    for step in range(max_steps):
+        if progress is not None and step % 64 == 0:
+            progress.tick(f"exterior, step {step + 1}/{max_steps}")
         r_now = radius_of(x)
         max_r_seen = max(max_r_seen, r_now)
 
@@ -1720,6 +1799,7 @@ def _trace_exterior_arc(
             phi_grid,
             local_step,
             boundary_mode="exterior",
+            sampler=sampler,
         )
 
         if x_new is None:
@@ -1762,7 +1842,10 @@ def connect_exterior_return_footpoints(
     extra, counts = [], {}
     R = float(r_grid[-1])
     source_ids = {line.get("line_id") for line in shell_lines}
-    for arc in exterior_lines:
+    sampler = _FieldLineSampler(Br, Bt, Bp, r_grid, theta, phi)
+    progress = TraceProgress("Tracing internal return branches", len(exterior_lines), max_steps, item="arcs")
+    for index, arc in enumerate(exterior_lines):
+        progress.begin(index)
         if arc.get("status") != "returned_cmb" or len(arc.get("points", [])) < 2:
             continue
         origin_id = arc.get("paired_shell_line_id")
@@ -1778,7 +1861,8 @@ def connect_exterior_return_footpoints(
         elif direction * br >= 0.0:
             status = "radial_polarity_mismatch"
         else:
-            points = trace_one_line(seed, direction, Br, Bt, Bp, r_grid, theta, phi, step_size, max_steps)
+            points = trace_one_line(seed, direction, Br, Bt, Bp, r_grid, theta, phi, step_size, max_steps,
+                                    sampler=sampler, progress=progress, branch="return")
             if len(points) < 2 or min(radius_of(np.asarray(p)) for p in points) >= R - radial_boundary_tolerance(R):
                 status = "no_inward_branch"
             else:
@@ -1792,7 +1876,8 @@ def connect_exterior_return_footpoints(
                     "polarity_definition": "sign of simulation Br at this returning CMB footpoint",
                     "region": "fluid_shell", "mode": "shell_from_exterior_return",
                     "direction": direction, "points": points,
-                    "strength": sample_line_strengths(points, Br, Bt, Bp, r_grid, theta, phi),
+                    "strength": sample_line_strengths(points, Br, Bt, Bp, r_grid, theta, phi,
+                                                       sampler=sampler, progress=progress),
                     "start_r": radius_of(np.asarray(points[0])),
                     "end_r": radius_of(np.asarray(points[-1])),
                 })
@@ -1800,7 +1885,8 @@ def connect_exterior_return_footpoints(
                 status = "connected"
         arc["return_connection_status"] = status
         counts[status] = counts.get(status, 0) + 1
-    print(f"  Exterior return-footpoint connections: {counts}")
+    progress.finish(len(extra))
+    print(f"  Exterior return-footpoint connections: {counts}", flush=True)
     return extra, counts
 
 
@@ -2032,7 +2118,10 @@ def compute_external_field_lines_from_cmb(
     lines: list[dict[str, Any]] = []
     status_counts: dict[str, int] = {}
 
-    for seed_record in seeds:
+    sampler = _FieldLineSampler(Br_ext, Bt_ext, Bp_ext, r_ext, theta_grid, phi_grid)
+    progress = TraceProgress("Tracing exterior field lines", len(seeds), max_steps)
+    for index, seed_record in enumerate(seeds):
+        progress.begin(index)
         theta = float(seed_record["theta"])
         phi = float(seed_record["phi"])
         br_cmb = interp_spherical_field(Br_ext, r_ext, theta_grid, phi_grid, r_outer, theta, phi)
@@ -2057,6 +2146,8 @@ def compute_external_field_lines_from_cmb(
             max_steps,
             min_points,
             adaptive_step=adaptive_step,
+            sampler=sampler,
+            progress=progress,
         )
         status_counts[status] = status_counts.get(status, 0) + 1
         if closed_only and (status != "returned_cmb" or len(points) < min_points):
@@ -2072,7 +2163,8 @@ def compute_external_field_lines_from_cmb(
         )
         start_r = radius_of(np.asarray(points[0], dtype=np.float64)) if points else float("nan")
         end_r = radius_of(np.asarray(points[-1], dtype=np.float64)) if points else float("nan")
-        strengths = sample_line_strengths(points, Br_ext, Bt_ext, Bp_ext, r_ext, theta_grid, phi_grid)
+        strengths = sample_line_strengths(points, Br_ext, Bt_ext, Bp_ext, r_ext, theta_grid, phi_grid,
+                                         sampler=sampler, progress=progress)
         lines.append(
             {
                 "line_id": seed_record.get("line_id"),
@@ -2104,6 +2196,7 @@ def compute_external_field_lines_from_cmb(
             }
         )
 
+    progress.finish(len(lines))
     compute_external_field_lines_from_cmb.last_status_counts = status_counts
     compute_external_field_lines_from_cmb.last_seed_counts = {
         "input": len(seed_records) if seed_records is not None else int(ntheta_seed * nphi_seed),
@@ -2148,9 +2241,12 @@ def compute_shell_field_lines_from_cmb(
     phi_seeds = np.linspace(0.0, 2.0 * math.pi, nphi_seed, endpoint=False)
 
     lines: list[dict[str, Any]] = []
+    sampler = _FieldLineSampler(Br, Bt, Bp, r_grid, theta_grid, phi_grid)
+    progress = TraceProgress("Tracing internal field lines", ntheta_seed * nphi_seed, max_steps)
 
     for itheta, theta in enumerate(theta_seeds):
         for iphi, phi in enumerate(phi_seeds):
+            progress.begin(itheta * nphi_seed + iphi)
             # Use the CMB value for polarity so shell and exterior lines seeded
             # at the same (theta, phi) use the same colour convention.
             br_cmb = interp_spherical_field(Br, r_grid, theta_grid, phi_grid, r_outer, theta, phi)
@@ -2174,6 +2270,9 @@ def compute_shell_field_lines_from_cmb(
                 phi_grid,
                 step_size,
                 max_steps,
+                sampler=sampler,
+                progress=progress,
+                branch="forward",
             )
             backward = trace_one_line(
                 seed,
@@ -2186,6 +2285,9 @@ def compute_shell_field_lines_from_cmb(
                 phi_grid,
                 step_size,
                 max_steps,
+                sampler=sampler,
+                progress=progress,
+                branch="backward",
             )
 
             if not forward and not backward:
@@ -2234,7 +2336,8 @@ def compute_shell_field_lines_from_cmb(
             if not math.isfinite(br_at_cmb_seed) or abs(br_at_cmb_seed) <= 1.0e-300:
                 br_at_cmb_seed = br_cmb
             polarity = 1 if br_at_cmb_seed >= 0.0 else -1
-            strengths = sample_line_strengths(points, Br, Bt, Bp, r_grid, theta_grid, phi_grid)
+            strengths = sample_line_strengths(points, Br, Bt, Bp, r_grid, theta_grid, phi_grid,
+                                             sampler=sampler, progress=progress)
             lines.append(
                 {
                     "line_id": f"cmb-grid-{itheta:04d}-{iphi:04d}",
@@ -2264,6 +2367,7 @@ def compute_shell_field_lines_from_cmb(
                 }
             )
 
+    progress.finish(len(lines))
     return lines
 
 # -----------------------------------------------------------------------------
@@ -3538,8 +3642,7 @@ def convert_state(args: argparse.Namespace) -> None:
             )
             shell_count = len(shell_lines)
             combined_lines.extend(shell_lines)
-            with open(outdir / "B_lines_shell.json", "w", encoding="utf-8") as f:
-                json.dump(shell_lines, f, allow_nan=False)
+            write_field_lines(outdir / "B_lines_shell.json", shell_lines)
             field_lines_meta["shell"] = "B_lines_shell.json"
             field_lines_meta["B_lines_shell"] = "B_lines_shell.json"
             field_lines_meta["counts"]["shell"] = shell_count
@@ -3600,8 +3703,7 @@ def convert_state(args: argparse.Namespace) -> None:
             _, exterior_btheta_sign, exterior_lines, exterior_status_counts = best_choice
             exterior_count = len(exterior_lines)
             combined_lines.extend(exterior_lines)
-            with open(outdir / "B_lines_exterior_poloidal.json", "w", encoding="utf-8") as f:
-                json.dump(exterior_lines, f, allow_nan=False)
+            write_field_lines(outdir / "B_lines_exterior_poloidal.json", exterior_lines)
             field_lines_meta["exterior"] = "B_lines_exterior_poloidal.json"
             field_lines_meta["exterior_poloidal"] = "B_lines_exterior_poloidal.json"
             field_lines_meta["B_lines_exterior_poloidal"] = "B_lines_exterior_poloidal.json"
@@ -3633,19 +3735,19 @@ def convert_state(args: argparse.Namespace) -> None:
             field_lines_meta["counts"]["shell_seed_lines"] = len(shell_lines)
             field_lines_meta["counts"]["shell_return_branches"] = len(returns)
             field_lines_meta["return_connection_counts"] = return_counts
+            # A cache hit replaces exterior records with their annotated copies.
+            # Reassemble after connection so the combined file keeps those labels.
+            combined_lines = [*shell_lines, *exterior_lines, *returns]
             shell_lines.extend(returns)
-            combined_lines.extend(returns)
             shell_count = len(shell_lines)
             field_lines_meta["counts"]["shell"] = shell_count
             for filename, records in (("B_lines_shell.json", shell_lines),
                                       ("B_lines_exterior_poloidal.json", exterior_lines)):
-                with open(outdir / filename, "w", encoding="utf-8") as stream:
-                    json.dump(records, stream, allow_nan=False)
+                write_field_lines(outdir / filename, records)
 
         # Backward-compatible combined file for older viewer versions.  The new
         # viewer reads the separate shell/exterior files when available.
-        with open(outdir / "B_lines.json", "w", encoding="utf-8") as f:
-            json.dump(combined_lines, f, allow_nan=False)
+        write_field_lines(outdir / "B_lines.json", combined_lines)
 
         field_lines_meta["B_lines"] = "B_lines.json"
         field_lines_meta["count"] = len(combined_lines)

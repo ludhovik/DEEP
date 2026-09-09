@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.7.1
+
+- Speed up the shared Leeds, XSHELLS, MagIC and Calypso line tracer by preparing
+  longitude spacing once per operation and sharing interpolation weights
+  across Br/Bt/Bp. Retain the reference interpolation and RK4 arithmetic.
+- Report stage, seed and integration-step progress every five seconds, with
+  elapsed times and explicit messages for cache saving and publication checks.
+- Serialize large line files in one encoding pass, preserving JSON values and
+  strict validation before publication.
+- Preserve return-connection labels in the combined line file on cache hits,
+  keeping it consistent with the separately exported exterior records.
+- Test exact coordinate/strength equivalence, seam/boundary handling, grid
+  replacement, progress and Ctrl+C recovery with existing calculation caches.
+
 ## 3.7.0
 
 - Add a Calypso merged ASCII/gzip spectral restart converter using NumPy/SciPy.

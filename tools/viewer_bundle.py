@@ -1,4 +1,4 @@
-"""Numerical sampling and transactional output for the three viewer converters."""
+"""Numerical sampling and transactional output for the viewer converters."""
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -12,6 +12,19 @@ import uuid
 
 import numpy as np
 from scipy.signal import resample
+
+
+def write_field_lines(path, records):
+    """Encode large line files once, then write and close before validation.
+
+    json.dumps uses the C encoder instead of millions of tiny Python writes.
+    The caller's staged bundle is still fully validated before publication.
+    """
+    path = Path(path)
+    print(f"Writing {path.name}: {len(records)} field-line segments...", flush=True)
+    payload = json.dumps(records, allow_nan=False)
+    if path.write_text(payload, encoding="utf-8") != len(payload):
+        raise OSError(f"Incomplete field-line write: {path}")
 
 
 def write_f32(path: Path, arr: np.ndarray) -> dict[str, float]:
