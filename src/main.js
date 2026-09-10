@@ -5,7 +5,8 @@ import { createMobileLayout } from "./mobile-layout.js";
 import * as THREE from "three";
 import { fieldRadialDomain } from "./volume-domain.js";
 import { isosurfaceLegendEntries, updateIsosurfaceLegend } from "./isosurface-legend.js";
-import { TrackballControls } from "three/examples/jsm/controls/TrackballControls.js";
+import { bindRecenterGesture } from "./recenter-gesture.js";
+import { TouchTrackballControls } from "./touch-trackball-controls.js";
 import { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
@@ -224,7 +225,7 @@ function setViewportHiddenForExport(hidden, reason = "") {
 const axesCornerHelper = new THREE.AxesHelper(0.9);
 axesScene.add(axesCornerHelper);
 
-const controls = new TrackballControls(camera, renderer.domElement);
+const controls = new TouchTrackballControls(camera, renderer.domElement);
 controls.rotateSpeed = 4.2;
 controls.zoomSpeed = 1.25;
 controls.panSpeed = 0.9;
@@ -232,6 +233,10 @@ controls.dynamicDampingFactor = 0.12;
 controls.staticMoving = false;
 controls.noRoll = false;
 controls.target.set(0.0, 0.0, 0.0);
+bindRecenterGesture(renderer.domElement, () => {
+  controls.recenter();
+  syncCameraParamsFromCamera(true);
+});
 
 function resetCameraView() {
   camera.position.set(0.0, -3.0, 1.35);
@@ -7508,6 +7513,8 @@ function buildPointOfViewGui() {
   const povGui = new GUI({ title: "Point of view" });
   povGui.domElement.classList.add("point-of-view-gui");
   povGuiRoot = povGui;
+  povGui.add(controls, "touchGesture", { "Zoom only": "zoom", "Pan only": "pan" })
+    .name("Two fingers");
   povGui.add(params, "resetCamera").name("Reset / fit view");
 
   cameraParamControllers.push(povGui.add(params, "cameraDistance", 0.2, 20.0, 0.01).name("Distance").onChange(applyCameraViewFromParams));

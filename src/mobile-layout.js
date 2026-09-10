@@ -86,7 +86,7 @@ export function createMobileLayout() {
     if (mobile !== next) { show(null, false); mobile = next; }
     root.classList.toggle('mobile-layout', mobile);
     syncInfo();
-    if (hint) hint.innerHTML = mobile ? 'One finger: rotate<br>Pinch: zoom · two fingers: pan' : desktopHint;
+    if (hint) hint.innerHTML = mobile ? 'One finger: rotate<br>Two fingers: zoom (default)<br>Double tap: centre sphere<br>To pan: View → Two fingers → Pan only' : desktopHint;
   }
   buttons.forEach(b => b.addEventListener('click', () => show(active === b.dataset.panel ? null : b.dataset.panel)));
   ui.querySelector('#mobile-close').addEventListener('click', close);

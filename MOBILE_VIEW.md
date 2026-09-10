@@ -17,7 +17,12 @@ On a phone, the bottom menu opens one scrollable panel at a time:
 - **Export:** export settings and quick PNG, PDF and video actions.
 
 Tap **Done**, the active menu button, or Escape to close the panel. One finger
-rotates the scene; pinch to zoom and use two fingers to pan. **View > Reset / fit
+rotates the scene; pinch with two fingers to zoom without moving the target.
+To reposition it, choose **View > Two fingers > Pan only**, then drag with two
+fingers. Switch back to **Zoom only** for pinching. Touch mode does not change
+desktop mouse controls or the scientific view code. Double-tap the scene (or
+double-click with the left mouse button) to centre the sphere without resetting
+the viewing angle or zoom. Pinches and drags never count as double taps. **View > Reset / fit
 view** resets the camera with extra distance for a portrait viewport. Loading a
 saved view retains its camera settings; pinch to adjust framing if needed.
 The title initially appears compact; its plus button opens the status, and the
@@ -36,8 +41,9 @@ support; remote record URLs provide an alternative to local folder selection.
 
 ## Validation
 
-- `npm run test-viewer`: 127 tests pass, including phone/landscape detection and
-  both manual overrides.
+- `npm run test-viewer`: 135 tests pass, including phone/landscape detection and
+  both manual overrides, separated touch zoom/pan, release/cancellation,
+  double-tap filtering and recentering that preserves camera distance and angle.
 - `npm run build`: succeeds; the existing large-bundle advisory remains.
 - Chromium with a touch viewport and the bundled dataset: inspected the phone
   view and Fields panel, exercised all five tabs, landscape orientation and
