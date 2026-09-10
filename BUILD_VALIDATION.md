@@ -1,5 +1,36 @@
 # Integrated package validation
 
+## QuICC/EPM full-sphere converter (2026-09-10)
+
+- 14 new tests pass, including the optional downloaded QuICC reference check.
+  The complete converter suite runs 129 tests successfully, with three existing
+  Calypso tests skipped because their external input archives are unavailable.
+- Analytic checks verify normalized Chebyshev/Legendre Worland bases, radial
+  derivatives, uniform x/y/z magnetic fields including the origin, solid-body
+  rotation, scalar radial polynomials, azimuthal symmetry, truncation, EPM
+  complex-array storage and both modern harmonic orderings.
+- The official BoussinesqSphereDynamo Explicit v0.8.0 benchmark was downloaded
+  and inspected: 12 numbered states, velocity/magnetic/temperature spectra,
+  N=15, L=M=31. Independent volume integration of all three reconstructed fields
+  agrees with native energy tables to better than 1e-11 relative error.
+- A complete state0011 export validates with EMF, induction, CMB/surface maps
+  and matched internal/exterior field lines. With 36 seeds, rmax=40, external
+  nr=192 and 4000 integration steps, all 36 exterior arcs return to the CMB
+  and all 36 return branches connect. Changing line settings reused 61 cached
+  calculations and computed four new ones.
+- Bundle tests verify incremental no-op, adding diagnostics without repeating
+  synthesis, recovery of a deleted .f32, sequence updates and preservation of
+  published data when a source becomes invalid. Explicit N2 conventions and
+  parameter overrides are tested with an analytic scalar.
+- All 125 viewer tests pass and the Vite production build succeeds. The
+  existing bundle-size advisory remains. The viewer change is its converter
+  support caption. All 72 checked CMB pairing endpoints agree within 4.8e-16.
+- Scope: full-fluid-sphere EPM and QuICC WLFl/WLFm; no shell/Cartesian schemes
+  or fabricated IC coverage. Legacy EPM has analytic-fixture validation;
+  the real downloaded example is modern QuICC. Default normalizations follow
+  standard upstream builds; custom build conventions require explicit flags.
+  N2 is omitted unless its nondimensional convention is selected.
+
 ## MagIC archived V9 shells (2026-09-10)
 
 - Seven new regression tests pass, covering 16 endian/precision/symmetry/block

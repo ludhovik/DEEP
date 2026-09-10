@@ -8,7 +8,9 @@ and convection simulations. It includes converters for:
 - MagIC `G_#.TAG` and `G_ave.TAG` graphic files through MagIC's `MagicGraph`
   reader;
 - Calypso merged ASCII/binary spectral restarts (`*.fst` / `*.fsb`, also
-  native gzip) with their matching grid controls.
+  native gzip) with their matching grid controls;
+- QuICC/EPMDynamoCode full-sphere HDF5 spectral states, including modern
+  QuICC `WLFl` and `WLFm` ordering.
 
 Open the hosted viewer at
 [the DEEPscope viewer](https://ludhovik.github.io/DEEP/), or run it locally
@@ -380,7 +382,7 @@ Older bundles without line identifiers retain independent stride selection;
 new converter output already contains the pairing information. Shell lines
 without an exported exterior partner remain available for display.
 
-All four converters trace a line in Cartesian coordinates with arclength-like
+All five converters trace a line in Cartesian coordinates with arclength-like
 parameter `s`:
 
 ```text
@@ -404,7 +406,7 @@ Bphi_lm(r)   = -q_lm (R/r)^(l+2)/(l+1)/sin(theta) dY_lm/dphi
 ```
 
 This field is divergence-free and curl-free. Leeds obtains `q_lm` from its CMB
-poloidal coefficients, while XSHELLS, MagIC and Calypso analyse the physical CMB `Br`.
+poloidal coefficients, while XSHELLS, MagIC, Calypso and QuICC analyse the physical CMB `Br`.
 The SHTns spheroidal coefficient is fixed analytically to
 `S_lm = -Q_lm/(l+1)`; it is no longer selected from line appearance.
 
@@ -678,18 +680,19 @@ python -m pip install -r requirements-converters.txt  # Leeds
 python -m pip install -r requirements-xshells.txt     # XSHELLS
 python -m pip install -r requirements-magic.txt       # MagIC bridge
 python -m pip install -r requirements-calypso.txt     # Calypso (NumPy/SciPy)
+python -m pip install -r requirements-quicc.txt       # QuICC/EPM (NumPy/SciPy/h5py)
 ```
 
 Run any converter with `--help` for the complete and current option list.
 
 ### Angular spectral truncation
 
-All four converters accept `--spectral-lmax L`. **The default is 0: keep all
+All five converters accept `--spectral-lmax L`. **The default is 0: keep all
 available source degrees.** Omitting the option is equivalent to setting it to
 0. This changes the Leeds converter's previous default of 128; specify 128
 explicitly to retain that cutoff.
 
-For example, add this to a Leeds, XSHELLS, MagIC or Calypso conversion command:
+For example, add this to a Leeds, XSHELLS, MagIC, Calypso or QuICC conversion command:
 
 ```bash
 --spectral-lmax 128
@@ -703,7 +706,7 @@ above the available degree leaves the original grid and fields unchanged.
 `metadata.json` records the requested and effective cutoff under
 `spectral_truncation`.
 
-Leeds, XSHELLS and Calypso truncate their native scalar and poloidal/toroidal
+Leeds, XSHELLS, Calypso and QuICC truncate their native scalar and poloidal/toroidal
 coefficients before physical-space synthesis. XSHELLS retains radial ghost
 coefficients and each field's radial domain. Omit explicit `--nlat`/`--nphi`
 when you want XSHELLS to choose its smaller grid automatically.
@@ -721,7 +724,7 @@ Gradients, EMF, induction and field lines are then calculated from the
 truncated source fields. Nonlinear products can contain higher degrees than
 the input cutoff; reduced output grids do not preserve all native nonlinear
 detail. Check convergence for the quantities you use. CMB/Earth map cutoffs
-and MagIC/Calypso's `--external-lmax` (default 32) remain separate controls.
+and MagIC/Calypso/QuICC's `--external-lmax` (default 32) remain separate controls.
 
 ## Leeds converter
 
@@ -881,9 +884,42 @@ full-sphere vector reconstruction.
 See [CALYPSO_CONVERTER.md](CALYPSO_CONVERTER.md) for native format requirements,
 N2 normalization, equations and supported control layouts.
 
+## QuICC / EPMDynamoCode converter
+
+```bash
+python3 tools/convert_quicc_to_viewer.py \
+  --state /path/to/state0000.hdf5 \
+  --out public/data_quicc \
+  --incremental --cache-dir "$HOME/.cache/deepscope" \
+  --emf --induction --cmb-br-ltrunc 13 \
+  --field-line-mode both --line-seeds 360 \
+  --external-rmax 40 --external-nr 192 --line-max-steps 4000
+```
+
+Use `--folder` to select the latest numbered state, `--state-number` for a
+specific index, or `--sequence-first/--sequence-last/--sequence-step` for a
+sequence. Default spectral truncation is off; `--spectral-lmax 128` filters
+coefficients before reconstruction. Incremental conversion reuses each native
+field synthesis when you add diagnostics or change field-line settings.
+
+This reader supports legacy EPM and modern QuICC **full-sphere Worland** states
+(`WLFl`/`WLFm`), with analytic regular limits at the centre. It does not reinterpret
+QuICC shell/Cartesian/cylindrical files as spheres. Those schemes and separate
+imposed/background files need their own readers; inner-core-only updates do not
+apply to this full-fluid-sphere format. Source scalar coefficients are exported
+as stored, without adding an assumed conductive background.
+
+Standard builds are detected by file layout: EPM uses its Schmidt normalization;
+modern QuICC uses SHUnity. Custom solver builds must select the matching
+`--angular-normalization`, `--worland-family` and `--worland-normalization`.
+N² requires an explicit `--n2-convention` because the state format does not
+identify the model’s Rayleigh normalization; gradients are exported by default.
+See [QUICC_CONVERTER.md](QUICC_CONVERTER.md) for equations, normalization limits,
+a verified downloadable dynamo benchmark and the validation command.
+
 ## Useful converter options
 
-The four converters intentionally share common controls where possible:
+The five converters intentionally share common controls where possible:
 
 ```text
 --spectral-lmax L
@@ -908,7 +944,7 @@ quantities.
 
 ### Incremental conversion
 
-All four converters accept **`--incremental`**. Add it to the same conversion
+All five converters accept **`--incremental`**. Add it to the same conversion
 command, keeping its source and output paths:
 
 ```text
@@ -940,14 +976,14 @@ output and `public/`. Deleting this disposable cache leaves converted data
 intact; missing calculations will be rebuilt when needed.
 
 Combine **`--incremental --force`** to recompute and refresh cached calculations.
-Without `--incremental`, conversion runs normally. Leeds, MagIC and Calypso sequence
+Without `--incremental`, conversion runs normally. Leeds, MagIC, Calypso and QuICC sequence
 extensions reuse unchanged frames and preserve root and per-frame `view.DTV2`
 files. XSHELLS keeps its existing single-snapshot interface. Previous output
 backups and validation before publication also apply to incremental runs.
 
 ### Field-line runtime and progress
 
-All four converters use the shared serial CPU tracer. They now report the
+All five converters use the shared serial CPU tracer. They now report the
 internal, exterior and return-branch stages, completed seed counts, current
 integration step and elapsed time approximately every five seconds. Writing
 large line files, saving completed line calculations and final validation

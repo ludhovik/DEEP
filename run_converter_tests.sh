@@ -10,3 +10,4 @@ python3 tests/test_inner_core.py
 python3 tests/test_calypso_converter.py
 python3 tests/test_calypso_binary.py
 python3 tests/test_field_line_performance.py
+python3 tests/test_quicc_converter.py

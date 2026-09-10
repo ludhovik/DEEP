@@ -1,0 +1,4 @@
+numpy
+scipy
+h5py
+# Native EPM/QuICC HDF5 reader; no QuICC build, SHTns or modules.py required.
