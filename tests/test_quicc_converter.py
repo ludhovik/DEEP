@@ -175,7 +175,7 @@ class IOTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'nonfinite'):self.convert()
         self.assertEqual((self.root/'bundle/metadata.json').read_bytes(),before)
     def test_unknown_schema_and_incomplete_vector(self):
-        with h5py.File(self.state,'r+') as f:f.attrs['type']=np.bytes_('SLFl')
+        with h5py.File(self.state,'r+') as f:f.attrs['type']=np.bytes_('TFF')
         with self.assertRaisesRegex(ValueError,'Unsupported QuICC scheme'):read_state(self.state)
         fixture(self.state)
         with h5py.File(self.state,'r+') as f:del f['Magnetic/MagneticTor']

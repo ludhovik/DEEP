@@ -1,5 +1,24 @@
 # Integrated package validation
 
+## QuICC spherical-shell converter (2026-09-10)
+
+- Added SLFl/SLFm reconstruction with native shell radii and the mapped
+  Chebyshev/FCT basis. Eight shell tests pass, including both harmonic
+  orderings, analytic vector/scalar fields, geometry validation, incremental
+  additions, sequences and shell-specific rotating-unit N2 scaling.
+- The full converter suite runs 137 tests: 134 pass and three existing Calypso
+  tests skip for unavailable external fixtures. Both downloaded QuICC sphere
+  and shell benchmark checks pass.
+- Independent volume integration of the official BoussinesqShellDynamo
+  Explicit v0.8.0 state0000 agrees with native kinetic, magnetic and temperature
+  energy diagnostics to roughly 1e-14 relative error.
+- The user's state0011 command completes with 46 volume fields, EMF, induction,
+  N2, CMB truncation and 360 field-line seeds. At external rmax=40, nr=192 and
+  4000 maximum steps, 348 exterior arcs return to the CMB and all 348 receive
+  connected internal return branches; 12 seeds have no traced CMB intersection.
+  Changing the line settings reused 62 cached calculations and computed three.
+- No viewer code changed in this patch; Node tests/build were not rerun.
+
 ## QuICC/EPM full-sphere converter (2026-09-10)
 
 - 14 new tests pass, including the optional downloaded QuICC reference check.

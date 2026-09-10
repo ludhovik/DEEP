@@ -9,8 +9,8 @@ and convection simulations. It includes converters for:
   reader;
 - Calypso merged ASCII/binary spectral restarts (`*.fst` / `*.fsb`, also
   native gzip) with their matching grid controls;
-- QuICC/EPMDynamoCode full-sphere HDF5 spectral states, including modern
-  QuICC `WLFl` and `WLFm` ordering.
+- QuICC/EPMDynamoCode spherical HDF5 spectral states: full-sphere `WLFl`/`WLFm`
+  and spherical-shell `SLFl`/`SLFm` ordering.
 
 Open the hosted viewer at
 [the DEEPscope viewer](https://ludhovik.github.io/DEEP/), or run it locally
@@ -903,10 +903,13 @@ coefficients before reconstruction. Incremental conversion reuses each native
 field synthesis when you add diagnostics or change field-line settings.
 
 This reader supports legacy EPM and modern QuICC **full-sphere Worland** states
-(`WLFl`/`WLFm`), with analytic regular limits at the centre. It does not reinterpret
-QuICC shell/Cartesian/cylindrical files as spheres. Those schemes and separate
-imposed/background files need their own readers; inner-core-only updates do not
-apply to this full-fluid-sphere format. Source scalar coefficients are exported
+(`WLFl`/`WLFm`), with analytic regular limits at the centre, and **spherical-shell
+Chebyshev** states (`SLFl`/`SLFm`). Shell boundaries come from native
+`physical/lower1d` and `physical/upper1d` values. The same command selects the
+correct radial reconstruction automatically. Extract archives first and pass
+the `.hdf5` state to `--state`. Cartesian/cylindrical schemes and separate
+imposed/background files need their own readers; these formats provide no
+separately resolved inner-core fields for `--inner-core-only`. Source scalar coefficients are exported
 as stored, without adding an assumed conductive background.
 
 Standard builds are detected by file layout: EPM uses its Schmidt normalization;

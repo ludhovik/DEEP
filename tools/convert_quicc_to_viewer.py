@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert EPMDynamoCode and QuICC WLFl/WLFm full-sphere HDF5 states to DEEPscope."""
+"""Convert EPMDynamoCode and QuICC WLFl/WLFm full-sphere and SLFl/SLFm shell HDF5 states to DEEPscope."""
 from __future__ import annotations
 import argparse
 import copy
@@ -24,7 +24,7 @@ except ImportError:
     from tools.spectral_truncation import cutoff_metadata
     from tools.viewer_bundle import bundle_path
 
-CONVERTER_PACKAGE_VERSION = '1.0.0'
+CONVERTER_PACKAGE_VERSION = '1.1.0'
 STATE_RE = re.compile(r'^state_?(\d+)\.(?:hdf5|h5)$', re.I)
 
 
@@ -42,7 +42,7 @@ def build_arg_parser():
     p.add_argument('--angular-normalization', choices=['auto','unity','schmidt','epm'], default='auto',
                    help='Auto: EPM Schmidt with sqrt(2) for m>0; QuICC SHUnity. Override for custom builds.')
     p.add_argument('--n2-convention', choices=['none','deepscope','quicc-rotating'], default='none',
-                   help='N2 scaling must match the source equations: none (default), r*Ek^2*Ra/Pr, or r*Ek*Ra/Pr. Applies equally to composition using Sc/RaC.')
+                   help='N2 scaling must match the source equations: none (default), r*Ek^2*Ra/Pr, or r*Ek*Ra/Pr (full sphere) or (r/ro)*Ek*Ra (shell). The shell convention has no Pr factor.')
     return add_viewer_arguments(p, 'public/data_quicc')
 
 
@@ -82,14 +82,23 @@ def discover_states(args):
 
 def convert_state(path, outdir, args):
     data = read_state(path)
+    interval = data['radial_interval']
+    expected_geometry = 'shell' if interval is not None else 'full-sphere'
+    if args.geometry not in ('auto',expected_geometry):
+        raise ValueError(f"Native {data['scheme']} geometry is {expected_geometry}; --geometry {args.geometry} is incompatible.")
+    ri = interval[0] if interval is not None else 0.
+    if args.fluid_inner_radius is not None and not math.isclose(args.fluid_inner_radius,ri,rel_tol=1e-10,abs_tol=1e-12):
+        raise ValueError('--fluid-inner-radius disagrees with the native inner boundary.')
+    if interval is not None and (args.worland_family != 'chebyshev' or args.worland_normalization != 'unity'):
+        raise ValueError('Worland options apply to full spheres; SLFl/SLFm use their native Chebyshev FCT basis.')
     angular = args.angular_normalization
     if angular == 'auto': angular = 'epm' if data['scheme'] == 'EPM' else 'unity'
     info = cutoff_metadata(args.spectral_lmax, data['lmax'], data['mmax'])
     leff = info['lmax_effective']
     meff = info['mmax_effective'] // data['minc'] * data['minc']
     info['mmax_effective'] = meff
-    radius, theta, phi = grids(data['nmax'], leff, meff)
-    _, old_theta, old_phi = grids(data['nmax'], data['lmax'], data['mmax'])
+    radius, theta, phi = grids(data['nmax'], leff, meff, interval)
+    _, old_theta, old_phi = grids(data['nmax'], data['lmax'], data['mmax'], interval)
     info.update(original_grid=[len(old_theta),len(old_phi)], output_grid=[len(theta),len(phi)],
                 method='native spectral truncation before Worland/vector harmonic synthesis')
     pairs = modes(data['lmax'], data['mmax'], data['minc'], data['scheme'][-1])
@@ -100,7 +109,7 @@ def convert_state(path, outdir, args):
         coef = data['fields'][name]
         if components: coef = (coef, data['fields']['utor' if name == 'ur' else 'Btor'])
         result = synthesize_field(coef, pairs, radius, theta, phi, leff, angular,
-                                  args.worland_family, args.worland_normalization)
+                                  args.worland_family, args.worland_normalization, interval)
         if components: fields.update(zip(components, result))
         else: fields[name] = result
     p = data['parameters']
@@ -108,34 +117,42 @@ def convert_state(path, outdir, args):
         return next((p[k] for k in keys if k in p), math.nan)
     params = dict(l_max=leff, ek=get('E','ekman'), pr=get('Pr','prandtl'),
                   sc=get('Sc','schmidt'), ra=get('Ra','rayleigh'), raxi=get('RaC','rayleigh_composition'),
-                  prmag=get('Pm','magnetic_prandtl'), time=data['time'], radratio=0.)
+                  prmag=get('Pm','magnetic_prandtl'), time=data['time'], radratio=ri/radius[-1])
     if 'Comp' not in fields: params.update(sc=1., raxi=0.)
     # HDF5 identifies a spatial scheme, not the governing nondimensional equations.
     # Do not silently assign the Leeds Ra convention to a modified-Rayleigh model.
+    if args.n2_convention == 'quicc-rotating' and interval is not None and not math.isclose(interval[1]-interval[0],1.,rel_tol=1e-10,abs_tol=1e-12):
+        raise ValueError('--n2-convention quicc-rotating for shells assumes the standard unit-gap dynamo model; select none for other nondimensionalizations.')
     factors = {}
     if args.n2_convention != 'none':
         ek = args.Ek if args.Ek is not None else params['ek']
         for field, ra_key, pr_key, ra_arg, pr_arg in [('C','ra','pr','RaT','Pr'), ('Comp','raxi','sc','RaC','Sc')]:
             ra = getattr(args,ra_arg) if getattr(args,ra_arg) is not None else params[ra_key]
             pr = getattr(args,pr_arg) if getattr(args,pr_arg) is not None else params[pr_key]
-            if field in fields and all(math.isfinite(v) for v in (ek,ra,pr)) and pr != 0:
-                factors[field] = radius * ek**(2 if args.n2_convention == 'deepscope' else 1) * ra/pr
+            shell_rotating = args.n2_convention == 'quicc-rotating' and interval is not None
+            if field in fields and all(math.isfinite(v) for v in (ek,ra)) and (shell_rotating or (math.isfinite(pr) and pr != 0)):
+                if args.n2_convention == 'quicc-rotating' and interval is not None:
+                    # Shell dynamo uses modified Ra without Pr and gravity r/ro.
+                    factors[field] = (radius/radius[-1]) * ek * ra
+                else:
+                    factors[field] = radius * ek**(2 if args.n2_convention == 'deepscope' else 1) * ra/pr
     elif not args.no_gradients and any(k in fields for k in ('C','Comp')):
         print('N2 omitted: select --n2-convention to match the source nondimensional equations.', flush=True)
-    adapted = dict(n2_factors=factors, r_shell=radius, r_master=radius, r_fluid_inner=0., theta=theta, phi=phi,
+    adapted = dict(n2_factors=factors, r_shell=radius, r_master=radius, r_fluid_inner=ri, theta=theta, phi=phi,
         fields=fields, minc=data['minc'], has_conducting_inner_core=False, magnetic_extends_inner_core=False,
         spectral_truncation=info,
         metadata={'source_code':'QuICC/EPM' if data['scheme']=='EPM' else 'QuICC',
                   'state_number':state_number(path),
-                  'quicc':{'scheme':data['scheme'], 'radial_basis':args.worland_family,
-                           'radial_normalization':args.worland_normalization, 'angular_normalization':angular,
+                  'quicc':{'scheme':data['scheme'], 'radial_basis':'mapped_chebyshev' if interval is not None else args.worland_family,
+                           'radial_normalization':'fct_c0_plus_2cn' if interval is not None else args.worland_normalization, 'angular_normalization':angular,
                            'nmax':data['nmax'], 'native_parameters':p,
                            'scalar_policy':'stored state coefficients; external imposed/background files are not added',
-                           'centre_policy':'analytic regular Worland limits',
+                           'radial_interval':list(interval) if interval is not None else [0.,1.],
+                           'centre_policy':'not_in_fluid_domain' if interval is not None else 'analytic regular Worland limits',
                            'diagnostics_units':'native code units', 'n2_convention':args.n2_convention},
                   'spectral':{'lmax':leff,'mmax':meff,'minc':data['minc'], 'nlat':len(theta),'nphi':len(phi),
-                              'library':'NumPy/SciPy Worland and vector spherical harmonics'},
-                  'geometry_detection':{'method':'native full-sphere Worland spectral scheme',
+                              'library':'NumPy/SciPy native radial and vector spherical harmonics'},
+                  'geometry_detection':{'method':'native shell Chebyshev interval' if interval is not None else 'native full-sphere Worland spectral scheme',
                                         'transform_geometry':'spectral', 'requested_geometry':args.geometry}})
     return convert_adapted_snapshot(path, outdir, args, adapted, params,
                                     source_label='QuICC/EPM' if data['scheme']=='EPM' else 'QuICC',
@@ -173,8 +190,6 @@ def run_sequence(args, paths):
 
 def main(argv=None):
     args = build_arg_parser().parse_args(argv)
-    if args.geometry not in ('auto','full-sphere') or (args.fluid_inner_radius is not None and args.fluid_inner_radius != 0):
-        raise ValueError('EPM/WLFl/WLFm describe a full fluid sphere; shell/inner-core reinterpretation would be incorrect.')
     for name in ('downsample_r','downsample_theta','downsample_phi','line_seed_theta','line_seed_phi',
                  'line_max_steps','sequence_step'):
         if getattr(args,name) < 1: raise ValueError(f'--{name.replace("_","-")} must be positive.')
@@ -184,7 +199,7 @@ def main(argv=None):
         if args.line_seeds < 1: raise ValueError('--line-seeds must be positive.')
         args.line_seed_theta, args.line_seed_phi = choose_regular_seed_grid(args.line_seeds)
     if args.inner_core_only:
-        raise ValueError('--inner-core-only does not apply to a full fluid sphere; this format has no separate inner core.')
+        raise ValueError('--inner-core-only is unavailable: these QuICC formats contain no separately resolved inner-core fields.')
     paths = discover_states(args)
     if args.sequence_first is not None:
         run_conversion(args, 'quicc', paths, lambda current: run_sequence(current, paths))

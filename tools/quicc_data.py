@@ -1,4 +1,4 @@
-"""Native EPM/QuICC full-sphere HDF5 spectral reconstruction.
+"""Native EPM/QuICC spherical HDF5 spectral reconstruction.
 
 See QUICC_CONVERTER.md for the upstream definitions and normalization choices.
 No QuICC installation, SHTns, or modifications to simulation code are needed.
@@ -29,6 +29,8 @@ def modes(lmax, mmax, minc=1, ordering='l'):
 @cached_calculation
 def read_state(path):
     import h5py
+    if not h5py.is_hdf5(path):
+        raise ValueError('Expected an extracted HDF5 state file; unpack .tar.gz archives first and select stateNNNN.hdf5.')
     with h5py.File(path, 'r') as f:
         header = text_attr(f.attrs.get('header', b'StateFile'))
         if header != 'StateFile':
@@ -38,8 +40,8 @@ def read_state(path):
             raise ValueError(f'Unsupported QuICC state version {version!r}.')
         epm = 'Truncation' in f
         scheme = 'EPM' if epm else text_attr(f.attrs.get('type', b''))
-        if not epm and scheme not in ('WLFl', 'WLFm'):
-            raise ValueError(f'Unsupported QuICC scheme {scheme!r}; this reader supports EPM and full-sphere WLFl/WLFm states.')
+        if not epm and scheme not in ('WLFl', 'WLFm', 'SLFl', 'SLFm'):
+            raise ValueError(f'Unsupported QuICC scheme {scheme!r}; supported schemes are EPM, WLFl/WLFm and SLFl/SLFm.')
         def integer(key):
             v = np.asarray(f[key][()])
             if v.size != 1 or not np.isfinite(v.item()) or v.item() != int(v.item()):
@@ -90,8 +92,39 @@ def read_state(path):
         time = float(np.asarray(f[timekey][()]).item()) if timekey in f else None
         if time is not None and not math.isfinite(time):
             raise ValueError('Nonfinite simulation time.')
-    return dict(scheme=scheme, nmax=nmax, lmax=lmax, mmax=mmax, minc=minc,
+    interval = shell_interval(params) if scheme in ('SLFl','SLFm') else None
+    return dict(radial_interval=interval, scheme=scheme, nmax=nmax, lmax=lmax, mmax=mmax, minc=minc,
                 fields=fields, parameters=params, time=time)
+
+
+def shell_interval(parameters):
+    """Read native length units. A radius ratio alone cannot set the length scale."""
+    if not {'lower1d','upper1d'} <= parameters.keys():
+        raise ValueError('Shell states require physical/lower1d and physical/upper1d; rratio alone does not specify the native length scale.')
+    ri, ro = parameters['lower1d'], parameters['upper1d']
+    if not (math.isfinite(ri) and math.isfinite(ro) and 0 < ri < ro):
+        raise ValueError('Shell radii must satisfy 0 < lower1d < upper1d.')
+    for key in ('rratio','r_ratio'):
+        if key in parameters and not math.isclose(ri/ro,parameters[key],rel_tol=1e-10,abs_tol=1e-12):
+            raise ValueError(f'{key} disagrees with lower1d/upper1d.')
+    return ri, ro
+
+
+def chebyshev_shell(count, radius, interval):
+    """Native QuICC FCT convention: c0 + 2 sum_{n>0} cn Tn(x)."""
+    from numpy.polynomial import chebyshev as cheb
+    ri, ro = interval
+    a, b = (ro-ri)/2, (ro+ri)/2
+    r = np.asarray(radius,dtype=float)
+    if a <= 0 or ri <= 0 or np.any(r < ri-1e-12) or np.any(r > ro+1e-12):
+        raise ValueError('Shell synthesis points must lie inside the native radial interval.')
+    x = np.clip((r-b)/a,-1.,1.)
+    coefficients = 2*np.eye(count)
+    coefficients[0,0] = 1.
+    w = cheb.chebval(x,coefficients).T
+    derivative = cheb.chebval(x,cheb.chebder(coefficients)).T/a
+    over = w/r[:,None]
+    return w, over, derivative+over
 
 
 def worland(l, count, radius, family='chebyshev', normalization='unity'):
@@ -127,10 +160,15 @@ def worland(l, count, radius, family='chebyshev', normalization='unity'):
     return w, over, tangent
 
 
-def grids(nmax, lmax, mmax):
+def grids(nmax, lmax, mmax, radial_interval=None):
     # Resolve radial products r^l P_n(2r^2-1); include centre and boundary exactly.
     nr = max(8, 2*(nmax+1) + (lmax+1)//2)
     r = np.r_[0., np.sin(np.pi*(np.arange(nr)+.5)/(2*nr)), 1.]
+    if radial_interval is not None:
+        ri, ro = radial_interval
+        nr = max(8,2*(nmax+1))
+        r = ri + (ro-ri)*(1-np.cos(np.linspace(0,np.pi,nr+1)))/2
+        r[0], r[-1] = ri, ro
     nt = max(6, math.ceil(1.5*(lmax+1)))
     np_ = max(12, 3*(mmax+1))
     theta = np.arccos(np.polynomial.legendre.leggauss(nt)[0][::-1])
@@ -140,7 +178,7 @@ def grids(nmax, lmax, mmax):
 
 @cached_calculation
 def synthesize_field(coefficients, pairs, radius, theta, phi, lmax,
-                     angular='unity', family='chebyshev', normalization='unity'):
+                     angular='unity', family='chebyshev', normalization='unity', radial_interval=None):
     """Synthesize one scalar or (poloidal,toroidal) pair; Fourier synthesis by m.
 
     B = curl(T r) + curl curl(P r): Q=l(l+1)P/r, S=P'+P/r.
@@ -151,6 +189,7 @@ def synthesize_field(coefficients, pairs, radius, theta, phi, lmax,
     shape = (len(radius), len(theta), len(phi))
     result = [np.zeros(shape) for _ in range(3 if vector else 1)]
     radial = {}
+    shell_basis = chebyshev_shell(arrays[0].shape[1], radius, radial_interval) if radial_interval is not None else None
     by_m = {}
     for i, (l,m) in enumerate(pairs):
         if l <= lmax:
@@ -165,7 +204,7 @@ def synthesize_field(coefficients, pairs, radius, theta, phi, lmax,
         sums = [np.zeros(shape[:2], dtype=complex) for _ in result]
         for i,l in entries:
             if l not in radial:
-                radial[l] = worland(l, arrays[0].shape[1], radius, family, normalization)
+                radial[l] = shell_basis if shell_basis is not None else worland(l, arrays[0].shape[1], radius, family, normalization)
             w, over, tangent = radial[l]
             k = l-m
             if vector:

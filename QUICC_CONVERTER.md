@@ -1,6 +1,6 @@
 # QuICC and EPMDynamoCode conversion
 
-`tools/convert_quicc_to_viewer.py` reads full-sphere **spectral state files**
+`tools/convert_quicc_to_viewer.py` reads spherical **spectral state files**
 directly with h5py, NumPy and SciPy. Neither an installed QuICC executable nor
 its Python package is required. Source files and upstream code are read-only.
 
@@ -17,11 +17,21 @@ its Python package is required. Source files and upstream code are read-only.
   datatype. Dimensions, finite values, paired potentials and real m=0 modes
   are checked before export.
 
-QuICC is a framework with many spatial schemes. Shell (`SLFl`/`SLFm`),
+- Modern QuICC spherical-shell states `SLFl` and `SLFm` use the same field
+  groups as modern full spheres, with a mapped Chebyshev radial expansion.
+  `physical/lower1d` and `physical/upper1d` must specify valid native boundaries;
+  `rratio`/`r_ratio`, if present, must agree. A ratio alone is insufficient to
+  establish the physical length normalization and is rejected.
+
 Cartesian, cylindrical, physical visualization and custom restart layouts are
-**not supported by this reader**. The linked EPM code solves a full fluid
-sphere: shell geometry and `--inner-core-only` are rejected, rather than
-inventing an inner boundary or inner-core samples.
+not supported. Native geometry is detected automatically; `--geometry` and
+`--fluid-inner-radius` validate it rather than reinterpret it. These inputs
+provide no separately resolved inner-core arrays, so `--inner-core-only` and
+`--geometry conducting-inner-core` remain unsupported. No data are invented
+inside the shell's inner boundary.
+
+Pass an **extracted HDF5 state** to `--state`, never its `.tar.gz` archive.
+Invalid signatures now produce an explicit extraction instruction.
 
 ## Install and convert
 
@@ -50,7 +60,8 @@ stride pairing and B² tubes use the ordinary DEEPscope bundle format.
 
 `--spectral-lmax 0` (default) retains every native mode. A positive cutoff
 removes higher degrees before vector/scalar synthesis and reduces the grid.
-Sampling factors apply afterward. Radius includes both 0 and 1; the angular
+Sampling factors apply afterward. Full-sphere radius includes both 0 and 1; shell radius includes both native
+boundaries and no points below the ICB. The angular
 grid uses Gauss colatitudes and a full uniform longitude period, without a
 duplicate seam. No arbitrary centre extrapolation is used.
 
@@ -102,6 +113,25 @@ supply matching `--angular-normalization unity|schmidt|epm`,
 \(\alpha=0,\beta=\ell-1/2\); other Worland families require an extension.
 A wrong convention changes amplitudes even if the resulting picture looks plausible.
 
+### Shell radial basis
+
+For SLFl/SLFm, with \(a=(r_o-r_i)/2\), \(b=(r_o+r_i)/2\) and
+\(x=(r-b)/a\), the native expansion is
+
+\[
+f_{\ell m}(r)=c_{0,\ell m}+2\sum_{n=1}^{N}c_{n,\ell m}T_n(x).
+\]
+
+The factor two applies only to n>0, matching QuICC's inverse FCT convention.
+Derivatives are evaluated analytically with \(d/dr=a^{-1}d/dx\). The same
+vector formulas below apply with this radial basis. Worland settings do not
+change the shell basis; nondefault Worland options are rejected for shells.
+The shell grid uses Chebyshev–Lobatto points including both boundaries.
+Native length units are preserved (the benchmark has a unit shell gap).
+
+[QuICC shell projection operators](https://github.com/QuICC/QuICC-Solver/blob/main/Components/PyQuICC/Python/quicc/projection/shell.py)
+define the basis and its derivative normalization.
+
 Both vector potentials obey
 
 \[
@@ -136,9 +166,15 @@ applying the wrong scale, **N2 is off by default** for this converter; scalar
 gradients are still exported. Select the convention appropriate to the model:
 
 - `--n2-convention deepscope`: \(N^2=rE^2(Ra_T C_r/Pr+Ra_C Comp_r/Sc)\).
-- `--n2-convention quicc-rotating`: \(N^2=rE(Ra_T C_r/Pr+Ra_C Comp_r/Sc)\).
-  This matches the modified-Rayleigh convention of the linked QuICC full-sphere
-  rotating thermal dynamo model, giving the diagnostic in rotation units.
+- `--n2-convention quicc-rotating`: for full spheres,
+  \(N^2=rE(Ra_T C_r/Pr+Ra_C Comp_r/Sc)\). For shells,
+  \(N^2=(r/r_o)E(Ra_T C_r+Ra_C Comp_r)\), matching the standard unit-gap
+  QuICC shell dynamo's modified Rayleigh number and gravity. Its thermal
+  buoyancy coefficient contains no Pr factor. Composition uses the analogous
+  convention when selected by the user. This shell convention is rejected for
+  non-unit-gap coordinates; choose `none` unless the model scaling is known.
+  These are rotation-unit diagnostics of the stored scalar, without adding an
+  absent conductive background.
 - `--n2-convention none`: omit N2 (default).
 
 CLI parameter overrides apply to these calculations. Missing factors leave the
@@ -181,6 +217,44 @@ To convert a sequence instead, replace `--state ...` with
 
 Archive size: 8,901,643 bytes. SHA-256:
 `25b2f9b363d643c0c6f6b52292ff7d5ac68f1f79782422f0f01c4d575ced965e`.
+
+## Verified spherical-shell example
+
+The user's [BoussinesqShellDynamo Explicit v0.8.0 archive](https://gitlab.ethz.ch/quicc/test-benchmarks/-/raw/v0.8.0/ref/BoussinesqShellDynamo/Explicit.tar.gz)
+is supported. Extract it, then use the same conversion options:
+
+```bash
+tar --no-same-owner -xzf "$HOME/Downloads/quicc-benchmark2/Explicit.tar.gz" \
+  -C "$HOME/Downloads/quicc-benchmark2"
+python3 tools/convert_quicc_to_viewer.py \
+  --state "$HOME/Downloads/quicc-benchmark2/Explicit/state0011.hdf5" \
+  --out public/data_quicc_shell \
+  --incremental --cache-dir "$HOME/.cache/deepscope" \
+  --emf --induction --n2-convention quicc-rotating \
+  --cmb-br-ltrunc 13 --field-line-mode both --line-seeds 360 \
+  --external-rmax 40 --external-nr 192 --line-max-steps 4000
+```
+
+This state is SLFl, N=23, L=M=47, \(r_i=0.5384615384615384\),
+\(r_o=1.5384615384615383\), E=0.0005, Pm=5, Pr=1, Ra=50.
+A complete export with 36 tracing seeds produced 46 volumes and 36 exterior
+arcs with all return branches connected. Native `state0000` energy comparison:
+
+| Quantity | Native reference | Reconstructed |
+|---|---:|---:|
+| Mean kinetic energy | 769.404712588804 | 769.404712588798 |
+| Mean magnetic energy | 1.5670242214564 | 1.5670242214563932 |
+| Mean temperature squared | 0.00603865921329396 | 0.006038659213293904 |
+
+```bash
+python3 tests/test_quicc_shell.py
+QUICC_SHELL_BENCHMARK_DIR="$HOME/Downloads/quicc-benchmark2/Explicit" \
+  python3 tests/test_quicc_shell.py
+```
+
+The [shell model equations](https://github.com/QuICC/Model-BoussinesqShellDynamo/blob/main/Readme.md)
+and [effective buoyancy coefficient](https://github.com/QuICC/Model-BoussinesqShellDynamo/blob/main/Model/Boussinesq/Shell/Dynamo/IDynamoBackend.cpp)
+determine the shell-specific N2 factor.
 
 ## Validation
 
