@@ -1,4 +1,6 @@
 import "./style.css";
+import "./mobile-layout.css";
+import { createMobileLayout } from "./mobile-layout.js";
 
 import * as THREE from "three";
 import { fieldRadialDomain } from "./volume-domain.js";
@@ -14,6 +16,8 @@ import { unpackGeometry } from "./geometry-jobs.js";
 import { createWorkProgress, readResponseWithProgress } from "./work-progress.js";
 import { createViewerStatus } from "./viewer-status.js";
 import { SURFACE_TEXTURES, SURFACE_TEXTURE_OPTIONS } from "./surface-textures.js";
+
+const mobileLayout = createMobileLayout();
 
 const APP_BASE_URL = new URL(import.meta.env.BASE_URL || "./", window.location.href);
 function appPublicUrl(relativePath) {
@@ -231,6 +235,9 @@ controls.target.set(0.0, 0.0, 0.0);
 
 function resetCameraView() {
   camera.position.set(0.0, -3.0, 1.35);
+  if (typeof mobileLayout !== "undefined" && mobileLayout.isMobile) {
+    camera.position.multiplyScalar(1 / Math.min(1, camera.aspect));
+  }
   camera.up.set(0.0, 0.0, 1.0);
   controls.target.set(0.0, 0.0, 0.0);
   controls.update();
@@ -7501,6 +7508,7 @@ function buildPointOfViewGui() {
   const povGui = new GUI({ title: "Point of view" });
   povGui.domElement.classList.add("point-of-view-gui");
   povGuiRoot = povGui;
+  povGui.add(params, "resetCamera").name("Reset / fit view");
 
   cameraParamControllers.push(povGui.add(params, "cameraDistance", 0.2, 20.0, 0.01).name("Distance").onChange(applyCameraViewFromParams));
   cameraParamControllers.push(povGui.add(params, "cameraAzimuthDeg", -180, 180, 1).name("Azimuth phi").onChange(applyCameraViewFromParams));
@@ -7853,6 +7861,7 @@ function buildGui() {
   gui.close();
 
   buildPointOfViewGui();
+  if (typeof mobileLayout !== "undefined") mobileLayout.attach(gui, povGuiRoot);
 }
 
 
