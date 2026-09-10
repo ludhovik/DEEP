@@ -786,7 +786,9 @@ XSHELLS does not need the Leeds-only `--modules-dir` option.
 ## MagIC converter
 
 The MagIC converter reads genuine 3-D graphic snapshots through the official
-`MagicGraph` class. Make the MagIC Python package importable, for example:
+`MagicGraph` class, with a DEEPscope compatibility reader for complete Version 9
+fluid shells whose declared inner-core records are absent. The MagIC Python
+installation needs no modifications. Make the package importable, for example:
 
 ```bash
 git clone https://github.com/magic-sph/magic.git ../magic
@@ -801,6 +803,24 @@ python tools/convert_magic_to_viewer.py \
   --magic-python-dir ../magic/python \
   --out public/data_magic
 ```
+
+Archived names such as `G_a60.run_tag` work directly with `--graph`; no rename
+or symbolic link is required. The `a60` token is kept as a file identifier and
+does not imply time averaging. Numeric folder/sequence selection continues to
+select `G_<number>` files only.
+
+Some Version 9 archives declare an inner radial grid but end immediately after
+the complete fluid shell. DEEPscope validates the exact shell size, record
+markers and grid coverage, then reads the seven available fields (entropy,
+three velocity and three magnetic components). It warns about the absent IC
+records and records this in `metadata.json` under `source_reader` and
+`inner_core.available=false`. The header's conductivity ratio `sigma` and
+conducting-boundary classification are preserved. There are no invented
+inner-core samples. Omission during export cannot be distinguished from a
+download truncated exactly at the shell boundary; compare the archive checksum
+if available. Partial shell/IC records are not silently accepted by this path.
+Normal files, including those with IC records, still use `MagicGraph`.
+Input precision must match the file (`--precision float64` for double precision).
 
 Convert a sequence:
 

@@ -1,5 +1,27 @@
 # Integrated package validation
 
+## MagIC archived V9 shells (2026-09-10)
+
+- Seven new regression tests pass, covering 16 endian/precision/symmetry/block
+  combinations, all seven native fields, coordinate and hemisphere ordering,
+  missing-IC provenance, native archive names, normal-reader routing, damaged
+  records, an exported bundle and incremental read reuse. The source bytes stay
+  unchanged. The 37 converter-package tests, 11 incremental tests and 12 IC
+  tests also complete successfully (one IC test requires unavailable real data
+  and is skipped).
+- Eight big-endian fixtures (both precisions, minc=1/2, one/two latitude blocks)
+  agree exactly with an unmodified upstream MagicGraph reader for all seven
+  fields and both coordinates. The comparison uses identical shell records
+  with a no-IC header for upstream, and a declared-but-absent IC for DEEPscope.
+  Little-endian fixtures are checked against independently encoded values;
+  upstream's legacy Python string-record reader fails those fixtures, so no
+  upstream parity claim is made for them.
+- The reported 999,173,240-byte Jupiter file matches the expected full V9 shell
+  size for 121 x 384 x 768, float32, seven fields and one latitude block. The
+  user's actual binary has not been supplied here; real-data conversion remains
+  to be checked. Missing IC records do not establish an insulating boundary:
+  sigma is retained, and metadata explicitly states that IC data are unavailable.
+
 ## Calypso full-sphere binary restart (2026-09-09)
 
 - All 108 converter tests pass with both supplied Calypso archives enabled.

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Convert MagIC ``G_#.TAG`` graphic snapshots to DEEPscope viewer data.
 
-The official MagIC ``MagicGraph`` reader is used for the binary format.  MagIC
+The official MagIC ``MagicGraph`` reader handles normal binary inputs; a narrow
+DEEPscope reader supports archived V9 shells with absent inner-core records. MagIC
 stores physical arrays as ``(phi_sector, theta, radius)``; this converter
 unfolds ``minc`` symmetry and writes little-endian C-order ``(r, theta, phi)``
 arrays, matching the Leeds and XSHELLS converter contract.
@@ -28,6 +29,11 @@ except ImportError:
 
 import numpy as np
 from scipy.special import gammaln, lpmv
+
+try:
+    from magic_graph_compat import read_v9_shell_without_ic
+except ImportError:
+    from tools.magic_graph_compat import read_v9_shell_without_ic
 
 try:
     from spectral_truncation import nonnegative_lmax, truncate_graphic_fields
@@ -178,18 +184,19 @@ def import_magic_graph(magic_python_dir: str | None) -> Any:
     return MagicGraph
 
 
-GRAPH_RE = re.compile(r"^G_(?P<ivar>\d+|ave)(?:\.(?P<tag>.+))?$")
+GRAPH_RE = re.compile(r"^G_(?P<ivar>\d+|a\d+|ave)(?:\.(?P<tag>.+))?$")
 
 
-def parse_graph_filename(path: Path) -> tuple[int | None, str | None, bool]:
+def parse_graph_filename(path: Path) -> tuple[int | str | None, str | None, bool]:
     match = GRAPH_RE.match(path.name)
     if not match:
         raise ValueError(
             f"{path.name!r} is not a MagIC graphic filename. Expected G_<number>.TAG "
-            "or G_ave.TAG."
+            "or G_a<number>.TAG or G_ave.TAG."
         )
     value = match.group("ivar")
-    return (None if value == "ave" else int(value), match.group("tag"), value == "ave")
+    ivar = None if value == "ave" else (value if value.startswith("a") else int(value))
+    return ivar, match.group("tag"), value == "ave"
 
 
 def discover_graph(folder: Path, tag: str | None, ivar: int | None, average: bool) -> Path:
@@ -214,17 +221,19 @@ def discover_graph(folder: Path, tag: str | None, ivar: int | None, average: boo
 
 
 def load_graph(path: Path, magic_python_dir: str | None, precision: str) -> Any:
-    MagicGraph = import_magic_graph(magic_python_dir)
     ivar, tag, average = parse_graph_filename(path)
     dtype = np.float64 if precision == "float64" else np.float32
-    graph = MagicGraph(
-        ivar=ivar,
-        tag=tag,
-        ave=average,
-        datadir=str(path.parent),
-        quiet=False,
-        precision=dtype,
-    )
+    graph = read_v9_shell_without_ic(path, dtype)
+    if graph is None:
+        MagicGraph = import_magic_graph(magic_python_dir)
+        graph = MagicGraph(
+            ivar=ivar,
+            tag=tag,
+            ave=average,
+            datadir=str(path.parent),
+            quiet=False,
+            precision=dtype,
+        )
     for required in ("radius", "colatitude", "vr", "vtheta", "vphi"):
         if not hasattr(graph, required):
             raise ValueError(f"MagIC reader did not provide required field {required!r}.")
@@ -296,6 +305,14 @@ def adapt_graph(graph: Any) -> dict[str, Any]:
         "has_conducting_inner_core": False,
         "magnetic_extends_inner_core": False,
     }
+    reader_metadata = getattr(graph, "deepscope_reader_metadata", None)
+    if reader_metadata:
+        result["has_conducting_inner_core"] = abs(float(graph.sigma)) > 0.0
+        result["metadata"] = {
+            "source_reader": dict(reader_metadata),
+            "inner_core": {"available": False, "reason": "records_absent_from_graphic"},
+            "description": "Converted MagIC V9 fluid-shell fields; declared inner-core records are absent.",
+        }
 
     core_names = ("radius_ic", "Br_ic", "Btheta_ic", "Bphi_ic")
     if any(hasattr(graph, name) for name in core_names[1:]) and not all(hasattr(graph, name) for name in core_names):
@@ -513,7 +530,7 @@ def clean_output_directory(outdir: Path) -> None:
 def read_graph_data(path, magic_python_dir, precision):
     graph = load_graph(path, magic_python_dir, precision)
     parameters = {name: json_number(getattr(graph, name, None)) for name in
-                  ("l_max", "lmax", "ek", "pr", "sc", "ra", "raxi", "time", "prmag", "radratio")}
+                  ("l_max", "lmax", "ek", "pr", "sc", "ra", "raxi", "time", "prmag", "radratio", "sigma")}
     return adapt_graph(graph), parameters
 
 
@@ -939,7 +956,7 @@ def convert_adapted_snapshot(path, outdir, args, adapted, graph_parameters, *,
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Convert MagIC G_#.TAG graphic files to DEEPscope viewer data.")
     source = p.add_argument_group("MagIC input")
-    source.add_argument("--graph", help="Explicit G_<number>.TAG or G_ave.TAG file.")
+    source.add_argument("--graph", help="Explicit G_<number>.TAG, G_a<number>.TAG or G_ave.TAG file. Archived G_a files require explicit --graph selection.")
     source.add_argument("--folder", help="MagIC run folder; selects a graphic using --ivar/--tag.")
     source.add_argument("--ivar", type=int, help="Graphic number, for example 1 for G_1.TAG.")
     source.add_argument("--tag", help="MagIC run tag/filename suffix.")
