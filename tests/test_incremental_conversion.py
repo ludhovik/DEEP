@@ -240,6 +240,23 @@ class IncrementalTests(unittest.TestCase):
                 for path in (root / "fresh").glob("*.f32"):
                     self.assertEqual(path.read_bytes(), (root / "out" / path.name).read_bytes(), path.name)
 
+                args.output = ["ur", "Br", "C", "vort_r"]; args.out = str(root / "selected")
+                leeds.run_leeds_conversion(args)
+                selected = json.loads((root / "selected" / "metadata.json").read_text())
+                self.assertEqual(set(selected["fields"]), set(args.output))
+                for filename in selected["fields"].values():
+                    np.testing.assert_allclose(np.fromfile(root / "selected" / filename, dtype="<f4"),
+                        np.fromfile(root / "fresh" / filename, dtype="<f4"), rtol=2e-5, atol=2e-6)
+                for name, filename in json.loads((root / "fresh/metadata.json").read_text())["fields"].items():
+                    with self.subTest(selected_leeds=name):
+                        args.output = [name]
+                        leeds.run_leeds_conversion(args)
+                        np.testing.assert_allclose(np.fromfile(root / "selected" / filename, dtype="<f4"),
+                            np.fromfile(root / "fresh" / filename, dtype="<f4"), rtol=2e-5, atol=2e-6)
+                transform_spy.reset_mock(); args.output = ["C"]
+                leeds.run_leeds_conversion(args)
+                self.assertEqual(transform_spy.call_count, 0, "C-only export must not synthesize velocity or B")
+                args.output = None
                 args.Pr = None; args.no_parameter_prompt = True; args.out = str(root / "unknown")
                 leeds.run_leeds_conversion(args)
                 unknown = json.loads((root / "unknown" / "metadata.json").read_text())
@@ -294,6 +311,23 @@ class IncrementalTests(unittest.TestCase):
                 cc.run_conversion(args, "xshells", xs.resolve_inputs(args).values(), convert)
                 for path in (root / "fresh").glob("*.f32"):
                     self.assertEqual(path.read_bytes(), (root / "out" / path.name).read_bytes(), path.name)
+
+                args.output = ["ur", "Br", "vort_r"]; args.out = str(root / "selected")
+                cc.run_conversion(args, "xshells", xs.resolve_inputs(args).values(), convert)
+                selected = json.loads((root / "selected" / "metadata.json").read_text())
+                self.assertEqual(set(selected["fields"]), set(args.output))
+                for filename in selected["fields"].values():
+                    np.testing.assert_allclose(np.fromfile(root / "selected" / filename, dtype="<f4"),
+                        np.fromfile(root / "fresh" / filename, dtype="<f4"), rtol=2e-5, atol=2e-6)
+                for name, filename in json.loads((root / "fresh/metadata.json").read_text())["fields"].items():
+                    with self.subTest(selected_xshells=name):
+                        args.output = [name]
+                        cc.run_conversion(args, "xshells", xs.resolve_inputs(args).values(), convert)
+                        np.testing.assert_allclose(np.fromfile(root / "selected" / filename, dtype="<f4"),
+                            np.fromfile(root / "fresh" / filename, dtype="<f4"), rtol=2e-5, atol=2e-6)
+                transform_spy.reset_mock(); args.output = ["Br"]
+                cc.run_conversion(args, "xshells", xs.resolve_inputs(args).values(), convert)
+                self.assertEqual(transform_spy.call_count, 1, "Br-only export must skip velocity synthesis")
 
 
 if __name__ == "__main__":

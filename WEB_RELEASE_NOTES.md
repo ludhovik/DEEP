@@ -1,5 +1,19 @@
 # v0.4.0 — static hosted/local-data viewer
 
+## Split meridional fields and cylindrical scalar gradients (2026-09-11)
+
+- Give the right (`+s`, longitude `phi`) and left (`-s`, longitude `phi+180°`)
+  halves of both meridional planes independent fields, scaling, colour maps,
+  manual limits, opacity and colourbars. Their longitude and visibility remain
+  shared. New DTV2 codes retain every setting; older codes mirror their former
+  whole-plane settings to both halves.
+- All six converters now export cylindrical-radial and axial gradients of
+  thermal/codensity `C` and composition `Comp`: `grad_s*` and `grad_z*`, with
+  both full and `m=0`-removed forms. Explicit `--output` selection supports the
+  same names.
+- Existing datasets remain loadable. Reconversion is required only to add the
+  new gradient volumes. No Cloudflare Worker change is needed.
+
 ## Calypso dataset conversion (2026-09-09)
 
 - Add Calypso to the converter list and document its native restart workflow.

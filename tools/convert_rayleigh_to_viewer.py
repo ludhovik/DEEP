@@ -6,6 +6,11 @@ try:
 except ImportError:
     from tools.converter_parameters import resolve_graph_parameters
 
+try:
+    from output_selection import OutputSelection
+except ImportError:
+    from tools.output_selection import OutputSelection
+
 import argparse
 import copy
 import json
@@ -141,9 +146,10 @@ def source_files(paths,args):
 
 
 def convert_state(path,outdir,args):
+    selection=OutputSelection(args)
     checkpoint=path.name=='grid_etc';grid=read_grid(path,checkpoint)
     control=input_control(path,args);native=main_parameters(control)
-    files=field_paths(path,args);r=grid['r'];theta=grid['theta'];phi=grid['phi']
+    files={k:v for k,v in field_paths(path,args).items() if selection.needs(k)};r=grid['r'];theta=grid['theta'];phi=grid['phi']
     fields={};info=None
     lmax=int(native.get('l_max',grid['lmax'])) if not checkpoint else grid['lmax']
     if checkpoint:
@@ -184,7 +190,7 @@ def convert_state(path,outdir,args):
                 prmag=native.get('magnetic_prandtl_number',math.nan),sc=native.get('schmidt_number',math.nan),ra=native.get('rayleigh_number',math.nan),raxi=native.get('compositional_rayleigh_number',math.nan),radratio=r[0]/r[-1])
     params=resolve_graph_parameters(args,{**native,**params},str(control or path))
     factors={}
-    if args.n2_convention=='deepscope':
+    if args.n2_convention=='deepscope' and (selection.wants('N2') or selection.wants('N2_full')):
         ek=args.Ek if args.Ek is not None else params['ek']
         for field,ra,pr in [('C',args.RaT if args.RaT is not None else params['ra'],args.Pr if args.Pr is not None else params['pr']),('Comp',params['raxi'],params['sc'])]:
             if field in fields:

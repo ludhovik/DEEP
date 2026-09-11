@@ -6,6 +6,11 @@ try:
 except ImportError:
     from tools.converter_parameters import resolve_graph_parameters
 
+try:
+    from output_selection import OutputSelection
+except ImportError:
+    from tools.output_selection import OutputSelection
+
 import argparse
 import copy
 import json
@@ -86,6 +91,7 @@ def discover_states(args):
 
 
 def convert_state(path, outdir, args):
+    selection = OutputSelection(args)
     data = read_state(path)
     interval = data['radial_interval']
     expected_geometry = 'shell' if interval is not None else 'full-sphere'
@@ -109,7 +115,7 @@ def convert_state(path, outdir, args):
     pairs = modes(data['lmax'], data['mmax'], data['minc'], data['scheme'][-1])
     fields = {}
     for name, components in [('ur',('ur','ut','up')), ('Br',('Br','Bt','Bp')), ('C',None), ('Comp',None)]:
-        if name not in data['fields']: continue
+        if name not in data['fields'] or not selection.needs(name): continue
         print(f'Synthesizing {name}, l <= {leff}...', flush=True)
         coef = data['fields'][name]
         if components: coef = (coef, data['fields']['utor' if name == 'ur' else 'Btor'])
@@ -129,7 +135,7 @@ def convert_state(path, outdir, args):
     if args.n2_convention == 'quicc-rotating' and interval is not None and not math.isclose(interval[1]-interval[0],1.,rel_tol=1e-10,abs_tol=1e-12):
         raise ValueError('--n2-convention quicc-rotating for shells assumes the standard unit-gap dynamo model; select none for other nondimensionalizations.')
     factors = {}
-    if args.n2_convention != 'none':
+    if args.n2_convention != 'none' and (selection.wants('N2') or selection.wants('N2_full')):
         ek = args.Ek if args.Ek is not None else params['ek']
         for field, ra_key, pr_key, ra_arg, pr_arg in [('C','ra','pr','RaT','Pr'), ('Comp','raxi','sc','RaC','Sc')]:
             ra = getattr(args,ra_arg) if getattr(args,ra_arg) is not None else params[ra_key]

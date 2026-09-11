@@ -288,6 +288,11 @@ def _backend_identity(extra_files=()):
 
 def run_conversion(args, kind, inputs, convert, *, backend_files=(), inner_core_update=None):
     """Run one complete conversion or sequence, using its real (not staged) path."""
+    try:
+        from output_selection import OutputSelection
+    except ImportError:
+        from tools.output_selection import OutputSelection
+    OutputSelection(args)
     vars(args).setdefault("_parameter_prompt_answers", {})
     output = Path(args.out).expanduser().resolve()
     sources = {str(Path(p).expanduser().resolve()): file_digest(p) for p in inputs if p is not None}

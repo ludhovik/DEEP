@@ -179,9 +179,13 @@ def describe_inner_core(root):
     meta = json.loads(path.read_text())
     ricb = float(meta.get("r_icb", meta["r_inner"]))
     domains = meta.get("field_domains", {})
-    magnetic_minimum = max(meta["r_inner"], *(domains.get(name, {}).get("r_min", meta["r_inner"])
-                                              for name in ("Br", "Bt", "Bp")))
-    available = ricb > 0 and magnetic_minimum < ricb and all(n in meta["fields"] for n in ("Br", "Bt", "Bp"))
+    required = ("Br", "Bt", "Bp")
+    if meta.get("output_selection"):
+        # A deliberately partial export can still contain valid inner-core data.
+        required = tuple(name for name in MAGNETIC_FIELDS if name in meta["fields"])
+    magnetic_minimum = max([meta["r_inner"], *(domains.get(name, {}).get("r_min", meta["r_inner"])
+                                               for name in required)])
+    available = bool(required) and ricb > 0 and magnetic_minimum < ricb and all(n in meta["fields"] for n in required)
     if not available:
         return False
     domains = meta.setdefault("field_domains", {})
@@ -210,7 +214,8 @@ def extend_leeds_inner_core(root, source, backend, *, required=False, inner=None
         if required:
             raise ValueError("No resolved icr/icBP/icBT inner-core data in this Leeds state.")
         return
-    if not all(name in meta["fields"] for name in ("Br", "Bt", "Bp")):
+    partial_magnetic = bool(meta.get("output_selection")) and any(name in meta["fields"] for name in MAGNETIC_FIELDS)
+    if not partial_magnetic and not all(name in meta["fields"] for name in ("Br", "Bt", "Bp")):
         if not required and not any(np.any(inner[name]) for name in ("icBP", "icBT")):
             return  # Zero-filled IC placeholders in a non-magnetic run.
         raise ValueError("Existing bundle lacks Br/Bt/Bp; run a full magnetic conversion first.")
@@ -222,11 +227,15 @@ def extend_leeds_inner_core(root, source, backend, *, required=False, inner=None
         raise ValueError("Cannot prepend a separate inner core to an overlapping radial grid.")
     print("Adding inner-core magnetism from icBP/icBT; outer-core outputs are reused.", flush=True)
     native, theta, phi = synthesise_leeds_inner(inner, meta, backend)
-    native["Babs"] = np.sqrt(sum(native[name]**2 for name in ("Br", "Bt", "Bp")))
+    if not partial_magnetic or "Babs" in meta["fields"]:
+        native["Babs"] = np.sqrt(sum(native[name]**2 for name in ("Br", "Bt", "Bp")))
     for name in ("Br", "Bt", "Bp"):
-        mean = np.broadcast_to(native[name].mean(axis=-1, keepdims=True), native[name].shape)
-        native[name + "_phiavg"] = mean
-        native[name + "_nom0"] = native[name] - mean
+        if not partial_magnetic or any(name + suffix in meta["fields"] for suffix in ("_phiavg", "_nom0")):
+            mean = np.broadcast_to(native[name].mean(axis=-1, keepdims=True), native[name].shape)
+            if not partial_magnetic or name + "_phiavg" in meta["fields"]:
+                native[name + "_phiavg"] = mean
+            if not partial_magnetic or name + "_nom0" in meta["fields"]:
+                native[name + "_nom0"] = native[name] - mean
     strides = meta.get("sampling", {}).get("requested_strides", [1, 1, 1])
     sampling = ViewerSampling(inner["r"], theta, phi, *strides)
     for axis in ("theta", "phi"):

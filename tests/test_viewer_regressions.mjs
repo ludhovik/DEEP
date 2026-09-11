@@ -196,6 +196,27 @@ test("legacy scalar selections in view codes map to canonical primary and second
   assert.equal(ctx.canonicalScalarFieldName("grad_rC_full"), "grad_rC_full");
 });
 
+test("older view codes mirror each meridian setting to its new left half", () => {
+  const ctx = viewer();
+  ctx.metadata.fields = { C: "C.f32", Br: "Br.f32" };
+  const old = ctx.decodeViewState(presetCode(ctx, {
+    meridianField: "Br", meridianScale: "manual", meridianMin: -4,
+    meridianMax: 7, meridianColormap: "viridis", meridianOpacity: .35,
+    meridian2Field: "C", meridian2Colormap: "viridis",
+  }));
+  assert.deepEqual(Array.from(ctx.applyViewStateParams(old)), []);
+  assert.equal(ctx.params.meridianLeftField, "Br");
+  assert.equal(ctx.params.meridianLeftScale, "manual");
+  assert.equal(ctx.params.meridianLeftMin, -4);
+  assert.equal(ctx.params.meridianLeftMax, 7);
+  assert.equal(ctx.params.meridianLeftColormap, "viridis");
+  assert.equal(ctx.params.meridianLeftOpacity, .35);
+  assert.equal(ctx.params.meridian2LeftField, "C");
+  assert.equal(ctx.params.meridian2LeftColormap, "viridis");
+  const roundTrip = ctx.decodeViewState(ctx.encodeViewState(ctx.collectViewState()));
+  assert.equal(roundTrip.params.meridianLeftField, "Br");
+});
+
 function surfaceViewer() {
   const ctx = viewer(), loads = [], elements = new Map();
   const element = () => ({ style: {}, children: [], textContent: "",
@@ -2037,6 +2058,32 @@ test("actual radial and meridional meshes expose IC magnetism and exclude fluid 
   assert.equal(ctx.radialSurfaceSampling(fluid).radius,.5);
   ctx.params.magneticVolumeDomain="fluid";
   assert.equal(ctx.radialSurfaceSampling(magnetic).radius,.5);
+});
+
+test("split meridian uses independent fields and radial domains on its two sides", async () => {
+  const ctx=viewer();ctx.THREE=RealTHREE;
+  ctx.metadata={nr:5,ntheta:3,nphi:4,r_inner:0,r_outer:1,r_icb:.5,has_inner_core:true,
+    fields:{Br:"B.f32",C:"C.f32"},field_domains:{Br:{r_min:0,r_max:1},C:{r_min:.5,r_max:1}}};
+  ctx.coords.r=[0,.25,.5,.75,1];ctx.colourMap=()=>new RealTHREE.Color("red");
+  for(const name of ["idx","radiusAtIndex","thetaAtIndex","phiAtIndex","normalizePhi","angularDistance","nearestPhiIndex",
+    "makeMeridionalSliceMesh","makeSplitMeridionalSliceGroup"])
+    vm.runInContext(definition(name),ctx);
+  const magnetic=new Float32Array(60).fill(1),fluid=new Float32Array(60).fill(2);
+  Object.defineProperty(magnetic,"viewerDomain",{value:{r_min:0,r_max:1,magnetic:true}});
+  Object.defineProperty(fluid,"viewerDomain",{value:{r_min:.5,r_max:1,magnetic:false}});
+  const group=ctx.makeSplitMeridionalSliceGroup(magnetic,fluid,30,{
+    right:{opacity:.8,vmin:-1,vmax:1,colormap:"viridis"},
+    left:{opacity:.3,vmin:0,vmax:2,colormap:"blue-white-red"},
+  });
+  assert.equal(group.children.length,2);
+  const right=group.children.find(child=>child.userData.meridianSide==="right");
+  const left=group.children.find(child=>child.userData.meridianSide==="left");
+  const firstRadius=mesh=>Math.hypot(...mesh.geometry.attributes.position.array.slice(0,3));
+  assert.equal(firstRadius(right),0);
+  assert.ok(Math.abs(firstRadius(left)-.5)<1e-6);
+  assert.equal(right.material.opacity,.8);assert.equal(left.material.opacity,.3);
+  assert.ok(right.geometry.attributes.position.array[0]>=0);
+  assert.ok(left.geometry.attributes.position.array[0]<=0);
 });
 
 test("isovalue swatches are included in export even when no colourbars are visible", () => {

@@ -10,6 +10,11 @@ arrays, matching the Leeds and XSHELLS converter contract.
 
 from __future__ import annotations
 
+try:
+    from output_selection import OutputSelection, add_output_argument, cylindrical_gradient, selected_native_fields
+except ImportError:
+    from tools.output_selection import OutputSelection, add_output_argument, cylindrical_gradient, selected_native_fields
+
 import argparse
 import copy
 import json
@@ -560,7 +565,8 @@ def convert_adapted_snapshot(path, outdir, args, adapted, graph_parameters, *,
     r_master = adapted["r_master"]
     theta = adapted["theta"]
     phi = adapted["phi"]
-    raw = adapted["fields"]
+    selection = OutputSelection(args)
+    raw = {key: value for key, value in adapted["fields"].items() if selection.needs(key)}
     r_icb, r_cmb = float(adapted.get("r_fluid_inner", r_shell[0])), float(r_shell[-1])
     has_inner_core = r_icb > RADIAL_ATOL
     has_cond_ic = bool(adapted["has_conducting_inner_core"])
@@ -598,143 +604,170 @@ def convert_adapted_snapshot(path, outdir, args, adapted, graph_parameters, *,
         f"{source_label} grid: shell nr={len(r_shell)}, master nr={len(r_master)}, "
         f"ntheta={len(theta)}, nphi={len(phi)}, minc={adapted['minc']}, lmax~{lmax}"
     )
-    native: dict[str, tuple[np.ndarray, np.ndarray, str]] = {}
+    if selection.names is None:
+        native: dict[str, tuple[np.ndarray, np.ndarray, str]] = {}
 
-    def register(name: str, values: np.ndarray, radius: np.ndarray, source: str) -> None:
-        native[name] = (np.asarray(values, dtype=np.float32), radius, source)
+        def register(name: str, values: np.ndarray, radius: np.ndarray, source: str) -> None:
+            native[name] = (np.asarray(values, dtype=np.float32), radius, source)
 
-    Ur = raw.get("ur")
-    Ut = raw.get("ut")
-    Up = raw.get("up")
-    if Ur is not None and Ut is not None and Up is not None:
-        register("ur", Ur, r_shell, "velocity")
-        register("ut", Ut, r_shell, "velocity")
-        register("up", Up, r_shell, "velocity")
-        th3 = theta[None, :, None]
-        register("us", Ur * np.sin(th3) + Ut * np.cos(th3), r_shell, "velocity")
-        register("uz", Ur * np.cos(th3) - Ut * np.sin(th3), r_shell, "velocity")
-        register("Uabs", np.sqrt(Ur**2 + Ut**2 + Up**2), r_shell, "velocity")
-        register("helicity", compute_helicity(Ur, Ut, Up, r_shell, theta, phi), r_shell, "velocity")
-        for name, value in vorticity_fields(Ur, Ut, Up, r_shell, theta, phi).items():
-            register(name, value, r_shell, "velocity")
-        if not args.no_m0_fields:
-            for name, arr in (("ur", Ur), ("ut", Ut), ("up", Up)):
-                register(f"{name}_phiavg", phi_average_volume(arr), r_shell, "velocity")
-                register(f"{name}_nom0", remove_m0_phi(arr), r_shell, "velocity")
+        Ur = raw.get("ur")
+        Ut = raw.get("ut")
+        Up = raw.get("up")
+        if Ur is not None and Ut is not None and Up is not None:
+            register("ur", Ur, r_shell, "velocity")
+            register("ut", Ut, r_shell, "velocity")
+            register("up", Up, r_shell, "velocity")
+            th3 = theta[None, :, None]
+            register("us", Ur * np.sin(th3) + Ut * np.cos(th3), r_shell, "velocity")
+            register("uz", Ur * np.cos(th3) - Ut * np.sin(th3), r_shell, "velocity")
+            register("Uabs", np.sqrt(Ur**2 + Ut**2 + Up**2), r_shell, "velocity")
+            register("helicity", compute_helicity(Ur, Ut, Up, r_shell, theta, phi), r_shell, "velocity")
+            for name, value in vorticity_fields(Ur, Ut, Up, r_shell, theta, phi).items():
+                register(name, value, r_shell, "velocity")
+            if not args.no_m0_fields:
+                for name, arr in (("ur", Ur), ("ut", Ut), ("up", Up)):
+                    register(f"{name}_phiavg", phi_average_volume(arr), r_shell, "velocity")
+                    register(f"{name}_nom0", remove_m0_phi(arr), r_shell, "velocity")
 
-    r_magnetic = r_master if magnetic_extends_ic else r_shell
-    Br, Bt, Bp = raw.get("Br"), raw.get("Bt"), raw.get("Bp")
-    if Br is not None and Bt is not None and Bp is not None:
-        for name, arr in (("Br", Br), ("Bt", Bt), ("Bp", Bp)):
-            register(name, arr, r_magnetic, "magnetic")
-        register("Babs", np.sqrt(Br**2 + Bt**2 + Bp**2), r_magnetic, "magnetic")
-        if not args.no_m0_fields:
+        r_magnetic = r_master if magnetic_extends_ic else r_shell
+        Br, Bt, Bp = raw.get("Br"), raw.get("Bt"), raw.get("Bp")
+        if Br is not None and Bt is not None and Bp is not None:
             for name, arr in (("Br", Br), ("Bt", Bt), ("Bp", Bp)):
-                register(f"{name}_phiavg", phi_average_volume(arr), r_magnetic, "magnetic")
-                register(f"{name}_nom0", remove_m0_phi(arr), r_magnetic, "magnetic")
-
-    scalars: dict[str, tuple[np.ndarray, np.ndarray, str]] = {}
-    if "C" in raw:
-        C = raw["C"]
-        thermal_source = adapted.get("thermal_source", "entropy")
-        scalars["C"] = (C, r_shell, thermal_source)
-        register("C", C, r_shell, thermal_source)
-        if source_format == "magic_graph":
-            register("T", C, r_shell, "entropy")
-        if source_format == "magic_graph" or not args.no_m0_fields:
-            register("Cnom0", remove_m0_phi(C), r_shell, thermal_source)
-            register("C_phiavg", phi_average_volume(C), r_shell, thermal_source)
-        if source_format == "magic_graph" and not args.no_m0_fields:
-            register("T_nom0", remove_m0_phi(C), r_shell, "entropy")
-            register("T_phiavg", phi_average_volume(C), r_shell, "entropy")
-    if "Comp" in raw:
-        Comp = raw["Comp"]
-        scalars["Comp"] = (Comp, r_shell, "composition")
-        register("Comp", Comp, r_shell, "composition")
-        if source_format == "magic_graph" or not args.no_m0_fields:
-            register("Compnom0", remove_m0_phi(Comp), r_shell, "composition")
-            register("Comp_phiavg", phi_average_volume(Comp), r_shell, "composition")
-    for optional in ("Phase", "P"):
-        if optional in raw:
-            register(optional, raw[optional], r_shell, optional.lower())
-
-    gradients: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
-    if not args.no_gradients:
-        for name, (scalar, radius, source) in scalars.items():
-            print(f"Computing gradients of {name}...")
-            gr, gt, gp = gradient_scalar_3d(scalar, radius, theta, phi)
-            gradients[name] = (gr, gt, gp)
-            register(f"grad_r{name}_full", gr, radius, source)
-            register(f"grad_theta{name}_full", gt, radius, source)
-            register(f"grad_phi{name}_full", gp, radius, source)
+                register(name, arr, r_magnetic, "magnetic")
+            register("Babs", np.sqrt(Br**2 + Bt**2 + Bp**2), r_magnetic, "magnetic")
             if not args.no_m0_fields:
-                register(f"grad_r{name}", remove_m0_phi(gr), radius, source)
-                register(f"grad_theta{name}", remove_m0_phi(gt), radius, source)
-                register(f"grad_phi{name}", remove_m0_phi(gp), radius, source)
+                for name, arr in (("Br", Br), ("Bt", Bt), ("Bp", Bp)):
+                    register(f"{name}_phiavg", phi_average_volume(arr), r_magnetic, "magnetic")
+                    register(f"{name}_nom0", remove_m0_phi(arr), r_magnetic, "magnetic")
 
-    diagnostics = {
-        "emf_requested": bool(args.emf),
-        "emf_exported": False,
-        "induction_requested": bool(args.induction),
-        "induction_exported": False,
-        "emf_definition": "u x B",
-        "fluctuating_emf_definition": "u_prime x B_prime",
-        "induction_definition": "curl(u x B)",
-        "curl_implementation": "shared finite-difference spherical curl",
-    }
-    if args.emf or args.induction:
-        if Ur is None or Br is None:
-            print("Skipping EMF/induction: both velocity and magnetic fields are required.")
-        else:
-            Br_u = radial_remap_to_master(Br, r_magnetic, r_shell)
-            Bt_u = radial_remap_to_master(Bt, r_magnetic, r_shell)
-            Bp_u = radial_remap_to_master(Bp, r_magnetic, r_shell)
-            Er, Et, Ep = compute_emf(Ur, Ut, Up, Br_u, Bt_u, Bp_u)
-            Erf, Etf, Epf = compute_emf(
-                remove_m0_phi(Ur), remove_m0_phi(Ut), remove_m0_phi(Up),
-                remove_m0_phi(Br_u), remove_m0_phi(Bt_u), remove_m0_phi(Bp_u),
-            )
-            if args.emf:
-                register("EMFr", Er, r_shell, "velocity")
-                register("EMFt", Et, r_shell, "velocity")
-                register("EMFp", Ep, r_shell, "velocity")
-                register("EMFr_fluct", Erf, r_shell, "velocity")
-                register("EMFt_fluct", Etf, r_shell, "velocity")
-                register("EMFp_fluct", Epf, r_shell, "velocity")
-                register("EMFabs", np.sqrt(Er**2 + Et**2 + Ep**2), r_shell, "velocity")
-                diagnostics["emf_exported"] = True
-            if args.induction:
-                Ir, It, Ip = compute_induction_from_emf(Er, Et, Ep, r_shell, theta, phi)
-                register("Ir", Ir, r_shell, "velocity")
-                register("It", It, r_shell, "velocity")
-                register("Ip", Ip, r_shell, "velocity")
-                register("Iz", Ir * np.cos(th3) - It * np.sin(th3), r_shell, "velocity")
-                register("Iabs", np.sqrt(Ir**2 + It**2 + Ip**2), r_shell, "velocity")
-                diagnostics["induction_exported"] = True
+        scalars: dict[str, tuple[np.ndarray, np.ndarray, str]] = {}
+        if "C" in raw:
+            C = raw["C"]
+            thermal_source = adapted.get("thermal_source", "entropy")
+            scalars["C"] = (C, r_shell, thermal_source)
+            register("C", C, r_shell, thermal_source)
+            if source_format == "magic_graph":
+                register("T", C, r_shell, "entropy")
+            if source_format == "magic_graph" or not args.no_m0_fields:
+                register("Cnom0", remove_m0_phi(C), r_shell, thermal_source)
+                register("C_phiavg", phi_average_volume(C), r_shell, thermal_source)
+            if source_format == "magic_graph" and not args.no_m0_fields:
+                register("T_nom0", remove_m0_phi(C), r_shell, "entropy")
+                register("T_phiavg", phi_average_volume(C), r_shell, "entropy")
+        if "Comp" in raw:
+            Comp = raw["Comp"]
+            scalars["Comp"] = (Comp, r_shell, "composition")
+            register("Comp", Comp, r_shell, "composition")
+            if source_format == "magic_graph" or not args.no_m0_fields:
+                register("Compnom0", remove_m0_phi(Comp), r_shell, "composition")
+                register("Comp_phiavg", phi_average_volume(Comp), r_shell, "composition")
+        for optional in ("Phase", "P"):
+            if optional in raw:
+                register(optional, raw[optional], r_shell, optional.lower())
 
-    Ek, Pr, Sc, RaT, RaC = (resolved_parameters[k] for k in ("Ek", "Pr", "Sc", "RaT", "RaC"))
-    N2_full = None
-    n2_factors = adapted.get("n2_factors")
-    if gradients and (np.isfinite(Ek) or n2_factors is not None):
-        N2_full = np.zeros_like(next(iter(gradients.values()))[0], dtype=np.float64)
-        used = False
-        if n2_factors is not None:
-            for scalar, factor in n2_factors.items():
-                if scalar in gradients:
-                    N2_full += np.asarray(factor)[:, None, None] * gradients[scalar][0]
-                    used = True
-        elif "C" in gradients and np.isfinite(Pr) and Pr != 0.0 and np.isfinite(RaT):
-            N2_full += r_shell[:, None, None] * (Ek**2 * RaT / Pr) * gradients["C"][0]
-            used = True
-        if n2_factors is None and "Comp" in gradients and np.isfinite(Sc) and Sc != 0.0 and np.isfinite(RaC):
-            N2_full += r_shell[:, None, None] * (Ek**2 * RaC / Sc) * gradients["Comp"][0]
-            used = True
-        if used:
-            register("N2_full", N2_full, r_shell, "scalar_shell")
-            if not args.no_m0_fields:
-                register("N2", remove_m0_phi(N2_full), r_shell, "scalar_shell")
-        else:
-            N2_full = None
+        gradients: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+        if not args.no_gradients:
+            for name, (scalar, radius, source) in scalars.items():
+                print(f"Computing gradients of {name}...")
+                gr, gt, gp = gradient_scalar_3d(scalar, radius, theta, phi)
+                gs, gz = cylindrical_gradient(gr, gt, theta)
+                gradients[name] = (gr, gt, gp)
+                register(f"grad_r{name}_full", gr, radius, source)
+                register(f"grad_theta{name}_full", gt, radius, source)
+                register(f"grad_phi{name}_full", gp, radius, source)
+                register(f"grad_s{name}_full", gs, radius, source)
+                register(f"grad_z{name}_full", gz, radius, source)
+                if not args.no_m0_fields:
+                    register(f"grad_r{name}", remove_m0_phi(gr), radius, source)
+                    register(f"grad_theta{name}", remove_m0_phi(gt), radius, source)
+                    register(f"grad_phi{name}", remove_m0_phi(gp), radius, source)
+                    register(f"grad_s{name}", remove_m0_phi(gs), radius, source)
+                    register(f"grad_z{name}", remove_m0_phi(gz), radius, source)
+
+        diagnostics = {
+            "emf_requested": bool(args.emf),
+            "emf_exported": False,
+            "induction_requested": bool(args.induction),
+            "induction_exported": False,
+            "emf_definition": "u x B",
+            "fluctuating_emf_definition": "u_prime x B_prime",
+            "induction_definition": "curl(u x B)",
+            "curl_implementation": "shared finite-difference spherical curl",
+        }
+        if args.emf or args.induction:
+            if Ur is None or Br is None:
+                print("Skipping EMF/induction: both velocity and magnetic fields are required.")
+            else:
+                Br_u = radial_remap_to_master(Br, r_magnetic, r_shell)
+                Bt_u = radial_remap_to_master(Bt, r_magnetic, r_shell)
+                Bp_u = radial_remap_to_master(Bp, r_magnetic, r_shell)
+                Er, Et, Ep = compute_emf(Ur, Ut, Up, Br_u, Bt_u, Bp_u)
+                Erf, Etf, Epf = compute_emf(
+                    remove_m0_phi(Ur), remove_m0_phi(Ut), remove_m0_phi(Up),
+                    remove_m0_phi(Br_u), remove_m0_phi(Bt_u), remove_m0_phi(Bp_u),
+                )
+                if args.emf:
+                    register("EMFr", Er, r_shell, "velocity")
+                    register("EMFt", Et, r_shell, "velocity")
+                    register("EMFp", Ep, r_shell, "velocity")
+                    register("EMFr_fluct", Erf, r_shell, "velocity")
+                    register("EMFt_fluct", Etf, r_shell, "velocity")
+                    register("EMFp_fluct", Epf, r_shell, "velocity")
+                    register("EMFabs", np.sqrt(Er**2 + Et**2 + Ep**2), r_shell, "velocity")
+                    diagnostics["emf_exported"] = True
+                if args.induction:
+                    Ir, It, Ip = compute_induction_from_emf(Er, Et, Ep, r_shell, theta, phi)
+                    register("Ir", Ir, r_shell, "velocity")
+                    register("It", It, r_shell, "velocity")
+                    register("Ip", Ip, r_shell, "velocity")
+                    register("Iz", Ir * np.cos(th3) - It * np.sin(th3), r_shell, "velocity")
+                    register("Iabs", np.sqrt(Ir**2 + It**2 + Ip**2), r_shell, "velocity")
+                    diagnostics["induction_exported"] = True
+
+        Ek, Pr, Sc, RaT, RaC = (resolved_parameters[k] for k in ("Ek", "Pr", "Sc", "RaT", "RaC"))
+        N2_full = None
+        n2_factors = adapted.get("n2_factors")
+        if gradients and (np.isfinite(Ek) or n2_factors is not None):
+            N2_full = np.zeros_like(next(iter(gradients.values()))[0], dtype=np.float64)
+            used = False
+            if n2_factors is not None:
+                for scalar, factor in n2_factors.items():
+                    if scalar in gradients:
+                        N2_full += np.asarray(factor)[:, None, None] * gradients[scalar][0]
+                        used = True
+            elif "C" in gradients and np.isfinite(Pr) and Pr != 0.0 and np.isfinite(RaT):
+                N2_full += r_shell[:, None, None] * (Ek**2 * RaT / Pr) * gradients["C"][0]
+                used = True
+            if n2_factors is None and "Comp" in gradients and np.isfinite(Sc) and Sc != 0.0 and np.isfinite(RaC):
+                N2_full += r_shell[:, None, None] * (Ek**2 * RaC / Sc) * gradients["Comp"][0]
+                used = True
+            if used:
+                register("N2_full", N2_full, r_shell, "scalar_shell")
+                if not args.no_m0_fields:
+                    register("N2", remove_m0_phi(N2_full), r_shell, "scalar_shell")
+            else:
+                N2_full = None
+
+    else:
+        try:
+            from convert_leeds_to_viewer import regularize_scalar_gradient_center
+        except ImportError:
+            from tools.convert_leeds_to_viewer import regularize_scalar_gradient_center
+        r_magnetic = adapted.get("field_radii", {}).get("Br", r_master if magnetic_extends_ic else r_shell)
+        Ur, Ut, Up = raw.get("ur"), raw.get("ut"), raw.get("up")
+        Br, Bt, Bp = raw.get("Br"), raw.get("Bt"), raw.get("Bp")
+        radii = {key: adapted.get("field_radii", {}).get(key, r_magnetic if key in ("Br","Bt","Bp") else r_shell) for key in raw}
+        native = selected_native_fields(selection, raw, radii, theta, phi, resolved_parameters, args,
+            n2_factors=adapted.get("n2_factors"), source_format=source_format,
+            operations=dict(gradient=adapted.get("gradient_operator", gradient_scalar_3d), remap=radial_remap_to_master,
+                mean=phi_average_volume, nom0=remove_m0_phi, helicity=compute_helicity,
+                emf=compute_emf, curl=compute_induction_from_emf,
+                induction=adapted.get("induction_operator", compute_induction_from_emf),
+                regularize_gradient=regularize_scalar_gradient_center))
+        N2_full = None
+        diagnostics = dict(emf_requested=bool(args.emf), induction_requested=bool(args.induction),
+            emf_exported=any(k.startswith("EMF") for k in native),
+            induction_exported=any(k in native for k in ("Ir","It","Ip","Iz","Iabs")))
 
     fields: dict[str, np.ndarray] = {}
     field_domains: dict[str, dict[str, Any]] = {}
@@ -763,10 +796,10 @@ def convert_adapted_snapshot(path, outdir, args, adapted, graph_parameters, *,
         field_files[name] = filename
         ranges[name] = write_f32(outdir / filename, arr)
 
-    has_magnetic = "Babs" in fields and ranges["Babs"]["absmax"] > 0.0
+    has_magnetic = ("Babs" in fields and ranges["Babs"]["absmax"] > 0.0) if selection.names is None else any(np.any(raw[key]) for key in ("Br","Bt","Bp") if key in raw)
     surface_fields: dict[str, dict[str, Any]] = {}
     Br_cmb = None
-    if has_magnetic and Br is not None:
+    if selection.names is None and has_magnetic and Br is not None:
         Br_cmb = np.asarray(Br[nearest_index(r_magnetic, r_cmb)], dtype=np.float64)
     if args.cmb_br_ltrunc is not None and Br_cmb is not None:
         requested = max(0, int(args.cmb_br_ltrunc))
@@ -905,6 +938,7 @@ def convert_adapted_snapshot(path, outdir, args, adapted, graph_parameters, *,
         field_lines_meta["B_lines"] = "B_lines.json"
         field_lines_meta["count"] = len(combined)
 
+    Ek, Pr, Sc, RaT, RaC = (resolved_parameters[k] for k in ("Ek", "Pr", "Sc", "RaT", "RaC"))
     time = json_number(getattr(graph, "time", None))
     radial_domains = {
         "fluid_shell": {"nr": len(r_shell), "r_min": json_number(r_shell[0]), "r_max": json_number(r_shell[-1])},
@@ -951,12 +985,14 @@ def convert_adapted_snapshot(path, outdir, args, adapted, graph_parameters, *,
         "layout": "r_theta_phi", "endianness": "little",
         "theta_min": json_number(theta_out[0]), "theta_max": json_number(theta_out[-1]),
         "phi_min": json_number(phi_out[0]), "phi_max": json_number(phi_out[-1]),
-        "vorticity": VORTICITY_METADATA if "vort_r" in field_files else None,
+        "vorticity": VORTICITY_METADATA if any(k.startswith("vort_") for k in field_files) else None,
         "fields": field_files, "surface_fields": surface_fields, "ranges": ranges,
         "coordinates": "coordinates.json", "profiles": "profiles.json",
         "field_lines": field_lines_meta,
     }
     metadata.update(adapted.get("metadata", {}))
+    if selection.names is not None:
+        metadata["output_selection"] = list(selection.names)
     with open(outdir / "metadata.json", "w", encoding="utf-8") as stream:
         json.dump(metadata, stream, indent=2, allow_nan=False)
     try:
@@ -984,6 +1020,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def add_viewer_arguments(p, default_output):
     """Shared output, diagnostics, sampling, tracing and incremental options."""
+    add_output_argument(p)
     p.add_argument("--out", default=default_output)
     p.add_argument("--spectral-lmax", type=nonnegative_lmax, default=0,
                    help="Maximum spherical-harmonic degree; 0 (default) retains all native samples. Positive cutoffs filter scalar/vector harmonics and reduce the angular grid.")

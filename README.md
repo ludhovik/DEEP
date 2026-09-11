@@ -202,6 +202,13 @@ Every CMB, ICB, radial, equatorial, and meridional display has:
 - manual minimum and maximum values;
 - opacity.
 
+Each meridional plane has independent **Right (+s, longitude phi)** and
+**Left (-s, longitude phi + 180°)** controls. The two halves may display
+different fields with separate scale ranges, colour maps, opacity and
+colourbars. Longitude and visibility remain common to the plane. Old `DTV2`
+view codes containing only one meridional setting copy it to both halves,
+preserving their original appearance; new codes save both halves.
+
 The CMB can be clipped by one or two meridional planes or by an explicit
 eight-quarter mask. Open **Planet / moon surface**, enable **Show**, choose
 **Display → Surface image**, then select **Image body**: Earth, Mars, Ganymede,
@@ -753,7 +760,7 @@ python tools/convert_leeds_to_viewer.py \
 
 The bundled `modules.py` contains the Leeds shell and regular full-sphere
 spectral transforms. Geometry can be detected or set explicitly. Optional
-outputs include scalar gradients, azimuthal means and fluctuations, magnetic
+outputs include spherical and cylindrical scalar gradients, azimuthal means and fluctuations, magnetic
 field continuation, internal/exterior field lines, motional EMF, and induction.
 
 Converter version 3.3 corrects the Leeds longitude coordinates to match SHTns:
@@ -999,6 +1006,7 @@ The six converters intentionally share common controls where possible:
 
 ```text
 --spectral-lmax L
+--output ur Br C vort_r
 --downsample-r N --downsample-theta N --downsample-phi N
 --geometry auto|full-sphere|shell|conducting-inner-core
 --skip-field-lines
@@ -1017,6 +1025,66 @@ The six converters intentionally share common controls where possible:
 Not every option applies to every source format. A converter writes only fields
 supported by its input and does not invent absent magnetic or compositional
 quantities.
+
+### Selecting specific volume fields
+
+All six converters accept `--output` followed by case-sensitive field names:
+
+```bash
+python3 tools/convert_leeds_to_viewer.py \
+  --state /path/to/state00001.cdf.dat \
+  --out public/data_selected \
+  --incremental \
+  --output ur Br C vort_r
+```
+
+This writes only `ur_volume.f32`, `Br_volume.f32`, `C_volume.f32` and
+`vort_r_volume.f32`, together with the metadata and coordinates needed by the
+viewer. Other volume diagnostics, surface maps and field lines are skipped,
+even if map or field-line options appear in the command. Native input readers
+may still read a whole snapshot; vector transforms and curls calculate coupled
+components when required. Those dependencies remain internal and are not
+exported. For example, `vort_r` needs the velocity vector but does not request
+helicity, scalar gradients or magnetic diagnostics.
+
+**Omit `--output` to retain the normal full export.** The existing `--emf` and
+`--induction` switches remain opt-in. With explicit selection they enable the
+calculation but export only the named components, for example:
+
+```text
+--output ur Br EMFr --emf
+--output vort_r vort_z Ir Iz --induction
+--output grad_sC_full grad_zC_full grad_sComp grad_zComp
+```
+
+Here `s = r sin(theta)` is cylindrical radius. For thermal/codensity `C` and
+composition `Comp`, the converters export `grad_sC`, `grad_zC`, `grad_sComp`
+and `grad_zComp` with the axisymmetric part removed, plus corresponding
+`*_full` fields retaining `m=0`. They are projections of the physical spherical
+gradient:
+
+```text
+grad_s f = sin(theta) grad_r f + cos(theta) grad_theta f
+grad_z f = cos(theta) grad_r f - sin(theta) grad_theta f
+```
+
+The stored thermal variable is named `C` consistently across converters;
+`T` remains a compatibility alias where it already existed.
+
+Induction calculates its required EMF internally; you need not export EMF or
+add `--emf` just to select induction. Field availability depends on the input;
+unknown names, unavailable fields, missing required N2 parameters/conventions,
+and conflicting options produce an error without replacing a valid existing
+bundle. Mean/fluctuation selections conflict with `--no-m0-fields`; gradient
+and N2 selections conflict with `--no-gradients`. `--inner-core-only` is a
+separate update mode and cannot be combined with `--output`. Selected magnetic
+fields still include available conducting inner-core data.
+
+Use the same `--output` list with sequence conversion to select every frame.
+With `--incremental`, extending/changing the list reuses compatible cached
+calculations and publishes exactly the new selection. Fields removed from the
+list are removed from the new bundle. Removing `--output` restores the normal
+export on the next conversion.
 
 ### Incremental conversion
 

@@ -33,6 +33,11 @@ where theta is colatitude and phi is longitude.
 
 from __future__ import annotations
 
+try:
+    from output_selection import add_output_argument, cylindrical_gradient
+except ImportError:
+    from tools.output_selection import add_output_argument, cylindrical_gradient
+
 import argparse
 import glob
 import importlib
@@ -2347,6 +2352,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     src.add_argument("--folder", help="Folder containing state*.cdf.dat files; the latest state number is used.")
 
     p.add_argument("--pattern", default="state*.cdf.dat", help="State filename pattern when using --folder.")
+    add_output_argument(p)
     p.add_argument("--out", default="public/data", help="Output directory for viewer data.")
     p.add_argument("--modules-dir", default=None, help="Directory containing modules.py, if not in the current directory.")
     p.add_argument(
@@ -2634,6 +2640,8 @@ def run_sequence_conversion(args: argparse.Namespace) -> None:
             "--no-parameter-prompt",
         ]
 
+        if getattr(args, "output", None) is not None:
+            cmd += ["--output", *args.output]
         if args.modules_dir:
             cmd += ["--modules-dir", str(args.modules_dir)]
         if args.no_inner_core:
@@ -2918,6 +2926,13 @@ def convert_state(args: argparse.Namespace) -> None:
     )
 
     print(f"Transform grid: lmax={lmax_transform}, mmax={mmax_transform}")
+    if getattr(args, "output", None) is not None:
+        try:
+            from selected_native_adapters import selected_leeds
+        except ImportError:
+            from tools.selected_native_adapters import selected_leeds
+        return selected_leeds(locals())
+
     fullsphere_transform_meta: dict[str, Any] = {
         "enabled": bool(transform_fullsphere),
         "method": "shell_PolTor_to_spat" if not transform_fullsphere else "modules_v2_regular_qst_in_x",
@@ -3292,6 +3307,12 @@ def convert_state(args: argparse.Namespace) -> None:
     grad_rComp_fluct = remove_m0_phi(grad_rComp_3d)
     grad_thetaComp_fluct = remove_m0_phi(grad_thetaComp_3d)
     grad_phiComp_fluct = remove_m0_phi(grad_phiComp_3d)
+    grad_sC_3d, grad_zC_3d = cylindrical_gradient(grad_rC_3d, grad_thetaC_3d, theta)
+    grad_sComp_3d, grad_zComp_3d = cylindrical_gradient(grad_rComp_3d, grad_thetaComp_3d, theta)
+    grad_sC_fluct = remove_m0_phi(grad_sC_3d)
+    grad_zC_fluct = remove_m0_phi(grad_zC_3d)
+    grad_sComp_fluct = remove_m0_phi(grad_sComp_3d)
+    grad_zComp_fluct = remove_m0_phi(grad_zComp_3d)
 
     n2_available = all(np.isfinite(value) for value in (E, Pr, Sc, RaT, RaC)) and Pr > 0 and Sc > 0
     N2_full = N2_volume = None
@@ -3407,6 +3428,10 @@ def convert_state(args: argparse.Namespace) -> None:
         fields["grad_rComp"] = grad_rComp_fluct
         fields["grad_thetaComp"] = grad_thetaComp_fluct
         fields["grad_phiComp"] = grad_phiComp_fluct
+        fields["grad_sC"] = grad_sC_fluct
+        fields["grad_zC"] = grad_zC_fluct
+        fields["grad_sComp"] = grad_sComp_fluct
+        fields["grad_zComp"] = grad_zComp_fluct
 
         # Full fields: m=0 retained.
         fields["grad_rC_full"] = grad_rC_3d
@@ -3415,6 +3440,10 @@ def convert_state(args: argparse.Namespace) -> None:
         fields["grad_rComp_full"] = grad_rComp_3d
         fields["grad_thetaComp_full"] = grad_thetaComp_3d
         fields["grad_phiComp_full"] = grad_phiComp_3d
+        fields["grad_sC_full"] = grad_sC_3d
+        fields["grad_zC_full"] = grad_zC_3d
+        fields["grad_sComp_full"] = grad_sComp_3d
+        fields["grad_zComp_full"] = grad_zComp_3d
 
     # Downsample after all derived quantities are computed.
     dr = max(1, int(args.downsample_r))

@@ -137,7 +137,7 @@ const PANEL_POSITION_OPTIONS = {
 };
 const PANEL_POSITIONS = new Set(Object.values(PANEL_POSITION_OPTIONS));
 
-const displaySlots = ["cmb", "icb", "radial", "earth", "equator", "equator2", "meridian", "meridian2", "fieldlines"];
+const displaySlots = ["cmb", "icb", "radial", "earth", "equator", "equator2", "meridian", "meridianLeft", "meridian2", "meridian2Left", "fieldlines"];
 const displayNames = {
   cmb: "CMB",
   icb: "ICB",
@@ -145,14 +145,18 @@ const displayNames = {
   earth: "Outer surface",
   equator: "Equator 1",
   equator2: "Equator 2",
-  meridian: "Meridian 1",
-  meridian2: "Meridian 2",
+  meridian: "Meridian 1 right (+s)",
+  meridianLeft: "Meridian 1 left (-s)",
+  meridian2: "Meridian 2 right (+s)",
+  meridian2Left: "Meridian 2 left (-s)",
   fieldlines: "Field lines",
 };
 
 const colourbars = Object.fromEntries(
-  displaySlots.map((id) => [
-    id,
+  displaySlots.map((slot) => {
+    const id = slot.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
+    return [
+    slot,
     {
       row: document.getElementById(`cb-row-${id}`),
       title: document.getElementById(`cb-${id}-title`),
@@ -161,7 +165,7 @@ const colourbars = Object.fromEntries(
       max: document.getElementById(`cb-${id}-max`),
       gradient: document.getElementById(`cb-${id}-gradient`),
     },
-  ])
+  ];})
 );
 
 const isoLegendEl = document.getElementById("iso-legend");
@@ -293,7 +297,9 @@ const params = {
   equatorField: "C",
   equator2Field: "C",
   meridianField: "C",
+  meridianLeftField: "C",
   meridian2Field: "C",
+  meridian2LeftField: "C",
 
   showIsosurfaces: false,
   isoField: "ur",
@@ -374,7 +380,9 @@ const params = {
   equatorOpacity: 1.0,
   equator2Opacity: 1.0,
   meridianOpacity: 1.0,
+  meridianLeftOpacity: 1.0,
   meridian2Opacity: 1.0,
+  meridian2LeftOpacity: 1.0,
 
   cmbScale: "symmetric",
   cmbMin: -1.0,
@@ -397,9 +405,15 @@ const params = {
   meridianScale: "symmetric",
   meridianMin: -1.0,
   meridianMax: 1.0,
+  meridianLeftScale: "symmetric",
+  meridianLeftMin: -1.0,
+  meridianLeftMax: 1.0,
   meridian2Scale: "symmetric",
   meridian2Min: -1.0,
   meridian2Max: 1.0,
+  meridian2LeftScale: "symmetric",
+  meridian2LeftMin: -1.0,
+  meridian2LeftMax: 1.0,
 
   cmbColormap: "blue-white-red",
   icbColormap: "blue-white-red",
@@ -408,7 +422,9 @@ const params = {
   equatorColormap: "blue-white-red",
   equator2Colormap: "blue-white-red",
   meridianColormap: "blue-white-red",
+  meridianLeftColormap: "blue-white-red",
   meridian2Colormap: "blue-white-red",
+  meridian2LeftColormap: "blue-white-red",
 
   lineStride: 3,
   lineColourMode: "strength",
@@ -3018,7 +3034,9 @@ function getPreloadFieldRequests(meta) {
   if (params.showEquator) addVolume(params.equatorField);
   if (params.showEquator2) addVolume(params.equator2Field);
   if (params.showMeridian) addVolume(params.meridianField);
+  if (params.showMeridian) addVolume(params.meridianLeftField);
   if (params.showMeridian2) addVolume(params.meridian2Field);
+  if (params.showMeridian2) addVolume(params.meridian2LeftField);
   if (params.showIsosurfaces) addVolume(params.isoField);
 
   return [...requests.entries()].map(([filename, expectedLength]) => ({ filename, expectedLength }));
@@ -4025,6 +4043,18 @@ function meridianRange(field, phiDeg, slot) {
       for (let ir = domain.start; ir <= domain.end; ir++) {
         for (let it = 0; it < metadata.ntheta; it++) yield [ir, it, ip];
       }
+    }
+  });
+  return applyScale(slot, raw[0], raw[1]);
+}
+
+function meridianHalfRange(field, phiDeg, side, slot) {
+  const domain = fieldDisplayDomain(field);
+  const offset = side === "left" ? Math.PI : 0.0;
+  const ip = nearestPhiIndex(THREE.MathUtils.degToRad(phiDeg) + offset);
+  const raw = rawMinMaxFromSamples(field, function* () {
+    for (let ir = domain.start; ir <= domain.end; ir++) {
+      for (let it = 0; it < metadata.ntheta; it++) yield [ir, it, ip];
     }
   });
   return applyScale(slot, raw[0], raw[1]);
@@ -5983,7 +6013,7 @@ function makeHorizontalSliceMesh(field, z, opacity, vmin, vmax, colormap) {
   return mesh;
 }
 
-function makeMeridionalSliceMesh(field, phiDeg, opacity, vmin, vmax, colormap) {
+function makeMeridionalSliceMesh(field, phiDeg, opacity, vmin, vmax, colormap, side = "both") {
   const domain = fieldDisplayDomain(field);
   const nr = Math.max(0, domain.end - domain.start + 1);
   const nt = metadata.ntheta;
@@ -6016,35 +6046,36 @@ function makeMeridionalSliceMesh(field, phiDeg, opacity, vmin, vmax, colormap) {
     }
   }
 
-  function poleValue(ir, it) {
-    // Force the two sides to have the same colour at the pole vertices.
-    // This removes the visual seam where phi and phi+pi meet at theta=0/pi.
-    return 0.5 * (field[idx(ir, it, ipFront)] + field[idx(ir, it, ipBack)]);
-  }
-
   const columns = [];
 
-  // Positive signed half-plane: phi.
-  for (let j = 0; j < thetaExt.length; j++) {
-    columns.push({
-      theta: thetaExt[j],
-      it: thetaSampleIndex[j],
-      ip: ipFront,
-      sign: 1.0,
-      pole: j === 0 || j === thetaExt.length - 1,
-    });
+  if (side === "both" || side === "right") {
+    // Positive cylindrical-radius side: phi.
+    for (let j = 0; j < thetaExt.length; j++) {
+      columns.push({
+        theta: thetaExt[j],
+        it: thetaSampleIndex[j],
+        ip: ipFront,
+        sign: 1.0,
+        pole: side === "both" && (j === 0 || j === thetaExt.length - 1),
+      });
+    }
   }
 
-  // Negative signed half-plane: phi + pi, reversed so the meridional
-  // coordinate is continuous around the full signed plane.
-  for (let j = thetaExt.length - 1; j >= 0; j--) {
-    columns.push({
-      theta: thetaExt[j],
-      it: thetaSampleIndex[j],
-      ip: ipBack,
-      sign: -1.0,
-      pole: j === 0 || j === thetaExt.length - 1,
-    });
+  if (side === "both" || side === "left") {
+    // Negative cylindrical-radius side: phi + pi. Reverse only when joining
+    // both sides into the legacy continuous plane.
+    const order = side === "both"
+      ? Array.from({ length: thetaExt.length }, (_, j) => thetaExt.length - 1 - j)
+      : Array.from({ length: thetaExt.length }, (_, j) => j);
+    for (const j of order) {
+      columns.push({
+        theta: thetaExt[j],
+        it: thetaSampleIndex[j],
+        ip: ipBack,
+        sign: -1.0,
+        pole: side === "both" && (j === 0 || j === thetaExt.length - 1),
+      });
+    }
   }
 
   const ncol = columns.length;
@@ -6074,11 +6105,13 @@ function makeMeridionalSliceMesh(field, phiDeg, opacity, vmin, vmax, colormap) {
     }
   }
 
-  // Connect the signed meridional plane as one continuous annular mesh.
-  // The cyclic closure connects theta=0 on both sides and removes the pole seam.
+  // A two-sided legacy plane closes cyclically at its poles. A single half is
+  // deliberately open at the rotation axis so its independently coloured
+  // neighbour can meet it without triangles spanning north to south.
   for (let ir = 0; ir < nr - 1; ir++) {
-    for (let jc = 0; jc < ncol; jc++) {
-      const jn = (jc + 1) % ncol;
+    const segmentCount = side === "both" ? ncol : ncol - 1;
+    for (let jc = 0; jc < segmentCount; jc++) {
+      const jn = side === "both" ? (jc + 1) % ncol : jc + 1;
       const a = ir * ncol + jc;
       const b = ir * ncol + jn;
       const c = (ir + 1) * ncol + jc;
@@ -6105,11 +6138,29 @@ function makeMeridionalSliceMesh(field, phiDeg, opacity, vmin, vmax, colormap) {
     domainKey: JSON.stringify(domain),
     kind: "meridian",
     phiDeg,
+    side,
     sampleA: Int32Array.from(sampleA),
     sampleB: Int32Array.from(sampleB),
     vertexCount: sampleA.length,
   };
   return mesh;
+}
+
+function makeSplitMeridionalSliceGroup(rightField, leftField, phiDeg, settings) {
+  const group = new THREE.Group();
+  group.userData.viewerTopology = { kind: "split-meridian", phiDeg };
+  const right = makeMeridionalSliceMesh(
+    rightField, phiDeg, settings.right.opacity, settings.right.vmin,
+    settings.right.vmax, settings.right.colormap, "right"
+  );
+  right.userData.meridianSide = "right";
+  const left = makeMeridionalSliceMesh(
+    leftField, phiDeg, settings.left.opacity, settings.left.vmin,
+    settings.left.vmax, settings.left.colormap, "left"
+  );
+  left.userData.meridianSide = "left";
+  group.add(right, left);
+  return group;
 }
 
 
@@ -6184,20 +6235,19 @@ function updateSampledMeshColours(mesh, field, expectedKind, vmin, vmax, colorma
 
 function disposeObject(obj) {
   if (!obj) return;
-
-  if (obj.geometry) obj.geometry.dispose();
-
-  // Surface images are cloned for each mesh's longitude transform. They are
-  // owned by that mesh and must be released when switching bodies or modes.
-  if (obj.userData?.viewerTopology?.kind === "earth-texture") obj.material?.map?.dispose();
-
-  if (obj.material) {
-    if (Array.isArray(obj.material)) {
-      for (const mat of obj.material) mat.dispose();
-    } else {
-      obj.material.dispose();
-    }
+  const objects = [];
+  if (typeof obj.traverse === "function") obj.traverse((child) => objects.push(child));
+  else objects.push(obj);
+  const materials = new Set();
+  for (const child of objects) {
+    child.geometry?.dispose?.();
+    // Surface images are cloned for each mesh's longitude transform. They are
+    // owned by that mesh and must be released when switching bodies or modes.
+    if (child.userData?.viewerTopology?.kind === "earth-texture") child.material?.map?.dispose?.();
+    if (Array.isArray(child.material)) child.material.forEach((material) => materials.add(material));
+    else if (child.material) materials.add(child.material);
   }
+  materials.forEach((material) => material.dispose?.());
 
   scene.remove(obj);
 }
@@ -6245,7 +6295,7 @@ function setStatusSummary(lastFieldName = null) {
   const earthText = params.showEarthSurface
     ? `, Surface=${params.earthDisplayMode === "magnetic" ? params.earthField : SURFACE_TEXTURES[params.earthTextureBody]?.label}`
     : "";
-  const fieldText = `CMB=${params.cmbField}, ICB=${params.icbField}, R=${params.radialField}@${Number(params.radialSurfaceRadiusRo).toFixed(3)}ro${earthText}, Eq1=${params.equatorField}, Eq2=${params.equator2Field}, Mer1=${params.meridianField}, Mer2=${params.meridian2Field}`;
+  const fieldText = `CMB=${params.cmbField}, ICB=${params.icbField}, R=${params.radialField}@${Number(params.radialSurfaceRadiusRo).toFixed(3)}ro${earthText}, Eq1=${params.equatorField}, Eq2=${params.equator2Field}, Mer1=${params.meridianField}/${params.meridianLeftField}, Mer2=${params.meridian2Field}/${params.meridian2LeftField}`;
   const changed = lastFieldName ? ` | updated=${lastFieldName}` : "";
   const groups = Object.values(fieldLineGroups).filter(Boolean);
   const tubeInfo = params.showFieldLines && params.lineRenderMode === "b2-tubes"
@@ -6412,52 +6462,50 @@ async function rebuildEquator2(options = {}) {
 
 async function rebuildMeridian(options = {}) {
   const request = beginRenderRequest("meridian");
-  const reuseGeometry = Boolean(options.reuseGeometry);
-  const field = await loadForRender(request, () => loadField(params.meridianField));
+  const loaded = await loadForRender(request, () => Promise.all([
+    loadField(params.meridianField), loadField(params.meridianLeftField),
+  ]));
+  if (!loaded || !renderRequestIsCurrent(request)) return;
+  const [rightField, leftField] = loaded;
+  const [rightMin, rightMax] = meridianHalfRange(rightField, params.meridianPhiDeg, "right", "meridian");
+  const [leftMin, leftMax] = meridianHalfRange(leftField, params.meridianPhiDeg, "left", "meridianLeft");
+  setColourbarForSlot("meridian", params.meridianField, rightMin, rightMax);
+  setColourbarForSlot("meridianLeft", params.meridianLeftField, leftMin, leftMax);
+  const replacement = makeSplitMeridionalSliceGroup(rightField, leftField, params.meridianPhiDeg, {
+    right: { opacity: params.meridianOpacity, vmin: rightMin, vmax: rightMax, colormap: params.meridianColormap },
+    left: { opacity: params.meridianLeftOpacity, vmin: leftMin, vmax: leftMax, colormap: params.meridianLeftColormap },
+  });
+  disposeObject(meridianMesh);
+  meridianMesh = replacement;
+  meridianMesh.visible = params.showMeridian;
+  scene.add(meridianMesh);
+  await rebuildGapFillers();
   if (!renderRequestIsCurrent(request)) return;
-  const [vmin, vmax] = meridianRange(field, params.meridianPhiDeg, "meridian");
-  setColourbarForSlot("meridian", params.meridianField, vmin, vmax);
-
-  const topologyMatches = meridianMesh?.userData?.viewerTopology?.kind === "meridian" &&
-    Math.abs(Number(meridianMesh.userData.viewerTopology.phiDeg) - Number(params.meridianPhiDeg)) < 1.0e-12;
-  if (reuseGeometry && topologyMatches && updateSampledMeshColours(meridianMesh, field, "meridian", vmin, vmax, params.meridianColormap)) {
-    meridianMesh.visible = params.showMeridian;
-    applyOpacityAndDepth(meridianMesh.material, params.meridianOpacity);
-  } else {
-    const replacement = makeMeridionalSliceMesh(field, params.meridianPhiDeg, params.meridianOpacity, vmin, vmax, params.meridianColormap);
-    disposeObject(meridianMesh);
-    meridianMesh = replacement;
-    meridianMesh.visible = params.showMeridian;
-    scene.add(meridianMesh);
-    await rebuildGapFillers();
-  }
-  if (!renderRequestIsCurrent(request)) return;
-  setStatusSummary(`Meridian:${params.meridianField}`);
+  setStatusSummary(`Meridian:${params.meridianField}/${params.meridianLeftField}`);
 }
 
 async function rebuildMeridian2(options = {}) {
   const request = beginRenderRequest("meridian2");
-  const reuseGeometry = Boolean(options.reuseGeometry);
-  const field = await loadForRender(request, () => loadField(params.meridian2Field));
+  const loaded = await loadForRender(request, () => Promise.all([
+    loadField(params.meridian2Field), loadField(params.meridian2LeftField),
+  ]));
+  if (!loaded || !renderRequestIsCurrent(request)) return;
+  const [rightField, leftField] = loaded;
+  const [rightMin, rightMax] = meridianHalfRange(rightField, params.meridian2PhiDeg, "right", "meridian2");
+  const [leftMin, leftMax] = meridianHalfRange(leftField, params.meridian2PhiDeg, "left", "meridian2Left");
+  setColourbarForSlot("meridian2", params.meridian2Field, rightMin, rightMax);
+  setColourbarForSlot("meridian2Left", params.meridian2LeftField, leftMin, leftMax);
+  const replacement = makeSplitMeridionalSliceGroup(rightField, leftField, params.meridian2PhiDeg, {
+    right: { opacity: params.meridian2Opacity, vmin: rightMin, vmax: rightMax, colormap: params.meridian2Colormap },
+    left: { opacity: params.meridian2LeftOpacity, vmin: leftMin, vmax: leftMax, colormap: params.meridian2LeftColormap },
+  });
+  disposeObject(meridian2Mesh);
+  meridian2Mesh = replacement;
+  meridian2Mesh.visible = params.showMeridian2;
+  scene.add(meridian2Mesh);
+  await rebuildGapFillers();
   if (!renderRequestIsCurrent(request)) return;
-  const [vmin, vmax] = meridianRange(field, params.meridian2PhiDeg, "meridian2");
-  setColourbarForSlot("meridian2", params.meridian2Field, vmin, vmax);
-
-  const topologyMatches = meridian2Mesh?.userData?.viewerTopology?.kind === "meridian" &&
-    Math.abs(Number(meridian2Mesh.userData.viewerTopology.phiDeg) - Number(params.meridian2PhiDeg)) < 1.0e-12;
-  if (reuseGeometry && topologyMatches && updateSampledMeshColours(meridian2Mesh, field, "meridian", vmin, vmax, params.meridian2Colormap)) {
-    meridian2Mesh.visible = params.showMeridian2;
-    applyOpacityAndDepth(meridian2Mesh.material, params.meridian2Opacity);
-  } else {
-    const replacement = makeMeridionalSliceMesh(field, params.meridian2PhiDeg, params.meridian2Opacity, vmin, vmax, params.meridian2Colormap);
-    disposeObject(meridian2Mesh);
-    meridian2Mesh = replacement;
-    meridian2Mesh.visible = params.showMeridian2;
-    scene.add(meridian2Mesh);
-    await rebuildGapFillers();
-  }
-  if (!renderRequestIsCurrent(request)) return;
-  setStatusSummary(`Meridian2:${params.meridian2Field}`);
+  setStatusSummary(`Meridian2:${params.meridian2Field}/${params.meridian2LeftField}`);
 }
 
 async function rebuildIsosurfaces() {
@@ -6560,7 +6608,9 @@ function updateVisibility() {
   if (colourbars.equator?.row) colourbars.equator.row.style.display = params.showEquator && equatorMesh ? "block" : "none";
   if (colourbars.equator2?.row) colourbars.equator2.row.style.display = params.showEquator2 && equator2Mesh ? "block" : "none";
   if (colourbars.meridian?.row) colourbars.meridian.row.style.display = params.showMeridian && meridianMesh ? "block" : "none";
+  if (colourbars.meridianLeft?.row) colourbars.meridianLeft.row.style.display = params.showMeridian && meridianMesh ? "block" : "none";
   if (colourbars.meridian2?.row) colourbars.meridian2.row.style.display = params.showMeridian2 && meridian2Mesh ? "block" : "none";
+  if (colourbars.meridian2Left?.row) colourbars.meridian2Left.row.style.display = params.showMeridian2 && meridian2Mesh ? "block" : "none";
   if (!params.showFieldLines) {
     detachActiveFieldLineGroups();
     hideFieldLineColourbar();
@@ -6590,8 +6640,16 @@ function updateOpacities() {
   if (radialSurfaceMesh) applyOpacityAndDepth(radialSurfaceMesh.material, params.radialOpacity);
   if (equatorMesh) applyOpacityAndDepth(equatorMesh.material, params.equatorOpacity);
   if (equator2Mesh) applyOpacityAndDepth(equator2Mesh.material, params.equator2Opacity);
-  if (meridianMesh) applyOpacityAndDepth(meridianMesh.material, params.meridianOpacity);
-  if (meridian2Mesh) applyOpacityAndDepth(meridian2Mesh.material, params.meridian2Opacity);
+  if (meridianMesh) meridianMesh.traverse((child) => {
+    if (!child.material) return;
+    applyOpacityAndDepth(child.material,
+      child.userData?.meridianSide === "left" ? params.meridianLeftOpacity : params.meridianOpacity);
+  });
+  if (meridian2Mesh) meridian2Mesh.traverse((child) => {
+    if (!child.material) return;
+    applyOpacityAndDepth(child.material,
+      child.userData?.meridianSide === "left" ? params.meridian2LeftOpacity : params.meridian2Opacity);
+  });
   if (earthMesh) applyOpacityAndDepth(earthMesh.material, params.earthOpacity);
   if (isoPositiveMesh) applyOpacityAndDepth(isoPositiveMesh.material, params.isoOpacity, params.isoTransparencyMode);
   if (isoNegativeMesh) applyOpacityAndDepth(isoNegativeMesh.material, params.isoOpacity, params.isoTransparencyMode);
@@ -6928,7 +6986,9 @@ function applyDefaultFields() {
   params.equatorField = chooseField(["C", "Comp", "Br", "Uabs"], fields);
   params.equator2Field = chooseField(["C", "Comp", "Br", "Uabs"], fields);
   params.meridianField = chooseField(["C", "Comp", "Br", "Uabs"], fields);
+  params.meridianLeftField = params.meridianField;
   params.meridian2Field = chooseField(["C", "Comp", "Br", "Uabs"], fields);
+  params.meridian2LeftField = params.meridian2Field;
   params.isoField = chooseField([params.isoField, "ur", "C", "Comp", "Br", "Uabs"], fields);
 }
 
@@ -6951,6 +7011,34 @@ function addDisplayControls(gui, slot, label, fieldParam, showParam, opacityPara
   folder.add(params, `${slot}Max`).name("Manual max").onFinishChange(rebuild);
   folder.add(params, opacityParam, 0.0, 1.0, 0.01).name("Opacity").onChange(updateOpacities);
 
+  return folder;
+}
+
+function addMeridianSideControls(folder, label, slot, fieldParam, opacityParam, rebuildFn, availableFields) {
+  const side = folder.addFolder(label);
+  const rebuild = debouncedViewerTask(`${label} update`, rebuildFn);
+  side.add(params, fieldParam, availableFields).name("Field").onChange(rebuild);
+  side.add(params, `${slot}Scale`, ["symmetric", "minmax", "manual"]).name("Scale").onChange(rebuild);
+  side.add(params, `${slot}Colormap`, colourMapNames).name("Colour map").onChange(rebuild);
+  side.add(params, `${slot}Min`).name("Manual min").onFinishChange(rebuild);
+  side.add(params, `${slot}Max`).name("Manual max").onFinishChange(rebuild);
+  side.add(params, opacityParam, 0.0, 1.0, 0.01).name("Opacity").onChange(updateOpacities);
+  closeGuiFolder(side);
+  return side;
+}
+
+function addSplitMeridianControls(gui, slot, label, showParam, rebuildFn, availableFields) {
+  const folder = gui.addFolder(label);
+  folder.add(params, showParam).name("Show").onChange(viewerTaskCallback(`${label} visibility`, async () => {
+    if (params[showParam]) await rebuildFn();
+    updateVisibility();
+    if (params.showCMB) await rebuildCMB({ reuseGeometry: false });
+    if (params.showIsosurfaces && !params.sequencePlaying) await rebuildIsosurfaces();
+  }));
+  addMeridianSideControls(folder, "Right (+s, longitude phi)", slot,
+    `${slot}Field`, `${slot}Opacity`, rebuildFn, availableFields);
+  addMeridianSideControls(folder, "Left (-s, longitude phi + 180°)", `${slot}Left`,
+    `${slot}LeftField`, `${slot}LeftOpacity`, rebuildFn, availableFields);
   return folder;
 }
 
@@ -6992,7 +7080,7 @@ const DEFAULT_VIEW_PARAMS = Object.freeze(Object.fromEntries(
 ));
 const VIEW_STATE_SCALE_KEYS = new Set([
   "cmbScale", "icbScale", "radialScale", "earthScale", "equatorScale", "equator2Scale",
-  "meridianScale", "meridian2Scale", "lineScale",
+  "meridianScale", "meridianLeftScale", "meridian2Scale", "meridian2LeftScale", "lineScale",
 ]);
 const VIEW_STATE_NUMBER_LIMITS = {
   earthRadiusScale: [1, Infinity], isoResolution: [8, 96], lineStride: [1, 1000],
@@ -7040,7 +7128,7 @@ function decodeViewState(code) {
 }
 
 function validFieldForState(key, value) {
-  if (!["cmbField", "earthField", "icbField", "radialField", "equatorField", "equator2Field", "meridianField", "meridian2Field", "isoField"].includes(key)) return true;
+  if (!["cmbField", "earthField", "icbField", "radialField", "equatorField", "equator2Field", "meridianField", "meridianLeftField", "meridian2Field", "meridian2LeftField", "isoField"].includes(key)) return true;
   if (key === "cmbField") return getCmbFieldNames().includes(value);
   if (key === "earthField") return getEarthFieldNames().includes(value);
   return getVolumeFieldNames().includes(value);
@@ -7082,6 +7170,19 @@ function applyViewStateParams(snapshot) {
   // Partial parameter objects still change only the supplied options.
   if (snapshot.params && snapshot.version && !Object.prototype.hasOwnProperty.call(snap.params, "earthTextureBody")) {
     params.earthTextureBody = "earth";
+  }
+  // View codes created before split meridians used one field/scale per plane.
+  // Mirror those settings to the new left (-s) half when the new keys are absent.
+  for (const prefix of ["meridian", "meridian2"]) {
+    const leftPrefix = `${prefix}Left`;
+    for (const suffix of ["Field", "Scale", "Min", "Max", "Colormap", "Opacity"]) {
+      const oldKey = `${prefix}${suffix}`;
+      const newKey = `${leftPrefix}${suffix}`;
+      if (Object.prototype.hasOwnProperty.call(snap.params, oldKey)
+        && !Object.prototype.hasOwnProperty.call(snap.params, newKey)) {
+        params[newKey] = snap.params[oldKey];
+      }
+    }
   }
   const skippedFields = [];
   for (const [key, value] of Object.entries(snap.params || {})) {
@@ -7262,7 +7363,9 @@ const DATASET_FIELD_PARAM_KEYS = [
   "equatorField",
   "equator2Field",
   "meridianField",
+  "meridianLeftField",
   "meridian2Field",
+  "meridian2LeftField",
   "isoField",
 ];
 
@@ -7663,7 +7766,7 @@ function buildGui() {
   const eq2Folder = addDisplayControls(gui, "equator2", "Equatorial slice 2", "equator2Field", "showEquator2", "equator2Opacity", rebuildEquator2, volumeFields);
   eq2Folder.add(params, "equator2Z", -0.95, 0.95, 0.01).name("z / r_o")
     .onFinishChange(viewerTaskCallback("Equatorial slice position", rebuildEquator2));
-  const merFolder = addDisplayControls(gui, "meridian", "Meridional slice 1", "meridianField", "showMeridian", "meridianOpacity", rebuildMeridian, volumeFields);
+  const merFolder = addSplitMeridianControls(gui, "meridian", "Meridional slice 1", "showMeridian", rebuildMeridian, volumeFields);
   const rebuildMeridianView = async () => {
     await rebuildMeridian();
     await rebuildCMB();
@@ -7672,7 +7775,7 @@ function buildGui() {
   merFolder.add(params, "meridianPhiDeg", 0, 360, 1).name("Longitude phi")
     .onFinishChange(viewerTaskCallback("Meridian 1 position", rebuildMeridianView));
 
-  const mer2Folder = addDisplayControls(gui, "meridian2", "Meridional slice 2", "meridian2Field", "showMeridian2", "meridian2Opacity", rebuildMeridian2, volumeFields);
+  const mer2Folder = addSplitMeridianControls(gui, "meridian2", "Meridional slice 2", "showMeridian2", rebuildMeridian2, volumeFields);
   const rebuildMeridian2View = async () => {
     await rebuildMeridian2();
     await rebuildCMB();

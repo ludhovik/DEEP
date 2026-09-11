@@ -7,6 +7,11 @@ ordering. See CALYPSO_CONVERTER.md for conventions and supported formats.
 """
 from __future__ import annotations
 
+try:
+    from output_selection import OutputSelection
+except ImportError:
+    from tools.output_selection import OutputSelection
+
 import argparse
 import copy
 import json
@@ -186,6 +191,7 @@ def physical_parameters(records, args, radius, r_icb=None):
 
 
 def convert_state(path, outdir, args, records, grid, control_files):
+    selection = OutputSelection(args)
     print(f"Calypso restart: {path}", flush=True)
     spectra, centres, header = read_restart(path, grid)
     # Filenames count restart outputs, while the header counts solver steps.
@@ -218,7 +224,7 @@ def convert_state(path, outdir, args, records, grid, control_files):
     for native, names in (("velocity", ("ur", "ut", "up")),
                            ("magnetic_field", ("Br", "Bt", "Bp")),
                            ("temperature", ("C",)), ("composition", ("Comp",)), ("pressure", ("P",))):
-        if native not in spectra:
+        if native not in spectra or not any(selection.needs(name) for name in names):
             continue
         vector = len(names) == 3
         coefficients = spectra[native][positive]

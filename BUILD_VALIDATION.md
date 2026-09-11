@@ -1,5 +1,39 @@
 # Integrated package validation
 
+## Cylindrical gradients and split meridians (2026-09-11)
+
+- The scalar-gradient projection is tested directly against the spherical-to-
+  cylindrical basis transformation. Default and explicit selected exports are
+  compared for `grad_sC`, `grad_zC`, `grad_sComp`, `grad_zComp` and their full
+  variants through native-format converter fixtures.
+- The converter suite runs 179 tests successfully; six optional external-data
+  checks skip. All 145 viewer/geometry tests pass. The production Vite build
+  succeeds with only its existing bundle-size advisory.
+- Viewer regressions verify separate fields, native radial domains, opacity and
+  geometry for both meridional halves. DTV2 tests verify legacy mirroring and
+  independent new-setting round trips.
+
+## Selected converter outputs (2026-09-11)
+
+- All six CLIs accept `--output FIELD ...`. Exact volume selection omits
+  unrequested diagnostics, maps and field lines; default exports retain their
+  existing path. EMF and induction still require their opt-in switches.
+- The converter suite runs 178 tests: 172 pass, six optional external-data
+  checks skip. Native Leeds/XSHELLS transforms and the MagIC reader use fixtures
+  where those external libraries are unavailable; no new real-simulation
+  validation is claimed.
+- Tests compare every normally exported volume individually against selected
+  outputs for MagIC and Leeds, and all available vector diagnostics for XSHELLS.
+  Calypso, QuICC and Rayleigh native-format fixtures validate the requested
+  `ur Br C vort_r` selection and scalar-only synthesis.
+- Additional checks cover Leeds regular full-sphere centre handling, partial
+  conducting-inner-core fields and radial downsampling, strict field inventory,
+  skipped unrelated calculations, sequence argument forwarding, missing/invalid
+  selections, preserving a valid bundle on failure, and incremental reuse of
+  coupled curl calculations when adding another vorticity component.
+- Changed Python files compile. No viewer source changed; viewer tests/build
+  were not needed for this converter-only change.
+
 ## QuICC spherical-shell converter (2026-09-10)
 
 - Added SLFl/SLFm reconstruction with native shell radii and the mapped

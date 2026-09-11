@@ -19,6 +19,11 @@ Requires: numpy, shtns, pyxshells
 
 from __future__ import annotations
 
+try:
+    from output_selection import add_output_argument, cylindrical_gradient
+except ImportError:
+    from tools.output_selection import add_output_argument, cylindrical_gradient
+
 import argparse
 import json
 import math
@@ -508,6 +513,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     source.add_argument("--temperature-prefix", default="fieldT")
     source.add_argument("--composition-prefix", default="fieldC")
 
+    add_output_argument(p)
     p.add_argument("--out", default="public/data_xshells", help="Viewer output directory.")
     p.add_argument("--spectral-lmax", type=nonnegative_lmax, default=0,
                    help="Maximum spherical-harmonic degree before synthesis; 0 (default) retains all source degrees. Positive cutoffs reduce the default angular grid.")
@@ -729,6 +735,13 @@ def convert_xshells(args: argparse.Namespace) -> None:
     # keeps the distinction explicit.
     r_cmb = float(r_shell[-1])
 
+    if getattr(args, "output", None) is not None:
+        try:
+            from selected_native_adapters import selected_xshells
+        except ImportError:
+            from tools.selected_native_adapters import selected_xshells
+        return selected_xshells({**locals(), "sanitise": sanitise_synthesised_field, "induction_operator": curl_spat})
+
     # Native arrays retain their own radial grids until all derivatives are computed.
     native_fields: dict[str, tuple[np.ndarray, np.ndarray, str]] = {}
 
@@ -859,14 +872,19 @@ def convert_xshells(args: argparse.Namespace) -> None:
         for name, (scalar, rr, source_key) in scalar_native.items():
             print(f"Computing gradients of {name} on its native shell grid...")
             gr, gt, gp = gradient_scalar_3d(scalar, rr, theta, phi)
+            gs, gz = cylindrical_gradient(gr, gt, theta)
             gradients[name] = (gr, gt, gp, rr, source_key)
             register(f"grad_r{name}_full", gr, rr, source_key)
             register(f"grad_theta{name}_full", gt, rr, source_key)
             register(f"grad_phi{name}_full", gp, rr, source_key)
+            register(f"grad_s{name}_full", gs, rr, source_key)
+            register(f"grad_z{name}_full", gz, rr, source_key)
             if not args.no_m0_fields:
                 register(f"grad_r{name}", remove_m0_phi(gr), rr, source_key)
                 register(f"grad_theta{name}", remove_m0_phi(gt), rr, source_key)
                 register(f"grad_phi{name}", remove_m0_phi(gp), rr, source_key)
+                register(f"grad_s{name}", remove_m0_phi(gs), rr, source_key)
+                register(f"grad_z{name}", remove_m0_phi(gz), rr, source_key)
 
     optional_diagnostics = {
         "emf_requested": bool(args.emf),

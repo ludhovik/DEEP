@@ -99,12 +99,13 @@ class ParameterTests(unittest.TestCase):
                     else:attrs['Pm']=pm
                     for key,value in attrs.items():f.setncattr(key,value)
             args=leeds.build_arg_parser().parse_args(['--folder',str(source),'--out',str(root/'out'),
-                '--sequence-first','1','--sequence-last','2','--Sc','4'])
+                '--sequence-first','1','--sequence-last','2','--Sc','4','--output','ur','vort_r'])
             results=[]
             def child(cmd,check):
                 self.assertTrue(cmd[1].endswith('convert_leeds_to_viewer.py'))
                 opts=leeds.build_arg_parser().parse_args(cmd[2:])
                 self.assertNotIn('--Ek',cmd)
+                self.assertEqual(opts.output,['ur','vort_r'])
                 results.append(leeds.resolve_parameter_values(opts.state,opts,False))
                 out=Path(opts.out);out.mkdir(parents=True)
                 (out/'metadata.json').write_text('{"time":1}')

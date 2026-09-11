@@ -222,6 +222,25 @@ class InnerCoreTests(unittest.TestCase):
             for path in (root/"fresh").glob("*.f32"):
                 self.assertEqual(path.read_bytes(),(root/"old"/path.name).read_bytes(),path.name)
 
+            args.output=["Br"];args.out=str(root/"selected")
+            leeds.run_leeds_conversion(args)
+            selected=json.loads((root/"selected/metadata.json").read_text())
+            self.assertEqual(set(selected["fields"]),{"Br"})
+            self.assertEqual(selected["inner_core"]["fields"],["Br"])
+            self.assertTrue(selected["inner_core"]["available"])
+            np.testing.assert_allclose(np.fromfile(root/"selected/Br_volume.f32",dtype="<f4"),
+                                       np.fromfile(root/"fresh/Br_volume.f32",dtype="<f4"))
+
+            args.output=None;args.downsample_r=2;args.out=str(root/"coarse_full")
+            leeds.run_leeds_conversion(args)
+            args.output=["Br","vort_r"];args.out=str(root/"coarse_selected")
+            leeds.run_leeds_conversion(args)
+            self.assertEqual(json.loads((root/"coarse_selected/coordinates.json").read_text()),
+                             json.loads((root/"coarse_full/coordinates.json").read_text()))
+            for name in args.output:
+                np.testing.assert_allclose(np.fromfile(root/f"coarse_selected/{name}_volume.f32",dtype="<f4"),
+                                           np.fromfile(root/f"coarse_full/{name}_volume.f32",dtype="<f4"),rtol=2e-5,atol=2e-6)
+
     def test_mismatched_icb_or_changed_source_does_not_modify_existing_output(self):
         with tempfile.TemporaryDirectory() as folder, redirect_stdout(io.StringIO()):
             root=Path(folder); source=root/"state.cdf"; state_file(source)
