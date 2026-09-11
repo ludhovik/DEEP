@@ -51,6 +51,9 @@ try:
         compute_emf,
         compute_external_field_lines_from_cmb,
         compute_helicity,
+        vorticity_fields,
+        VORTICITY_METADATA,
+        annotate_line_radial_field,
         compute_induction_from_emf,
         compute_shell_field_lines_from_cmb,
         gradient_scalar_3d,
@@ -63,6 +66,9 @@ except ImportError:  # pragma: no cover - package-style invocation
         compute_emf,
         compute_external_field_lines_from_cmb,
         compute_helicity,
+        vorticity_fields,
+        VORTICITY_METADATA,
+        annotate_line_radial_field,
         compute_induction_from_emf,
         compute_shell_field_lines_from_cmb,
         gradient_scalar_3d,
@@ -612,6 +618,8 @@ def convert_adapted_snapshot(path, outdir, args, adapted, graph_parameters, *,
         register("uz", Ur * np.cos(th3) - Ut * np.sin(th3), r_shell, "velocity")
         register("Uabs", np.sqrt(Ur**2 + Ut**2 + Up**2), r_shell, "velocity")
         register("helicity", compute_helicity(Ur, Ut, Up, r_shell, theta, phi), r_shell, "velocity")
+        for name, value in vorticity_fields(Ur, Ut, Up, r_shell, theta, phi).items():
+            register(name, value, r_shell, "velocity")
         if not args.no_m0_fields:
             for name, arr in (("ur", Ur), ("ut", Ut), ("up", Up)):
                 register(f"{name}_phiavg", phi_average_volume(arr), r_shell, "velocity")
@@ -889,6 +897,17 @@ def convert_adapted_snapshot(path, outdir, args, adapted, graph_parameters, *,
             for filename, records in (("B_lines_shell.json", shell_lines),
                                       ("B_lines_exterior_poloidal.json", lines)):
                 write_field_lines(outdir / filename, records)
+        if args.field_line_mode in ("shell", "both"):
+            shell_lines = annotate_line_radial_field(shell_lines, Br[shell_mask], r_b_shell, theta, phi)
+            write_field_lines(outdir / "B_lines_shell.json", shell_lines)
+        if args.field_line_mode in ("exterior", "both"):
+            lines = annotate_line_radial_field(lines, Br_ext, r_ext, theta, phi)
+            write_field_lines(outdir / "B_lines_exterior_poloidal.json", lines)
+        combined = [*shell_lines, *(lines if args.field_line_mode in ("exterior", "both") else [])]
+        if args.field_line_mode == "both":
+            original_count = len(shell_lines) - len(returns)
+            combined = [*shell_lines[:original_count], *lines, *shell_lines[original_count:]]
+        field_lines_meta["radial_field_definition"] = "local Br sampled independently at every line point"
         write_field_lines(outdir / "B_lines.json", combined)
         field_lines_meta["B_lines"] = "B_lines.json"
         field_lines_meta["count"] = len(combined)
@@ -937,6 +956,7 @@ def convert_adapted_snapshot(path, outdir, args, adapted, graph_parameters, *,
         "layout": "r_theta_phi", "endianness": "little",
         "theta_min": json_number(theta_out[0]), "theta_max": json_number(theta_out[-1]),
         "phi_min": json_number(phi_out[0]), "phi_max": json_number(phi_out[-1]),
+        "vorticity": VORTICITY_METADATA if "vort_r" in field_files else None,
         "fields": field_files, "surface_fields": surface_fields, "ranges": ranges,
         "coordinates": "coordinates.json", "profiles": "profiles.json",
         "field_lines": field_lines_meta,

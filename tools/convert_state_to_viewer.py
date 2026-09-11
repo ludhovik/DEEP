@@ -1104,9 +1104,9 @@ def compute_induction_from_emf(
     # contains a pole, use the closest finite angular value there.
     for arr in (Ir, It, Ip):
         if np.any(~np.isfinite(arr[:, 0, :])) and th.size > 1:
-            arr[:, 0, :] = arr[:, 1, :]
+            arr[:, 0, :] = np.where(np.isfinite(arr[:, 0, :]), arr[:, 0, :], arr[:, 1, :])
         if np.any(~np.isfinite(arr[:, -1, :])) and th.size > 1:
-            arr[:, -1, :] = arr[:, -2, :]
+            arr[:, -1, :] = np.where(np.isfinite(arr[:, -1, :]), arr[:, -1, :], arr[:, -2, :])
 
     # At r=0, estimate the regular Cartesian limit from the closest non-zero
     # shell, then project that single vector onto every spherical basis vector.
@@ -1146,6 +1146,56 @@ def compute_induction_from_emf(
         np.ascontiguousarray(It, dtype=np.float64),
         np.ascontiguousarray(Ip, dtype=np.float64),
     )
+
+
+
+VORTICITY_METADATA = {
+    "definition": "omega = curl(u), relative vorticity in the input velocity reference frame",
+    "units": "source velocity / source length; no planetary 2*Omega term added",
+    "method": "second-order spherical finite differences; periodic longitude; computed before output downsampling",
+    "domain": "fluid only; solid inner-core padding excluded from derivatives",
+    "centre": "one Cartesian-vector estimate from the nearest nonzero shell, projected onto the spherical basis",
+}
+
+
+@cached_calculation
+def vorticity_fields(Ur, Ut, Up, r, theta, phi):
+    """Relative vorticity curl(u), in source velocity/length units.
+
+    Reuse the validated physical spherical curl, including its regular Cartesian
+    centre estimate. No planetary 2*Omega term is added. Take derivatives on the
+    fluid grid before embedding/remapping into a master grid containing solid IC.
+    """
+    if not all(np.isfinite(component).all() for component in (Ur, Ut, Up)):
+        raise ValueError("Vorticity requires finite velocity samples.")
+    wr, wt, wp = compute_induction_from_emf(Ur, Ut, Up, r, theta, phi)
+    th = np.asarray(theta)[None, :, None]
+    return {
+        "vort_r": wr, "vort_theta": wt, "vort_phi": wp,
+        "vort_s": wr * np.sin(th) + wt * np.cos(th),
+        "vort_z": wr * np.cos(th) - wt * np.sin(th),
+        "vort_abs": np.sqrt(wr * wr + wt * wt + wp * wp),
+    }
+
+
+@cached_calculation
+def annotate_line_radial_field(lines, Br, r, theta, phi):
+    """Add local signed Br without retracing cached field lines.
+
+    Preserve points/order/identifiers and do not mutate cached input records.
+    A Cartesian origin has no radial direction and is marked unknown (null).
+    """
+    output = []
+    sampler = _FieldLineSampler(Br, Br, Br, r, theta, phi)
+    for line in lines:
+        values = []
+        for point in line.get("points", []):
+            radius, colatitude, longitude = cart_to_sph(np.asarray(point))
+            value = sampler.sample(radius, colatitude, longitude)[0] if radius > 1e-14 * max(1.,float(r[-1])) else math.nan
+            values.append(float(value) if math.isfinite(value) else None)
+        output.append({**line, "radial_field": values,
+                       "radial_field_definition": "local B dot e_r: positive outward, negative inward; null at undefined samples"})
+    return output
 
 
 def compute_induction(
@@ -3347,6 +3397,13 @@ def convert_state(args: argparse.Namespace) -> None:
     else:
         helicity = compute_helicity(Ur, Ut, Up, r, theta, phi)
 
+    fluid_start = fluid_inner_index if has_inner_core else 0
+    vorticity = vorticity_fields(Ur[fluid_start:], Ut[fluid_start:], Up[fluid_start:],
+                                 r[fluid_start:], theta, phi)
+    if has_inner_core:
+        vorticity = {name: embed_fluid_radial_field(value, len(r), fluid_inner_index)
+                     for name, value in vorticity.items()}
+
     # Keep simple 1-D profiles for reference.
     N2_profile = np.mean(N2_full, axis=(1, 2))
     N2_fluct_rms = np.sqrt(np.mean(N2_volume * N2_volume, axis=(1, 2)))
@@ -3380,6 +3437,8 @@ def convert_state(args: argparse.Namespace) -> None:
         "N2": N2_volume,
         "N2_full": N2_full,
     }
+
+    fields.update(vorticity)
 
     # Optional magnetic diagnostics are written only when explicitly requested.
     if args.emf and Er is not None and Et is not None and Ep is not None:
@@ -3745,6 +3804,18 @@ def convert_state(args: argparse.Namespace) -> None:
                                       ("B_lines_exterior_poloidal.json", exterior_lines)):
                 write_field_lines(outdir / filename, records)
 
+        if args.field_line_mode in ("shell", "both"):
+            shell_lines = annotate_line_radial_field(shell_lines, Br_shell_field, r_shell_field, theta, phi)
+            write_field_lines(outdir / "B_lines_shell.json", shell_lines)
+        if args.field_line_mode in ("exterior", "both"):
+            exterior_lines = annotate_line_radial_field(exterior_lines, Br_ext, r_ext, theta_ext, phi_ext)
+            write_field_lines(outdir / "B_lines_exterior_poloidal.json", exterior_lines)
+        combined_lines = [*shell_lines, *(exterior_lines if args.field_line_mode in ("exterior", "both") else [])]
+        if args.field_line_mode == "both":
+            original_count = len(shell_lines) - len(returns)
+            combined_lines = [*shell_lines[:original_count], *exterior_lines, *shell_lines[original_count:]]
+        field_lines_meta["radial_field_definition"] = "local Br sampled independently at every line point"
+
         # Backward-compatible combined file for older viewer versions.  The new
         # viewer reads the separate shell/exterior files when available.
         write_field_lines(outdir / "B_lines.json", combined_lines)
@@ -3858,6 +3929,10 @@ def convert_state(args: argparse.Namespace) -> None:
         "theta_max": json_number(theta_out[-1]),
         "phi_min": json_number(phi_out[0]),
         "phi_max": json_number(phi_out[-1]),
+        "vorticity": VORTICITY_METADATA,
+        "field_domains": {name: {"source": "velocity", "r_min": float(r[fluid_start]),
+                                  "r_max": float(r[-1]), "outside_native_domain": "zero"}
+                          for name in vorticity},
         "fields": field_files,
         "surface_fields": surface_fields,
         "ranges": ranges,

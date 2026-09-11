@@ -941,6 +941,24 @@ contains the required fields. N2 is omitted unless a matching convention is
 explicitly selected. See [RAYLEIGH_CONVERTER.md](RAYLEIGH_CONVERTER.md) for
 supported layouts, equations, sequences and a tested public convection dataset.
 
+## Vorticity and magnetic polarity
+
+All six converters export `vort_r`, `vort_theta`, `vort_phi`, `vort_s`, `vort_z`
+and `vort_abs` when velocity is available. These are components and magnitude
+of **curl(u)** in the input velocity's reference frame; no planetary `2 Omega`
+term is added. They can be selected for slices and isosurfaces.
+
+For yellow/blue magnetic lines or B² tubes, choose **Colour by → Local radial
+polarity**: yellow for local outward `Br > 0`, blue for inward `Br < 0`.
+Colour can change along a line. **CMB starting polarity** retains the older
+single-colour footpoint convention. Grey local-polarity samples have zero or
+unavailable Br; older bundles need reconversion to supply local values.
+
+Rerun the same converter command with `--incremental` and its existing cache
+to add these outputs. Cached compatible line paths are sampled, not retraced.
+See [VORTICITY_POLARITY.md](VORTICITY_POLARITY.md) for equations, units, centre
+handling, update instructions and validation.
+
 ## Useful converter options
 
 The six converters intentionally share common controls where possible:

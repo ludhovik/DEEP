@@ -502,3 +502,25 @@ npm run build
 - Scope: the downloaded benchmark is hydrodynamic and a spherical shell.
   Magnetic and full-sphere checks use analytic fixtures; no claim of validating
   every Rayleigh model/checkpoint variant is made. See RAYLEIGH_CONVERTER.md.
+
+
+## Vorticity and local radial polarity — 2026-09-11
+
+- Added six relative-vorticity float32 fields through the shared pipeline used
+  by all six converters, with fluid-only domains and documented units/centre limits.
+- Added cached per-point Br sampling after tracing, and local outward-yellow /
+  inward-blue rendering for both lines and worker-built B² tubes. Simplification
+  keeps polarity transitions and matching samples; legacy CMB-polarity view codes
+  retain their original meaning. Unknown local values remain explicitly unknown.
+- Corrected the shared curl's pole fallback to replace only nonfinite samples;
+  a missing centre sample no longer overwrites valid near-pole values at other radii.
+- Converter suite: 158 tests, 152 passed, 6 optional-data tests skipped.
+  Viewer suite: 140 tests passed. Production build passed with the existing
+  large-chunk warning. Analytic curl, polarity, actual Three.js vertex colours,
+  worker geometry, simplification and saved-view/cache behavior were checked.
+- A before/after incremental magnetic-fixture upgrade reused spectral transforms
+  and all three tracing calculations (51 cache hits, 8 computations); it added
+  six vorticity fields and radial-field samples without retracing.
+- The public Rayleigh checkpoint 00040000 converted into a validated 29-field bundle.
+  Native production Leeds/XSHELLS solver runs were not available in this environment;
+  their adapters were exercised by the existing fixture-based regression suite.

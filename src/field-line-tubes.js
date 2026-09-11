@@ -65,7 +65,16 @@ export function simplifyMagneticLine(line, options = {}) {
     }
     // Normalization avoids overflow when squaring large magnetic strengths.
     for (let i = first; i <= last; i++) energy[i] = peak > 0 ? (strength[i] / peak) ** 2 : 0;
-    const anchors = [...new Set([first, minimumIndex, peakIndex, last])].sort((a, b) => a - b);
+    // Retain both samples at every polarity/unknown transition, even when the
+    // spatial and B² profiles are otherwise straight and constant.
+    const polarityAnchors = [];
+    if (Array.isArray(line.radial_field) && line.radial_field.length === count) {
+      const sign = value => typeof value === "number" && Number.isFinite(value) ? Math.sign(value) : null;
+      for (let i = first + 1; i <= last; i++) {
+        if (sign(line.radial_field[i]) !== sign(line.radial_field[i - 1])) polarityAnchors.push(i - 1, i);
+      }
+    }
+    const anchors = [...new Set([first, minimumIndex, peakIndex, last, ...polarityAnchors])].sort((a, b) => a - b);
     const stack = [];
     for (let i = 1; i < anchors.length; i++) {
       keep[anchors[i - 1]] = keep[anchors[i]] = 1;
@@ -108,7 +117,8 @@ export function simplifyMagneticLine(line, options = {}) {
   const indices = [];
   for (let i = 0; i < count; i++) if (keep[i]) indices.push(i);
   if (indices.length === count) return line;
-  return { ...line, points: indices.map(i => points[i]), strength: indices.map(i => strength[i]) };
+  return { ...line, points: indices.map(i => points[i]), strength: indices.map(i => strength[i]),
+    ...(Array.isArray(line.radial_field) ? { radial_field: indices.map(i => line.radial_field[i] ?? null) } : {}) };
 }
 
 export function makeMagneticTubeGeometry(points, strengths, vertexColors, options) {

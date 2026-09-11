@@ -67,6 +67,9 @@ try:
         compute_emf,
         compute_external_field_lines_from_cmb,
         compute_helicity,
+        vorticity_fields,
+        VORTICITY_METADATA,
+        annotate_line_radial_field,
         compute_shell_field_lines_from_cmb,
         prepare_exterior_tracing,
         connect_exterior_return_footpoints,
@@ -77,6 +80,9 @@ except ImportError:  # pragma: no cover - package-style invocation
         compute_emf,
         compute_external_field_lines_from_cmb,
         compute_helicity,
+        vorticity_fields,
+        VORTICITY_METADATA,
+        annotate_line_radial_field,
         compute_shell_field_lines_from_cmb,
         prepare_exterior_tracing,
         connect_exterior_return_footpoints,
@@ -789,6 +795,8 @@ def convert_xshells(args: argparse.Namespace) -> None:
         register("uz", Uz, ru, "velocity")
         register("Uabs", np.sqrt(Ur**2 + Ut**2 + Up**2), ru, "velocity")
         register("helicity", compute_helicity(Ur, Ut, Up, ru, theta, phi), ru, "velocity")
+        for name, value in vorticity_fields(Ur, Ut, Up, ru, theta, phi).items():
+            register(name, value, ru, "velocity")
         if not args.no_m0_fields:
             register("ur_phiavg", phi_average_volume(Ur), ru, "velocity")
             register("ut_phiavg", phi_average_volume(Ut), ru, "velocity")
@@ -1299,6 +1307,17 @@ def convert_xshells(args: argparse.Namespace) -> None:
             for filename, records in (("B_lines_shell.json", shell_lines),
                                       ("B_lines_exterior_poloidal.json", exterior_lines)):
                 write_field_lines(outdir / filename, records)
+        if args.field_line_mode in ("shell", "both"):
+            shell_lines = annotate_line_radial_field(shell_lines, Br_b_shell, r_b_shell, theta, phi)
+            write_field_lines(outdir / "B_lines_shell.json", shell_lines)
+        if args.field_line_mode in ("exterior", "both"):
+            exterior_lines = annotate_line_radial_field(exterior_lines, Br_ext, r_ext, theta, phi)
+            write_field_lines(outdir / "B_lines_exterior_poloidal.json", exterior_lines)
+        combined_lines = [*shell_lines, *(exterior_lines if args.field_line_mode in ("exterior", "both") else [])]
+        if args.field_line_mode == "both":
+            original_count = len(shell_lines) - len(returns)
+            combined_lines = [*shell_lines[:original_count], *exterior_lines, *shell_lines[original_count:]]
+        field_lines_meta["radial_field_definition"] = "local Br sampled independently at every line point"
         write_field_lines(outdir / "B_lines.json", combined_lines)
         field_lines_meta["B_lines"] = "B_lines.json"
         field_lines_meta["count"] = len(combined_lines)
@@ -1385,6 +1404,7 @@ def convert_xshells(args: argparse.Namespace) -> None:
         "theta_max": json_number(theta_out[-1]),
         "phi_min": json_number(phi_out[0]),
         "phi_max": json_number(phi_out[-1]),
+        "vorticity": VORTICITY_METADATA if "vort_r" in field_files else None,
         "fields": field_files,
         "surface_fields": surface_fields,
         "ranges": ranges,

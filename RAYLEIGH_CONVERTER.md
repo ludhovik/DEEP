@@ -38,8 +38,8 @@ python3 tools/convert_rayleigh_to_viewer.py \
 ```
 
 Open `public/data_rayleigh_benchmark` with the viewer's folder picker. The
-converter exports 23 volume fields from this checkpoint, including velocity,
-thermal fields, pressure, helicity and scalar gradients. N2 is omitted by
+converter exports 29 volume fields from this checkpoint, including velocity,
+thermal fields, pressure, helicity, vorticity and scalar gradients. N2 is omitted by
 default because its nondimensionalization is model-dependent.
 
 The reconstructed volume-averaged kinetic energy is **58.3478351**, within
