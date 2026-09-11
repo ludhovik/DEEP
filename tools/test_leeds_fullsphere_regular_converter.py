@@ -12,7 +12,7 @@ import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MODULES_PATH = PROJECT_ROOT / "modules.py"
-CONVERTER_PATH = Path(__file__).with_name("convert_state_to_viewer.py")
+CONVERTER_PATH = Path(__file__).with_name("convert_leeds_to_viewer.py")
 
 
 class _FakeSH:
@@ -180,7 +180,7 @@ def main() -> None:
     fake_shtns = _FakeShtns()
     sys.modules["shtns"] = fake_shtns
     modules = load_python_module("viewer_modules_v2", MODULES_PATH)
-    converter = load_python_module("convert_state_to_viewer_v2", CONVERTER_PATH)
+    converter = load_python_module("convert_leeds_to_viewer_v2", CONVERTER_PATH)
 
     assert modules.FULLSPHERE_MODULE_API_VERSION == 2
     check_leeds_x_derivative(modules)

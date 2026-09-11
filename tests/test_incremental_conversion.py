@@ -144,7 +144,7 @@ class IncrementalTests(unittest.TestCase):
                     cc.cache_directory(out, bad)
 
     def test_real_line_tracing_cache_restores_statuses_and_return_pairing(self):
-        from tools import convert_state_to_viewer as leeds
+        from tools import convert_leeds_to_viewer as leeds
         r = np.linspace(0.35, 1, 12)
         theta = np.linspace(0.05, np.pi - 0.05, 24)
         phi = np.linspace(0, 2*np.pi, 32, endpoint=False)
@@ -193,7 +193,7 @@ class IncrementalTests(unittest.TestCase):
                                  json.loads((root / "out" / "metadata.json").read_text()))
 
     def test_leeds_added_diagnostic_reuses_transforms_and_matches_fresh_output(self):
-        from tools import convert_state_to_viewer as leeds
+        from tools import convert_leeds_to_viewer as leeds
         graph = fixtures.ConverterPackageTests.fake_magic_graph()
         r = graph.radius[::-1].copy(); theta = graph.colatitude
         phi = np.linspace(0, 2*np.pi, graph.vr.shape[0], endpoint=False)
@@ -228,7 +228,8 @@ class IncrementalTests(unittest.TestCase):
                 "--incremental", "--skip-field-lines", "--no-earth-br", "--downsample-theta", "2",
                 "--Ek", "1e-4", "--Pr", "1", "--Sc", "1", "--RaT", "1e6", "--RaC", "0"])
             with mock.patch.dict(sys.modules, {"modules": backend}), \
-                 mock.patch.object(leeds, "read_state_radial_representations", return_value={}):
+                 mock.patch.object(leeds, "read_state_radial_representations", return_value={}), \
+                 mock.patch.object(leeds, "read_netcdf_attributes", return_value={}):
                 leeds.run_leeds_conversion(args)
                 args.emf = args.induction = True
                 leeds.run_leeds_conversion(args)
@@ -238,6 +239,14 @@ class IncrementalTests(unittest.TestCase):
                 leeds.run_leeds_conversion(args)
                 for path in (root / "fresh").glob("*.f32"):
                     self.assertEqual(path.read_bytes(), (root / "out" / path.name).read_bytes(), path.name)
+
+                args.Pr = None; args.no_parameter_prompt = True; args.out = str(root / "unknown")
+                leeds.run_leeds_conversion(args)
+                unknown = json.loads((root / "unknown" / "metadata.json").read_text())
+                self.assertIsNone(unknown["parameters"]["Pr"])
+                self.assertNotIn("N2_full", unknown["fields"])
+                self.assertIn("vort_z", unknown["fields"])
+                self.assertNotIn("N2", json.loads((root / "unknown" / "profiles.json").read_text()))
 
     def test_xshells_added_diagnostic_reuses_synthesis_and_matches_fresh_output(self):
         # Native readers/transforms are fixtures; all remapping, derivatives,

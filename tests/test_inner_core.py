@@ -186,7 +186,7 @@ class InnerCoreTests(unittest.TestCase):
             self.assertEqual(json.loads((out/"metadata.json").read_text())["nr"],result["nr"])
 
     def test_leeds_entry_point_addition_matches_fresh_output_and_never_reloads_outer_state(self):
-        from tools import convert_state_to_viewer as leeds
+        from tools import convert_leeds_to_viewer as leeds
         module=types.ModuleType("modules");module.__file__=__file__
         module.shtns=backend().shtns;module.lsd_to_shtns=backend().lsd_to_shtns
         r=np.array([.5,.75,1.]);theta=np.arccos([.8,0,-.8]);phi=np.arange(4)*np.pi/2

@@ -27,6 +27,11 @@ try:
 except ImportError:
     from tools.conversion_cache import add_incremental_arguments, cached_calculation, run_conversion
 
+try:
+    from converter_parameters import resolve_graph_parameters
+except ImportError:
+    from tools.converter_parameters import resolve_graph_parameters
+
 import numpy as np
 from scipy.special import gammaln, lpmv
 
@@ -46,7 +51,7 @@ except ImportError:
     from tools.viewer_bundle import ViewerSampling, bundle_path, write_f32, write_field_lines
 
 try:
-    from convert_state_to_viewer import (
+    from convert_leeds_to_viewer import (
         choose_regular_seed_grid,
         compute_emf,
         compute_external_field_lines_from_cmb,
@@ -61,7 +66,7 @@ try:
         connect_exterior_return_footpoints,
     )
 except ImportError:  # pragma: no cover - package-style invocation
-    from tools.convert_state_to_viewer import (
+    from tools.convert_leeds_to_viewer import (
         choose_regular_seed_grid,
         compute_emf,
         compute_external_field_lines_from_cmb,
@@ -501,17 +506,6 @@ def synthesize_angular_gradient(coeff, theta, phi, factors=None):
     return gt, gp
 
 
-def parameter_value(args: argparse.Namespace, graph: Any, cli: str, attrs: tuple[str, ...]) -> float:
-    supplied = getattr(args, cli)
-    if supplied is not None:
-        return float(supplied)
-    for name in attrs:
-        value = json_number(getattr(graph, name, None))
-        if value is not None:
-            return value
-    return float("nan")
-
-
 def inferred_lmax(graph: Any, ntheta: int) -> int:
     for name in ("l_max", "lmax"):
         value = getattr(graph, name, None)
@@ -558,6 +552,9 @@ def convert_graph(path: Path, outdir: Path, args: argparse.Namespace) -> dict[st
 def convert_adapted_snapshot(path, outdir, args, adapted, graph_parameters, *,
                              source_label="MagIC", source_format="magic_graph"):
     """Export native spherical fields through the common diagnostics/line pipeline."""
+    if "_resolved_parameters" not in graph_parameters:
+        graph_parameters = resolve_graph_parameters(args, graph_parameters, str(path))
+    resolved_parameters = graph_parameters["_resolved_parameters"]
     graph = SimpleNamespace(**graph_parameters)
     r_shell = adapted["r_shell"]
     r_master = adapted["r_master"]
@@ -715,11 +712,7 @@ def convert_adapted_snapshot(path, outdir, args, adapted, graph_parameters, *,
                 register("Iabs", np.sqrt(Ir**2 + It**2 + Ip**2), r_shell, "velocity")
                 diagnostics["induction_exported"] = True
 
-    Ek = parameter_value(args, graph, "Ek", ("ek",))
-    Pr = parameter_value(args, graph, "Pr", ("pr",))
-    Sc = parameter_value(args, graph, "Sc", ("sc",))
-    RaT = parameter_value(args, graph, "RaT", ("ra",))
-    RaC = parameter_value(args, graph, "RaC", ("raxi",))
+    Ek, Pr, Sc, RaT, RaC = (resolved_parameters[k] for k in ("Ek", "Pr", "Sc", "RaT", "RaC"))
     N2_full = None
     n2_factors = adapted.get("n2_factors")
     if gradients and (np.isfinite(Ek) or n2_factors is not None):
@@ -928,8 +921,10 @@ def convert_adapted_snapshot(path, outdir, args, adapted, graph_parameters, *,
         "time": time,
         "parameters": {"Ek": json_number(Ek), "Pr": json_number(Pr), "Sc": json_number(Sc),
                        "RaT": json_number(RaT), "RaC": json_number(RaC),
-                       "PrMag": json_number(getattr(graph, "prmag", None)),
+                       "Pm": json_number(resolved_parameters["Pm"]),
+                       "PrMag": json_number(resolved_parameters["Pm"]),
                        "radius_ratio": json_number(getattr(graph, "radratio", None))},
+        "parameter_sources": graph_parameters["_parameter_sources"],
         "spectral_truncation": spectral_truncation,
         "spectral": {"lmax": lmax, "minc": int(adapted["minc"]),
                      "nlat": len(theta), "nphi": len(phi),
@@ -997,16 +992,17 @@ def add_viewer_arguments(p, default_output):
     p.add_argument("--downsample-phi", type=int, default=1)
     p.add_argument("--no-gradients", action="store_true")
     p.add_argument("--no-m0-fields", action="store_true")
-    p.add_argument("--no-parameter-prompt", action="store_true", help="Accepted for CLI parity; native parameters come from the input header/control.")
+    p.add_argument("--no-parameter-prompt", action="store_true", help="Do not prompt for missing native parameters; retain unknown values and report them.")
     p.add_argument("--emf", action="store_true")
     p.add_argument("--induction", action="store_true")
     p.add_argument("--geometry", choices=["auto", "full-sphere", "shell", "conducting-inner-core"], default="auto")
     p.add_argument("--fluid-inner-radius", type=float, help="Validate the native ICB radius against this value.")
+    p.add_argument("--Pm", "--PrMag", dest="Pm", type=float, help="Magnetic Prandtl number override.")
     p.add_argument("--Ek", "--E", dest="Ek", type=float)
     p.add_argument("--Pr", "--PrT", "--Pr_T", dest="Pr", type=float)
     p.add_argument("--Sc", "--PrC", "--Pr_C", dest="Sc", type=float)
     p.add_argument("--RaT", "--Ra", "--Ra_T", dest="RaT", type=float)
-    p.add_argument("--RaC", "--Ra_C", dest="RaC", type=float)
+    p.add_argument("--RaC", "--Ra_C", "--Ra_comp", dest="RaC", type=float)
     p.add_argument("--cmb-br-ltrunc", type=int)
     p.add_argument("--earth-br-ltrunc", type=int, default=DEFAULT_EARTH_BR_LMAX)
     p.add_argument("--earth-radius-scale", type=float, default=DEFAULT_EARTH_RADIUS_SCALE)

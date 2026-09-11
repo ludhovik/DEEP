@@ -11,7 +11,7 @@ from unittest import mock
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from tools import convert_state_to_viewer as tracer
+from tools import convert_leeds_to_viewer as tracer
 from tools import convert_calypso_to_viewer as calypso
 from tools import field_line_progress
 from tools.viewer_bundle import validate_bundle, write_field_lines

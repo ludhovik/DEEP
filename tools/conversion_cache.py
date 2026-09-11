@@ -85,7 +85,9 @@ def calculation_identity(function, seen=None):
     """Include transitive Python helpers and constants, not unrelated new fields."""
     function = inspect.unwrap(function)
     seen = set() if seen is None else seen
-    name = function.__module__.split(".")[-1] + "." + function.__qualname__
+    module_name = function.__module__.split(".")[-1]
+    if module_name == "convert_leeds_to_viewer": module_name = "convert_state_to_viewer"
+    name = module_name + "." + function.__qualname__
     if id(function) in seen:
         return name
     seen.add(id(function))
@@ -286,6 +288,7 @@ def _backend_identity(extra_files=()):
 
 def run_conversion(args, kind, inputs, convert, *, backend_files=(), inner_core_update=None):
     """Run one complete conversion or sequence, using its real (not staged) path."""
+    vars(args).setdefault("_parameter_prompt_answers", {})
     output = Path(args.out).expanduser().resolve()
     sources = {str(Path(p).expanduser().resolve()): file_digest(p) for p in inputs if p is not None}
     if getattr(args, "inner_core_only", False):

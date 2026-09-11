@@ -8,7 +8,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "convert-state": "python tools/convert_state_to_viewer.py",
+    "convert-leeds": "python tools/convert_leeds_to_viewer.py",
     "convert-xshells": "python tools/convert_xshells_to_viewer.py",
     "convert-magic": "python tools/convert_magic_to_viewer.py",
     "test-converters": "python -m unittest discover -s tests -p 'test_*.py'",

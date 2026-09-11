@@ -14,3 +14,4 @@ python3 tests/test_quicc_converter.py
 python3 tests/test_quicc_shell.py
 python3 tests/test_rayleigh_converter.py
 python3 tests/test_vorticity_polarity.py
+python3 tests/test_converter_parameters.py

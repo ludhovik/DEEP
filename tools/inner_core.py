@@ -153,9 +153,9 @@ def leeds_inner_qst(pol, tor, degrees, radius, representations, backend):
 
 def synthesise_leeds_inner(inner, metadata, backend):
     try:
-        from convert_state_to_viewer import truncate_lsd_coefficients
+        from convert_leeds_to_viewer import truncate_lsd_coefficients
     except ImportError:
-        from tools.convert_state_to_viewer import truncate_lsd_coefficients
+        from tools.convert_leeds_to_viewer import truncate_lsd_coefficients
     spectral = metadata["spectral_truncation"]
     lmax, mmax = int(spectral["lmax_effective"]), int(spectral["mmax_effective"])
     if lmax > inner["lmax"] or mmax > inner["mmax"]:

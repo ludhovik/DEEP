@@ -34,6 +34,11 @@ except ImportError:
     from tools.conversion_cache import (add_incremental_arguments, cached_calculation, cached_native,
                                         calculation_identity, register_cache_object, run_conversion)
 
+try:
+    from converter_parameters import resolve_parameters, xshells_native_parameters
+except ImportError:
+    from tools.converter_parameters import resolve_parameters, xshells_native_parameters
+
 import numpy as np
 
 if __package__ in (None, ""):
@@ -62,7 +67,7 @@ try:
     # When run as ``python tools/convert_xshells_to_viewer.py`` the tools
     # directory is on sys.path. These routines only depend on NumPy arrays and
     # are shared so both converters produce identical field-line JSON.
-    from convert_state_to_viewer import (
+    from convert_leeds_to_viewer import (
         choose_regular_seed_grid,
         compute_emf,
         compute_external_field_lines_from_cmb,
@@ -75,7 +80,7 @@ try:
         connect_exterior_return_footpoints,
     )
 except ImportError:  # pragma: no cover - package-style invocation
-    from tools.convert_state_to_viewer import (
+    from tools.convert_leeds_to_viewer import (
         choose_regular_seed_grid,
         compute_emf,
         compute_external_field_lines_from_cmb,
@@ -166,47 +171,6 @@ def gradient_scalar_3d(
     grad_theta[~np.isfinite(grad_theta)] = 0.0
     grad_phi[~np.isfinite(grad_phi)] = 0.0
     return d_dr, grad_theta, grad_phi
-
-
-def parse_float_from_path(path: str, aliases: tuple[str, ...]) -> float | None:
-    for key in aliases:
-        match = re.search(rf"(?:^|[/_]){re.escape(key)}\\?=([0-9eE+.-]+)", path)
-        if match:
-            try:
-                return float(match.group(1))
-            except ValueError:
-                pass
-    return None
-
-
-def prompt_float(name: str, description: str) -> float:
-    while True:
-        raw = input(f"Enter {name} ({description}); blank = NaN: ").strip()
-        if not raw:
-            return float("nan")
-        try:
-            return float(raw)
-        except ValueError:
-            print(f"Could not parse {raw!r} as a floating-point number.")
-
-
-def resolve_parameter(
-    cli_value: float | None,
-    source_paths: list[str],
-    aliases: tuple[str, ...],
-    name: str,
-    description: str,
-    prompt_missing: bool,
-) -> float:
-    if cli_value is not None:
-        return float(cli_value)
-    for source in source_paths:
-        value = parse_float_from_path(source, aliases)
-        if value is not None:
-            return value
-    if prompt_missing and sys.stdin.isatty():
-        return prompt_float(name, description)
-    return float("nan")
 
 
 def discover_file(folder: Path, prefix: str, tag: str | None) -> Path | None:
@@ -578,11 +542,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Explicit fluid inner-boundary radius used for geometry metadata and masking.",
     )
 
+    p.add_argument("--Pm", "--PrMag", dest="Pm", type=float, help="Magnetic Prandtl number override.")
     p.add_argument("--Ek", "--E", dest="Ek", type=float)
     p.add_argument("--Pr", "--PrT", "--Pr_T", dest="Pr", type=float)
     p.add_argument("--Sc", "--PrC", "--Pr_C", dest="Sc", type=float)
     p.add_argument("--RaT", "--Ra", "--Ra_T", dest="RaT", type=float)
-    p.add_argument("--RaC", "--Ra_C", dest="RaC", type=float)
+    p.add_argument("--RaC", "--Ra_C", "--Ra_comp", dest="RaC", type=float)
 
     p.add_argument(
         "--cmb-br-ltrunc",
@@ -673,7 +638,6 @@ def convert_xshells(args: argparse.Namespace) -> None:
             f"{args.line_seed_theta * args.line_seed_phi}"
         )
     paths = resolve_inputs(args)
-    existing_paths = [str(p) for p in paths.values() if p is not None]
 
     print("XSHELLS input files:")
     for name, path in paths.items():
@@ -689,6 +653,7 @@ def convert_xshells(args: argparse.Namespace) -> None:
         validate_angular_compatibility(angular_reference, field, key)
         loaded[key] = field
 
+    resolved_parameters = resolve_parameters(xshells_native_parameters(loaded.values()), args, "XSHELLS field headers")
     loaded, spectral_truncation = truncate_xshells_fields(loaded, angular_key, args.spectral_lmax)
     angular_reference = loaded[angular_key]
     configure_sht_grid(angular_reference, args.nlat, args.nphi)
@@ -948,12 +913,7 @@ def convert_xshells(args: argparse.Namespace) -> None:
                 register("Iabs", np.sqrt(Ir**2 + It**2 + Ip**2), ru, "velocity")
                 optional_diagnostics["induction_exported"] = True
 
-    prompt_missing = not args.no_parameter_prompt
-    Ek = resolve_parameter(args.Ek, existing_paths, ("Ek", "E"), "Ek", "Ekman number", prompt_missing)
-    Pr = resolve_parameter(args.Pr, existing_paths, ("Pr", "PrT", "Pr_T"), "Pr", "thermal Prandtl number", prompt_missing)
-    Sc = resolve_parameter(args.Sc, existing_paths, ("Sc", "PrC", "Pr_C"), "Sc", "compositional Prandtl/Schmidt number", prompt_missing)
-    RaT = resolve_parameter(args.RaT, existing_paths, ("RaT", "Ra_T", "Ra"), "RaT", "thermal Rayleigh number", prompt_missing)
-    RaC = resolve_parameter(args.RaC, existing_paths, ("RaC", "Ra_C"), "RaC", "compositional Rayleigh number", prompt_missing)
+    Ek, Pr, Sc, RaT, RaC = (resolved_parameters[k] for k in ("Ek", "Pr", "Sc", "RaT", "RaC"))
 
     grad_t = gradients.get("C")
     grad_c = gradients.get("Comp")
@@ -1353,7 +1313,9 @@ def convert_xshells(args: argparse.Namespace) -> None:
             "Sc": json_number(Sc),
             "RaT": json_number(RaT),
             "RaC": json_number(RaC),
+            "Pm": json_number(resolved_parameters["Pm"]),
         },
+        "parameter_sources": args._parameter_sources,
         "spectral_truncation": spectral_truncation,
         "spectral": {
             "lmax": int(angular_reference.lmax),

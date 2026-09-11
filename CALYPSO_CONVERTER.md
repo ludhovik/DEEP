@@ -100,9 +100,11 @@ physical-field export pipeline. Run `--help` for the complete list.
 parameter overrides, exterior-grid and tracing controls work as in the
 existing converters. As for MagIC, the potential-field tangential signs are
 fixed by the analytic formula; `--external-btheta-sign` is accepted only for
-command compatibility. `--modules-dir` and `--no-parameter-prompt` are also
-compatibility options: this reader uses neither `modules.py` nor interactive
-parameter prompts.
+command compatibility. `--modules-dir` is a compatibility option; this reader does not use `modules.py`.
+Missing dimensionless parameters are prompted interactively, as in the other
+converters; `--no-parameter-prompt` disables these prompts. Native momentum
+coefficients retain their N2 convention; answers only fill absent factors, while
+explicit Rayleigh CLI overrides retain their documented overriding behaviour.
 
 Outputs include little-endian float32 volumes in `(r, theta, phi)` order,
 `metadata.json`, `coordinates.json`, `profiles.json`, requested surface maps

@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Convert EPMDynamoCode and QuICC WLFl/WLFm full-sphere and SLFl/SLFm shell HDF5 states to DEEPscope."""
 from __future__ import annotations
+try:
+    from converter_parameters import resolve_graph_parameters
+except ImportError:
+    from tools.converter_parameters import resolve_graph_parameters
+
 import argparse
 import copy
 import json
@@ -13,14 +18,14 @@ try:
     from quicc_data import read_state, modes, grids, synthesize_field
     from conversion_cache import run_conversion
     from convert_magic_to_viewer import add_viewer_arguments, convert_adapted_snapshot
-    from convert_state_to_viewer import choose_regular_seed_grid
+    from convert_leeds_to_viewer import choose_regular_seed_grid
     from spectral_truncation import cutoff_metadata
     from viewer_bundle import bundle_path
 except ImportError:
     from tools.quicc_data import read_state, modes, grids, synthesize_field
     from tools.conversion_cache import run_conversion
     from tools.convert_magic_to_viewer import add_viewer_arguments, convert_adapted_snapshot
-    from tools.convert_state_to_viewer import choose_regular_seed_grid
+    from tools.convert_leeds_to_viewer import choose_regular_seed_grid
     from tools.spectral_truncation import cutoff_metadata
     from tools.viewer_bundle import bundle_path
 
@@ -118,7 +123,7 @@ def convert_state(path, outdir, args):
     params = dict(l_max=leff, ek=get('E','ekman'), pr=get('Pr','prandtl'),
                   sc=get('Sc','schmidt'), ra=get('Ra','rayleigh'), raxi=get('RaC','rayleigh_composition'),
                   prmag=get('Pm','magnetic_prandtl'), time=data['time'], radratio=ri/radius[-1])
-    if 'Comp' not in fields: params.update(sc=1., raxi=0.)
+    params = resolve_graph_parameters(args, {**p, **params}, str(path))
     # HDF5 identifies a spatial scheme, not the governing nondimensional equations.
     # Do not silently assign the Leeds Ra convention to a modified-Rayleigh model.
     if args.n2_convention == 'quicc-rotating' and interval is not None and not math.isclose(interval[1]-interval[0],1.,rel_tol=1e-10,abs_tol=1e-12):
@@ -130,7 +135,7 @@ def convert_state(path, outdir, args):
             ra = getattr(args,ra_arg) if getattr(args,ra_arg) is not None else params[ra_key]
             pr = getattr(args,pr_arg) if getattr(args,pr_arg) is not None else params[pr_key]
             shell_rotating = args.n2_convention == 'quicc-rotating' and interval is not None
-            if field in fields and all(math.isfinite(v) for v in (ek,ra)) and (shell_rotating or (math.isfinite(pr) and pr != 0)):
+            if field in fields and all(v is not None and math.isfinite(v) for v in (ek,ra)) and (shell_rotating or (pr is not None and math.isfinite(pr) and pr != 0)):
                 if args.n2_convention == 'quicc-rotating' and interval is not None:
                     # Shell dynamo uses modified Ra without Pr and gravity r/ro.
                     factors[field] = (radius/radius[-1]) * ek * ra

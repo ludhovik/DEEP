@@ -8,7 +8,7 @@ import tempfile
 import unittest
 import numpy as np
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tools'))
-from convert_state_to_viewer import vorticity_fields, annotate_line_radial_field
+from convert_leeds_to_viewer import vorticity_fields, annotate_line_radial_field
 from conversion_cache import CalculationCache, _active_cache
 from test_rayleigh_converter import fixture
 from convert_rayleigh_to_viewer import main

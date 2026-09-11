@@ -734,7 +734,7 @@ and MagIC/Calypso/QuICC/Rayleigh's `--external-lmax` (default 32) remain separat
 Convert one state file:
 
 ```bash
-python tools/convert_state_to_viewer.py \
+python tools/convert_leeds_to_viewer.py \
   --state /path/to/state00001.cdf.dat \
   --out public/data_leeds
 ```
@@ -742,7 +742,7 @@ python tools/convert_state_to_viewer.py \
 Convert a numbered sequence:
 
 ```bash
-python tools/convert_state_to_viewer.py \
+python tools/convert_leeds_to_viewer.py \
   --folder /path/to/leeds_run \
   --sequence-first 1000 \
   --sequence-last 2000 \
@@ -760,6 +760,40 @@ Converter version 3.3 corrects the Leeds longitude coordinates to match SHTns:
 `phi[j] = 2*pi*j/nphi`, with no duplicate endpoint. Regenerate older Leeds
 bundles to apply this correction; updating the viewer alone cannot repair
 coordinates and field-line geometry already exported into a bundle.
+
+### Dimensionless parameters (all converters)
+
+The Leeds command is now `python tools/convert_leeds_to_viewer.py` (npm:
+`npm run convert-leeds -- ...`). Update scripts using the old filename.
+
+Parameters come from native simulation metadata, **never folder or file names**.
+Explicit `--Ek`/`--E`, `--Pr`, `--Sc`, `--RaT`/`--Ra`, `--RaC`/`--Ra_comp`,
+and `--Pm` overrides take precedence. Missing Ek, Pr, Sc, RaT, RaC and Pm are
+requested individually when running interactively. Blank answers leave values
+unknown (`null` in metadata); prompts appear on separate lines. Use
+`--no-parameter-prompt` for batch jobs; missing values are reported.
+
+Leeds reads NetCDF global attributes: `E → Ek`, `Ra → RaT`, `Ra_comp → RaC`,
+and `Pr`, `Sc`, `Pm` directly. Optional `Ro`, `q` and `riro` (saved as
+`radius_ratio`) are retained when present, without prompting for these
+code-specific extras. Both NetCDF4 and older NetCDF3 files are supported.
+MagIC reads its graphic/header and associated log metadata; QuICC reads its
+HDF5 physical parameters; Calypso reads its native dimensionless controls;
+Rayleigh reads `main_input`. XSHELLS uses exposed native field-header parameters;
+standard field files may lack them, in which case supply overrides or answer
+the prompts. No directory-name values are substituted.
+
+Native N2 conventions remain source-specific. Calypso's native momentum
+coefficients remain authoritative unless explicitly overridden; a modified
+Rayleigh number is not silently treated as conventional Ra. Leeds omits N2
+when its required inputs remain unknown, while exporting the other fields.
+
+Each sequence frame reads its own native parameters. Answers to missing-value
+prompts are reused only where later frames also lack that value. Explicit CLI
+overrides apply to every frame. Existing numerical caches remain usable through
+the Leeds rename; metadata/output validation is refreshed on the first update.
+Unchanged incremental conversions still skip; use an explicit parameter override
+when changing a previously entered value.
 
 ## XSHELLS converter
 
@@ -1101,7 +1135,7 @@ inputs, and verifies the existing converted files before making changes.
 For example, from the repository root:
 
 ```bash
-python tools/convert_state_to_viewer.py \
+python tools/convert_leeds_to_viewer.py \
   --state simulation/state00001.cdf.dat \
   --modules-dir . \
   --out public/my_data \
@@ -1288,7 +1322,7 @@ DEEP/
 │   ├── assets/
 │   └── data/
 ├── tools/
-│   ├── convert_state_to_viewer.py
+│   ├── convert_leeds_to_viewer.py
 │   ├── convert_xshells_to_viewer.py
 │   ├── convert_magic_to_viewer.py
 │   └── make_demo_data.py

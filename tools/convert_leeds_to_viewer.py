@@ -51,6 +51,11 @@ try:
 except ImportError:
     from tools.conversion_cache import add_incremental_arguments, cached_calculation, run_conversion
 
+try:
+    from converter_parameters import resolve_parameters, read_netcdf_attributes, PARAMETER_SPECS
+except ImportError:
+    from tools.converter_parameters import resolve_parameters, read_netcdf_attributes, PARAMETER_SPECS
+
 import numpy as np
 
 try:
@@ -81,109 +86,16 @@ CONVERTER_PACKAGE_VERSION = "3.6.0"
 # -----------------------------------------------------------------------------
 
 
-def parse_float_from_path(path: str, key: str, default: float | None = None) -> float | None:
-    """Extract values like Ek=2e-5 or RaC=1e9 from a path string."""
-    # Accept either normal '=' or an escaped '\=' that may appear in copied paths.
-    pattern = rf"{re.escape(key)}\\?=([0-9eE+.-]+)"
-    match = re.search(pattern, path)
-    if match is None:
-        return default
-    return float(match.group(1))
-
-
-def parse_float_from_path_aliases(path: str, aliases: list[str] | tuple[str, ...], default: float = np.nan) -> float:
-    """Extract a float from a path using several possible parameter names."""
-    for key in aliases:
-        value = parse_float_from_path(path, key, None)
-        if value is not None:
-            return float(value)
-    return default
-
-
-PARAMETER_SPECS = {
-    "Ek": {
-        "label": "Ekman number",
-        "aliases": ("Ek", "E"),
-        "arg": "Ek",
-    },
-    "Pr": {
-        "label": "thermal Prandtl number",
-        "aliases": ("Pr", "PrT", "Pr_T"),
-        "arg": "Pr",
-    },
-    "Sc": {
-        "label": "compositional Prandtl/Schmidt number",
-        "aliases": ("Sc", "PrC", "Pr_C"),
-        "arg": "Sc",
-    },
-    "RaT": {
-        "label": "thermal Rayleigh number",
-        "aliases": ("RaT", "Ra_T", "Ra"),
-        "arg": "RaT",
-    },
-    "RaC": {
-        "label": "compositional Rayleigh number",
-        "aliases": ("RaC", "Ra_C"),
-        "arg": "RaC",
-    },
-}
-
-
-def prompt_float_parameter(name: str, label: str, aliases: list[str] | tuple[str, ...]) -> float:
-    """Ask the user for a missing parameter. Blank input keeps NaN."""
-    aliases_text = "/".join(aliases)
-    prompt = f"Enter {name} ({label}; aliases: {aliases_text}); blank = NaN: "
-    while True:
-        value = input(prompt).strip()
-        if value == "":
-            return float("nan")
-        try:
-            return float(value)
-        except ValueError:
-            print(f"Could not parse {value!r} as a float. Try again, or press Enter for NaN.")
-
-
 def resolve_parameter_values(path: str, args: argparse.Namespace, prompt_missing: bool = True) -> dict[str, float]:
-    """
-    Resolve physical/control parameters from CLI overrides, path aliases, or prompt.
-
-    Used for metadata and for N2. Sequence conversion calls this once and passes
-    resolved values to each frame so the user is not prompted for every frame.
-    """
-    values: dict[str, float] = {}
-
-    for name, spec in PARAMETER_SPECS.items():
-        cli_value = getattr(args, spec["arg"], None)
-        if cli_value is not None:
-            values[name] = float(cli_value)
-            continue
-
-        values[name] = parse_float_from_path_aliases(path, spec["aliases"], np.nan)
-
-    missing = [name for name, value in values.items() if not np.isfinite(value)]
-    if missing and prompt_missing:
-        if sys.stdin is not None and sys.stdin.isatty():
-            print("\nSome parameters were not found in the path or command line.")
-            print("These values are used in metadata and, for Ek/Pr/Sc/RaT/RaC, in N2.")
-            for name in missing:
-                spec = PARAMETER_SPECS[name]
-                values[name] = prompt_float_parameter(name, spec["label"], spec["aliases"])
-            print("")
-        else:
-            print(
-                "WARNING: missing parameters could not be prompted because stdin is not interactive: "
-                + ", ".join(missing)
-            )
-
-    return values
+    return resolve_parameters(read_netcdf_attributes(path), args, str(path), prompt_missing)
 
 
 def append_parameter_overrides(cmd: list[str], args: argparse.Namespace) -> None:
     """Forward explicitly resolved parameter values to subprocess conversion."""
-    for name, spec in PARAMETER_SPECS.items():
-        value = getattr(args, spec["arg"], None)
+    for name in PARAMETER_SPECS:
+        value = getattr(args, name, None)
         if value is not None and np.isfinite(value):
-            cmd += [f"--{spec['arg']}", str(value)]
+            cmd += [f"--{name}", str(value)]
 
 
 def parse_state_number(path: str) -> int:
@@ -259,7 +171,7 @@ def as_r_theta_phi(arr: np.ndarray, nr: int, ntheta: int | None = None, nphi: in
     else:
         raise ValueError(
             f"Cannot identify radial dimension nr={nr} in array shape {arr.shape}. "
-            "Please transpose explicitly in convert_state_to_viewer.py."
+            "Please transpose explicitly in convert_leeds_to_viewer.py."
         )
 
     if ntheta is not None and nphi is not None and out.shape != (nr, ntheta, nphi):
@@ -2522,16 +2434,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
 
     # Optional explicit parameter overrides. If omitted, the converter tries to
-    # parse them from the path and then asks interactively when missing.
+    # read them from the state-file global attributes, then prompts for missing values.
+    p.add_argument("--Pm", "--PrMag", dest="Pm", type=float, help="Magnetic Prandtl number override.")
     p.add_argument("--Ek", "--E", dest="Ek", type=float, default=None, help="Ekman number metadata/N2 override. Aliases: --Ek, --E.")
     p.add_argument("--Pr", "--PrT", "--Pr_T", dest="Pr", type=float, default=None, help="Thermal Prandtl number metadata/N2 override.")
     p.add_argument("--Sc", "--PrC", "--Pr_C", dest="Sc", type=float, default=None, help="Compositional Prandtl/Schmidt number metadata/N2 override.")
     p.add_argument("--RaT", "--Ra", "--Ra_T", dest="RaT", type=float, default=None, help="Thermal Rayleigh number metadata/N2 override.")
-    p.add_argument("--RaC", "--Ra_C", dest="RaC", type=float, default=None, help="Compositional Rayleigh number metadata/N2 override.")
+    p.add_argument("--RaC", "--Ra_C", "--Ra_comp", dest="RaC", type=float, default=None, help="Compositional Rayleigh number metadata/N2 override.")
     p.add_argument(
         "--no-parameter-prompt",
         action="store_true",
-        help="Do not prompt for missing Ek/Pr/Sc/RaT/RaC; keep missing values as NaN.",
+        help="Do not prompt for missing Ek/Pr/Sc/RaT/RaC/Pm; keep missing values as NaN.",
     )
 
     p.add_argument("--alpha-map", type=int, default=-1, help="alpha_map argument passed to PolTor_to_spat.")
@@ -2694,12 +2607,6 @@ def run_sequence_conversion(args: argparse.Namespace) -> None:
     if not selected:
         raise FileNotFoundError(f"No state files found for requested sequence {first}:{step}:{last}")
 
-    # Resolve parameters once for the sequence and pass them to each frame.
-    # This avoids prompting once per frame when folder names do not contain all tokens.
-    sequence_params = resolve_parameter_values(selected[0], args, prompt_missing=not args.no_parameter_prompt)
-    for name, value in sequence_params.items():
-        setattr(args, PARAMETER_SPECS[name]["arg"], value)
-
     outdir = Path(args.out)
     frames_root = bundle_path(outdir, str(args.sequence_subdir))
     frames_root.mkdir(parents=True, exist_ok=True)
@@ -2742,7 +2649,10 @@ def run_sequence_conversion(args: argparse.Namespace) -> None:
         cmd += ["--min-inner-core-radius-fraction", str(args.min_inner_core_radius_fraction)]
         cmd += ["--inner-core-validation-buffer-points", str(args.inner_core_validation_buffer_points)]
         cmd += ["--center-tolerance", str(args.center_tolerance)]
-        append_parameter_overrides(cmd, args)
+        frame_parameters = resolve_parameter_values(state_path, args, prompt_missing=not args.no_parameter_prompt)
+        append_parameter_overrides(cmd, argparse.Namespace(**{
+            key: value for key, value in frame_parameters.items()
+            if args._parameter_sources.get(key) != "native"}))
         if args.cmb_br_ltrunc is not None:
             cmd += ["--cmb-br-ltrunc", str(args.cmb_br_ltrunc)]
         cmd += ["--earth-br-ltrunc", str(args.earth_br_ltrunc)]
@@ -2891,7 +2801,7 @@ def convert_state(args: argparse.Namespace) -> None:
         print(f"Regular field-line seed grid requested: ~{args.line_seeds} seeds -> "
               f"{args.line_seed_theta} x {args.line_seed_phi} = {args.line_seed_theta * args.line_seed_phi}")
 
-    # Parameter extraction from CLI overrides, path aliases, or interactive prompt.
+    # Parameter extraction from CLI overrides, state-file global attributes, or prompt.
     params_resolved = resolve_parameter_values(path, args, prompt_missing=not args.no_parameter_prompt)
     E = params_resolved["Ek"]
     Pr = params_resolved["Pr"]
@@ -3383,10 +3293,15 @@ def convert_state(args: argparse.Namespace) -> None:
     grad_thetaComp_fluct = remove_m0_phi(grad_thetaComp_3d)
     grad_phiComp_fluct = remove_m0_phi(grad_phiComp_3d)
 
-    N2_full = r[:, None, None] * E**2 * (
-        grad_rComp_3d * RaC / Sc + grad_rC_3d * RaT / Pr
-    )
-    N2_volume = remove_m0_phi(N2_full)
+    n2_available = all(np.isfinite(value) for value in (E, Pr, Sc, RaT, RaC)) and Pr > 0 and Sc > 0
+    N2_full = N2_volume = None
+    if n2_available:
+        N2_full = r[:, None, None] * E**2 * (
+            grad_rComp_3d * RaC / Sc + grad_rC_3d * RaT / Pr
+        )
+        N2_volume = remove_m0_phi(N2_full)
+    else:
+        print("N2 omitted: finite Ek/RaT/RaC and positive Pr/Sc are required.", flush=True)
 
     if has_inner_core:
         helicity_fluid = compute_helicity(
@@ -3405,8 +3320,8 @@ def convert_state(args: argparse.Namespace) -> None:
                      for name, value in vorticity.items()}
 
     # Keep simple 1-D profiles for reference.
-    N2_profile = np.mean(N2_full, axis=(1, 2))
-    N2_fluct_rms = np.sqrt(np.mean(N2_volume * N2_volume, axis=(1, 2)))
+    N2_profile = np.mean(N2_full, axis=(1, 2)) if n2_available else None
+    N2_fluct_rms = np.sqrt(np.mean(N2_volume * N2_volume, axis=(1, 2))) if n2_available else None
     grad_rC_mean_r = np.mean(grad_rC_3d, axis=(1, 2))
     grad_rComp_mean_r = np.mean(grad_rComp_3d, axis=(1, 2))
 
@@ -3438,6 +3353,9 @@ def convert_state(args: argparse.Namespace) -> None:
         "N2_full": N2_full,
     }
 
+    if not n2_available:
+        fields.pop("N2")
+        fields.pop("N2_full")
     fields.update(vorticity)
 
     # Optional magnetic diagnostics are written only when explicitly requested.
@@ -3506,8 +3424,8 @@ def convert_state(args: argparse.Namespace) -> None:
     sampling = ViewerSampling(r, theta, phi, dr, dt, dp, required_radii=[r_icb])
     fields = {name: sampling.volume(arr) for name, arr in fields.items()}
     r_out, theta_out, phi_out = sampling.r, sampling.theta, sampling.phi
-    N2_profile_out = sampling.radial(N2_profile)
-    N2_fluct_rms_out = sampling.radial(N2_fluct_rms)
+    N2_profile_out = sampling.radial(N2_profile) if n2_available else []
+    N2_fluct_rms_out = sampling.radial(N2_fluct_rms) if n2_available else []
     grad_rC_mean_r_out = sampling.radial(grad_rC_mean_r)
     grad_rComp_mean_r_out = sampling.radial(grad_rComp_mean_r)
 
@@ -3646,6 +3564,9 @@ def convert_state(args: argparse.Namespace) -> None:
         "grad_rC_mean_r": [json_number(x) for x in grad_rC_mean_r_out],
         "grad_rComp_mean_r": [json_number(x) for x in grad_rComp_mean_r_out],
     }
+    if not n2_available:
+        profiles.pop("N2")
+        profiles.pop("N2_fluct_rms")
     with open(outdir / "profiles.json", "w", encoding="utf-8") as f:
         json.dump(profiles, f, allow_nan=False)
 
@@ -3852,7 +3773,9 @@ def convert_state(args: argparse.Namespace) -> None:
             "Sc": json_number(Sc),
             "RaT": json_number(RaT),
             "RaC": json_number(RaC),
+            **{key: json_number(value) for key, value in params_resolved.items()},
         },
+        "parameter_sources": args._parameter_sources,
         "spectral": spectral_meta,
         "spectral_truncation": spectral_meta,
         "sampling": sampling.description(),

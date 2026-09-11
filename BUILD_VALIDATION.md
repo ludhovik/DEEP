@@ -537,3 +537,20 @@ npm run build
 - No numerical sign reversal was found in the local-Br path. Starting-footpoint
   mode intentionally retains its colour at the opposite-polarity return. The
   reported specific scene has not been reproduced without its dataset/view code.
+
+## Native parameters and Leeds entry-point rename (2026-09-11)
+
+- Converter suite: 170 tests, 164 passed, 6 optional fixture/backend tests skipped.
+- Native parameter tests cover actual NetCDF4/NetCDF3 global attributes, the
+  h5py/SciPy fallback without netCDF4, aliases including Ra_comp/Pm, ignored
+  folder tokens, CLI precedence, finite input validation, readable prompts,
+  disabled/noninteractive prompts and zero-valued parameters.
+- Sequence tests verify each frame's own attributes, repeated missing-value
+  answers and Leeds subprocess arguments; CLI overrides still apply per frame.
+- Shared export tests verify prompted Pm metadata and N2 availability; Leeds
+  integration verifies unknown Pr omits N2 while retaining vorticity/data output.
+- Existing transform/trace cache reuse tests pass. Calculation identities retain
+  the historical module token so the rename alone does not invalidate them.
+- Python compilation and both direct and npm convert-leeds CLI help passed.
+- NetCDF fixture-writing tests skip when optional netCDF4 is absent; conversion
+  itself can read headers using the existing h5py/SciPy dependencies.

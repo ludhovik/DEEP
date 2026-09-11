@@ -15,6 +15,11 @@ from pathlib import Path
 import re
 import shutil
 
+try:
+    from converter_parameters import resolve_graph_parameters
+except ImportError:
+    from tools.converter_parameters import resolve_graph_parameters
+
 import numpy as np
 
 try:
@@ -22,7 +27,7 @@ try:
                               number, read_controls, read_restart, synthesize_spectra)
     from conversion_cache import run_conversion
     from convert_magic_to_viewer import add_viewer_arguments, convert_adapted_snapshot
-    from convert_state_to_viewer import choose_regular_seed_grid
+    from convert_leeds_to_viewer import choose_regular_seed_grid
     from spectral_truncation import cutoff_metadata
     from viewer_bundle import bundle_path
 except ImportError:
@@ -30,7 +35,7 @@ except ImportError:
                                     number, read_controls, read_restart, synthesize_spectra)
     from tools.conversion_cache import run_conversion
     from tools.convert_magic_to_viewer import add_viewer_arguments, convert_adapted_snapshot
-    from tools.convert_state_to_viewer import choose_regular_seed_grid
+    from tools.convert_leeds_to_viewer import choose_regular_seed_grid
     from tools.spectral_truncation import cutoff_metadata
     from tools.viewer_bundle import bundle_path
 
@@ -134,6 +139,11 @@ def physical_parameters(records, args, radius, r_icb=None):
               "sc": dim.get("schmidt_number", dim.get("compositional_prandtl_number")),
               "ra": dim.get("rayleigh_number"), "raxi": dim.get("compositional_rayleigh_number"),
               "prmag": dim.get("magnetic_prandtl_number")}
+    params = resolve_graph_parameters(args, params, "Calypso dimensionless controls")
+    for canonical, native in {"Ek": "ekman_number", "Pr": "prandtl_number", "Sc": "schmidt_number",
+                              "Pm": "magnetic_prandtl_number"}.items():
+        value = params["_resolved_parameters"][canonical]
+        if math.isfinite(value): dim[native] = value
     ratio = (radius[0] if r_icb is None else r_icb) / radius[-1]
     symbols = {**dim, "one": 1.0, "zero": 0.0, "two": 2.0,
                "radial_parameter": 1-ratio, "radial_35": 0.65}
@@ -161,11 +171,11 @@ def physical_parameters(records, args, radius, r_icb=None):
             if coef is not None:
                 factors[field] = radius * (4 * cv * coef / cor**2)
     for field, cli, denominator in (("C", "RaT", "pr"), ("Comp", "RaC", "sc")):
-        if getattr(args, cli) is not None:
+        if getattr(args, cli) is not None or (field not in factors and params["_parameter_sources"].get(cli) == "prompt"):
             ek, denom = params["ek"], params[denominator]
             if ek is None or denom is None or denom <= 0:
                 raise ValueError(f"--{cli} needs finite Ek and positive Pr/Sc for N2.")
-            factors[field] = radius * (ek**2 * number(getattr(args, cli)) / denom)
+            factors[field] = radius * (ek**2 * params["_resolved_parameters"][cli] / denom)
     info = {"native_dimensionless_numbers": dim,
             "momentum_coefficients": {"time": cv, "coriolis": cor, "thermal_buoyancy": thermal,
                                       "compositional_buoyancy": composition},

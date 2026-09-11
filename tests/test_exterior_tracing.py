@@ -13,7 +13,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-from tools import convert_state_to_viewer as converter
+from tools import convert_leeds_to_viewer as converter
 
 
 def exterior_grid(nr=96, rmax=40.0, lmax=128, step=None):

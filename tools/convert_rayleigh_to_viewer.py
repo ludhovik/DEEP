@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Convert Rayleigh Spherical_3D fields or single-domain spectral checkpoints."""
 from __future__ import annotations
+try:
+    from converter_parameters import resolve_graph_parameters
+except ImportError:
+    from tools.converter_parameters import resolve_graph_parameters
+
 import argparse
 import copy
 import json
@@ -14,7 +19,7 @@ try:
         read_volume, read_coefficients, synthesize_checkpoint, radial_basis)
     from conversion_cache import run_conversion, cached_calculation
     from convert_magic_to_viewer import add_viewer_arguments, convert_adapted_snapshot
-    from convert_state_to_viewer import choose_regular_seed_grid
+    from convert_leeds_to_viewer import choose_regular_seed_grid
     from spectral_truncation import cutoff_metadata, truncate_graphic_fields
     from viewer_bundle import bundle_path
 except ImportError:
@@ -22,7 +27,7 @@ except ImportError:
         read_volume, read_coefficients, synthesize_checkpoint, radial_basis)
     from tools.conversion_cache import run_conversion, cached_calculation
     from tools.convert_magic_to_viewer import add_viewer_arguments, convert_adapted_snapshot
-    from tools.convert_state_to_viewer import choose_regular_seed_grid
+    from tools.convert_leeds_to_viewer import choose_regular_seed_grid
     from tools.spectral_truncation import cutoff_metadata, truncate_graphic_fields
     from tools.viewer_bundle import bundle_path
 
@@ -176,11 +181,12 @@ def convert_state(path,outdir,args):
         lmax=info['lmax_effective']
     time=grid['time'] if args.time is None else args.time
     params=dict(l_max=lmax,time=time,ek=native.get('ekman_number',math.nan),pr=native.get('prandtl_number',math.nan),
-                prmag=native.get('magnetic_prandtl_number',math.nan),sc=math.nan,ra=native.get('rayleigh_number',math.nan),raxi=math.nan,radratio=r[0]/r[-1])
+                prmag=native.get('magnetic_prandtl_number',math.nan),sc=native.get('schmidt_number',math.nan),ra=native.get('rayleigh_number',math.nan),raxi=native.get('compositional_rayleigh_number',math.nan),radratio=r[0]/r[-1])
+    params=resolve_graph_parameters(args,{**native,**params},str(control or path))
     factors={}
     if args.n2_convention=='deepscope':
         ek=args.Ek if args.Ek is not None else params['ek']
-        for field,ra,pr in [('C',args.RaT if args.RaT is not None else params['ra'],args.Pr if args.Pr is not None else params['pr']),('Comp',args.RaC,args.Sc)]:
+        for field,ra,pr in [('C',args.RaT if args.RaT is not None else params['ra'],args.Pr if args.Pr is not None else params['pr']),('Comp',params['raxi'],params['sc'])]:
             if field in fields:
                 if any(v is None or not math.isfinite(v) for v in (ek,ra,pr)) or pr<=0:raise ValueError(f'N2 for {field} needs finite Ek, Rayleigh and positive Pr/Sc.')
                 factors[field]=r*ek**2*ra/pr

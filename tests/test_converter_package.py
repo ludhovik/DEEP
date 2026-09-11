@@ -17,7 +17,7 @@ import numpy as np
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-LEEDS_PATH = ROOT / "tools" / "convert_state_to_viewer.py"
+LEEDS_PATH = ROOT / "tools" / "convert_leeds_to_viewer.py"
 XSHELLS_PATH = ROOT / "tools" / "convert_xshells_to_viewer.py"
 MAGIC_PATH = ROOT / "tools" / "convert_magic_to_viewer.py"
 MODULES_PATH = ROOT / "modules.py"
