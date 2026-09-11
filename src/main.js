@@ -412,6 +412,8 @@ const params = {
 
   lineStride: 3,
   lineColourMode: "strength",
+  linePositiveColor: "#ffd700",
+  lineNegativeColor: "#246bff",
   lineColormap: "viridis",
   lineScale: "minmax",
   lineValueTransform: "linear",
@@ -1167,10 +1169,10 @@ function setLineLegendMode(mode) {
   document.getElementById("line-positive-label").textContent = local ? "Br > 0: outward here" : "Br > 0: outward at start";
   document.getElementById("line-negative-label").textContent = local ? "Br < 0: inward here" : "Br < 0: inward at start";
   document.getElementById("line-polarity-note").textContent = local
-    ? "Colour changes along each line. Grey: zero or unavailable Br. Older bundles need reconversion for local polarity."
-    : "Colour identifies the starting CMB footpoint; an exterior arc may end at the opposite polarity.";
-  lineLegendEl.querySelector(".yellow").style.background = local ? "#ffd700" : "#ffd080";
-  lineLegendEl.querySelector(".blue").style.background = local ? "#246bff" : "#80c0ff";
+    ? "Colour follows local Br along the line. Grey: zero or unavailable Br (older bundles need reconversion). Compare with CMB Br; truncated maps or exterior fields can differ near zero crossings."
+    : "Whole-line colour identifies the starting CMB footpoint, including at the opposite-polarity return. Choose Local Br (along line) to colour each endpoint by its own sign.";
+  lineLegendEl.querySelector(".yellow").style.background = params.linePositiveColor;
+  lineLegendEl.querySelector(".blue").style.background = params.lineNegativeColor;
 }
 
 function getLineColourbarState() {
@@ -1251,10 +1253,10 @@ function getFieldLineVertexColor(strength, polarity, vmin, vmax, radialField = N
   if (params.lineColourMode === "radial-polarity") {
     // Never substitute starting-footpoint polarity for an unavailable local Br.
     return new THREE.Color(typeof radialField !== "number" || !Number.isFinite(radialField) || radialField === 0
-      ? 0xaab0bb : radialField > 0 ? 0xffd700 : 0x246bff);
+      ? 0xaab0bb : radialField > 0 ? params.linePositiveColor : params.lineNegativeColor);
   }
   if (params.lineColourMode === "polarity") {
-    const c = polarity >= 0 ? new THREE.Color(0xffd080) : new THREE.Color(0x80c0ff);
+    const c = new THREE.Color(polarity >= 0 ? params.linePositiveColor : params.lineNegativeColor);
     return c;
   }
   const value = transformFieldLineStrength(strength);
@@ -2636,6 +2638,7 @@ function getFieldLineObjectCacheKey(basePath = dataBasePath) {
       params.lineTubeAutoDetail && params.lineTubeSimplify ? tubeGeometryLimitMiB() : null],
     radius: metadata?.r_outer,
     colourMode: params.lineColourMode,
+    polarityColours: [params.linePositiveColor, params.lineNegativeColor],
     colormap: params.lineColormap,
     customColours: params.lineColormap === CUSTOM_COLOURMAP
       ? [params.customColourLow, params.customColourHigh]
@@ -7055,6 +7058,8 @@ function applySnapshotParam(key, value) {
   if (key.endsWith("Colormap") && !getAvailableColormapNames().includes(value)) return false;
   if (VIEW_STATE_SCALE_KEYS.has(key) && !["symmetric", "minmax", "manual"].includes(value)) return false;
   if (!validFieldForState(key, value)) return false;
+  if (["linePositiveColor", "lineNegativeColor"].includes(key) && !/^#[0-9a-f]{6}$/i.test(value)) return false;
+  if (key === "lineColourMode" && !["strength", "polarity", "radial-polarity"].includes(value)) return false;
   if (key === "lineRenderMode" && !["lines", "b2-tubes"].includes(value)) return false;
   if (key === "lineTubeSides" && !Number.isInteger(value)) return false;
   if (key === "fieldLineDisplay" && !getAvailableFieldLineModes().includes(value)) return false;
@@ -7770,7 +7775,9 @@ function buildGui() {
     if (lineModes.includes("both")) lineModeOptions["Both"] = "both";
     lineFolder.add(params, "fieldLineDisplay", lineModeOptions).name("Line type").onChange(refreshFieldLines);
     lineFolder.add(params, "lineStride", 1, 10, 1).name("Line stride").onFinishChange(refreshFieldLines);
-    lineFolder.add(params, "lineColourMode", { Strength: "strength", "CMB starting polarity": "polarity", "Local radial polarity": "radial-polarity" }).name("Colour by").onChange(refreshFieldLines);
+    lineFolder.add(params, "lineColourMode", { Strength: "strength", "Starting CMB Br (whole line)": "polarity", "Local Br (along line)": "radial-polarity" }).name("Colour by").onChange(refreshFieldLines);
+    lineFolder.addColor(params, "linePositiveColor").name("Br > 0 colour").onChange(refreshFieldLines);
+    lineFolder.addColor(params, "lineNegativeColor").name("Br < 0 colour").onChange(refreshFieldLines);
     lineFolder.add(params, "lineColormap", colourMapNames).name("Colour map").onChange(refreshFieldLines);
     lineFolder.add(params, "lineValueTransform", { Linear: "linear", "log10(|B|)": "log10" }).name("Value scale").onChange(refreshFieldLines);
     lineFolder.add(params, "lineScale", ["minmax", "manual"]).name("Range").onChange(refreshFieldLines);
@@ -8069,8 +8076,8 @@ function drawExportColourbars(ctx, width, height) {
     ctx.fillText(local ? "Local Br (grey: zero / unavailable)" : "CMB starting polarity",
       x + 9 * scale, y + 6 * scale, panelWidth - 18 * scale);
     for (const [i, colour, label] of [
-      [0, local ? "#ffd700" : "#ffd080", local ? "Br > 0: outward here" : "Br > 0: outward at start"],
-      [1, local ? "#246bff" : "#80c0ff", local ? "Br < 0: inward here" : "Br < 0: inward at start"],
+      [0, params.linePositiveColor, local ? "Br > 0: outward here" : "Br > 0: outward at start"],
+      [1, params.lineNegativeColor, local ? "Br < 0: inward here" : "Br < 0: inward at start"],
     ]) {
       const yy = y + (24 + i * 16) * scale;
       ctx.fillStyle = colour; ctx.fillRect(x + 9 * scale, yy, 18 * scale, 11 * scale);

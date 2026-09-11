@@ -53,9 +53,9 @@ nearest nonzero shell supplies a single Cartesian-vector estimate, projected
 back onto the spherical basis. This is a finite regular approximation, not a
 forced zero. Existing helicity retains its documented zero-centre convention.
 
-## Yellow/blue magnetic field lines
+## Magnetic field-line polarity colours
 
-Choose **Magnetic field lines → Colour by → Local radial polarity**.
+Choose **Magnetic field lines → Colour by → Local Br (along line)**.
 This works with ordinary lines and B² tubes; tube diameter remains proportional
 to magnetic energy density while colour encodes direction.
 
@@ -74,7 +74,7 @@ A field line can change colour along its length. A closed exterior arc generally
 has both outward and inward portions. This colour is independent of the ordering
 of the saved polyline points and independent of the direction used to trace it.
 The yellow/blue legend is included in image exports when the legend is visible
-and expanded. The existing **CMB starting polarity** option instead assigns one colour to the
+and expanded. The **Starting CMB Br (whole line)** option instead assigns one colour to the
 whole line based on its starting footpoint. Old view codes selecting `polarity`
 keep that original meaning. New local-polarity selections survive DTV2 round trips.
 
@@ -132,3 +132,22 @@ curl as well as the new vorticity output.
 
 Run `python3 tests/test_vorticity_polarity.py`, `bash run_converter_tests.sh`,
 `npm run test-viewer` and `npm run build` from the repository.
+
+## Comparing line colours with the CMB
+
+Use **Local Br (along line)** to compare each endpoint's sign with the CMB.
+**Starting CMB Br (whole line)** deliberately keeps its starting colour even
+when an exterior arc returns to the opposite polarity; it does not describe
+local Br at that return. Existing view codes keep their selected mode.
+
+Select the primary **Br** CMB field and a symmetric colour scale when comparing
+signs. A low-degree CMB map, an exterior potential field with a different cutoff,
+or a secondary dataset can have different zero crossings. Colour does not
+necessarily encode sign on a manually shifted or min/max colour scale. The
+viewer does not flip the physical Br sign to force agreement between these maps.
+
+**Br > 0 colour** and **Br < 0 colour** set the two colours in both polarity modes.
+Defaults are yellow and blue. They apply to lines, B² tubes, on-screen swatches,
+export swatches and DTV2 view codes. Zero or unavailable local Br stays grey.
+The CMB's own colour map is independent. This viewer update needs no reconversion
+if the bundle already contains per-point `radial_field` samples.

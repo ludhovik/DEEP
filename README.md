@@ -1301,3 +1301,10 @@ DEEP/
 ## License
 
 See [`LICENSE`](LICENSE).
+
+Field-line polarity colours are customizable under **Magnetic field lines**:
+**Br > 0 colour** and **Br < 0 colour**. Choose **Local Br (along line)** for
+local outward/inward direction, or **Starting CMB Br (whole line)** to identify
+the starting footpoint. Both colours are saved in DTV2 and included in legends
+and exports. See [polarity conventions](VORTICITY_POLARITY.md#comparing-line-colours-with-the-cmb)
+when comparing lines with a truncated CMB map.

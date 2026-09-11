@@ -524,3 +524,16 @@ npm run build
 - The public Rayleigh checkpoint 00040000 converted into a validated 29-field bundle.
   Native production Leeds/XSHELLS solver runs were not available in this environment;
   their adapters were exercised by the existing fixture-based regression suite.
+
+## Polarity colours and endpoint verification (2026-09-11)
+
+- Viewer tests: 143 passed. Added closed-dipole-arc CMB endpoint checks for
+  both point orders, lines and B² tubes, with custom positive/negative colours.
+- Verified custom colours in worker tube geometry after simplification,
+  DOM/export legends, geometry cache keys and validated DTV2 round trips.
+- Shared vorticity/polarity mathematical tests: 8 passed, including signed Br
+  sampling along an arc, reversed storage and field reversal.
+- Production build passed; existing large-chunk advisory remains.
+- No numerical sign reversal was found in the local-Br path. Starting-footpoint
+  mode intentionally retains its colour at the opposite-polarity return. The
+  reported specific scene has not been reproduced without its dataset/view code.

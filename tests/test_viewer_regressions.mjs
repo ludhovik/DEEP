@@ -2078,14 +2078,14 @@ test("real line and tube geometries receive local Br colours at matching points"
   vm.runInContext(definition("getFieldLineVertexColor")+"\n"+definition("makeFieldLineGroup"),ctx);
   Object.assign(ctx.params,{lineColourMode:"radial-polarity",lineRenderMode:"lines"});
   const line={polarity:1,points:[[1,0,0],[1,0,1],[1,0,2]],strength:[1,1,1],radial_field:[2,-2,0]};
-  let group=ctx.makeFieldLineGroup("shell",[line],[line],1);
+  let group=ctx.makeFieldLineGroup([line],"shell",[line],1);
   let start=group.children[0].geometry.getAttribute("instanceColorStart");
   const yellow=new RealTHREE.Color(0xffd700),blue=new RealTHREE.Color(0x246bff);
   for(const [i,c] of [[0,yellow],[1,blue]])
     assert.ok(Math.abs(start.getX(i)-c.r)<1e-7 && Math.abs(start.getZ(i)-c.b)<1e-7);
   ctx.disposeFieldLineGroupResources(group);
   ctx.params.lineRenderMode="b2-tubes";ctx.params.lineTubeSides=8;
-  group=ctx.makeFieldLineGroup("shell",[line],[line],1);
+  group=ctx.makeFieldLineGroup([line],"shell",[line],1);
   const colours=group.children[0].geometry.getAttribute("color");
   assert.ok(Math.abs(colours.getX(0)-yellow.r)<1e-7);
   assert.ok(Math.abs(colours.getZ(8)-blue.b)<1e-7);
@@ -2097,7 +2097,7 @@ test("tube worker colour preparation preserves local Br after simplification", a
   Object.assign(ctx,{datasetRequestSignal:null,
     runGeometryJob:async(type,payload)=>executeGeometryJob(type,payload),unpackGeometry});
   vm.runInContext(definition("getFieldLineVertexColor")+"\n"+definition("buildTubeGeometriesInBackground"),ctx);
-  Object.assign(ctx.params,{lineColourMode:"radial-polarity",lineTubeSides:8});
+  Object.assign(ctx.params,{lineColourMode:"radial-polarity",lineTubeSides:8,linePositiveColor:"#33aa77",lineNegativeColor:"#cc2288"});
   const line={points:Array.from({length:20},(_,i)=>[1,0,i/20]),strength:Array(20).fill(1),
     radial_field:Array.from({length:20},(_,i)=>i===10?-1:1)};
   const reduced=simplifyMagneticLine(line,{enabled:true,positionTolerance:.01,energyTolerance:.01});
@@ -2106,7 +2106,7 @@ test("tube worker colour preparation preserves local Br after simplification", a
   assert.deepEqual(reduced.radial_field,reduced.points.map(p=>p[2]===.5?-1:1));
   const geometries=await ctx.buildTubeGeometriesInBackground([line],[reduced],ctx.captureRenderContext(),1);
   const negativeIndex=reduced.radial_field.indexOf(-1),colours=geometries[0].getAttribute("color");
-  assert.ok(Math.abs(colours.getZ(negativeIndex*8)-new RealTHREE.Color(0x246bff).b)<1e-7);
+  assert.ok(Math.abs(colours.getZ(negativeIndex*8)-new RealTHREE.Color("#cc2288").b)<1e-7);
   geometries.forEach(g=>g.dispose());
 });
 
@@ -2132,4 +2132,66 @@ test("local polarity swatches are exported without a strength colourbar", () => 
   assert.ok(labels.includes("Br > 0: outward here"));assert.ok(labels.includes("Br < 0: inward here"));
   assert.deepEqual(swatches,["#ffd700","#246bff"]);
   labels.length=0;ctx.params.legendCollapsed=true;ctx.drawExportColourbars(canvas,1000,700);assert.equal(labels.length,0);
+});
+
+test("a dipole arc colours its negative CMB endpoint by local Br, independent of point order", () => {
+  const ctx=viewer();Object.assign(ctx,{THREE:RealTHREE,Line2,LineGeometry,
+    makeLineMaterial:()=>new LineMaterial({vertexColors:true})});
+  vm.runInContext(definition("getFieldLineVertexColor")+"\n"+definition("makeFieldLineGroup"),ctx);
+  // Dipole field: r = 2 sin²(theta), Br = 2 cos(theta) / r³, CMB radius = 1.
+  const theta=Array.from({length:33},(_,i)=>Math.PI/4+i*Math.PI/64);
+  const points=theta.map(t=>{const r=2*Math.sin(t)**2;return [r*Math.sin(t),0,r*Math.cos(t)];});
+  const radial=theta.map(t=>2*Math.cos(t)/(2*Math.sin(t)**2)**3);
+  for(const reverse of [false,true]) for(const render of ["lines","b2-tubes"]) {
+    const line={points:reverse?[...points].reverse():points,radial_field:reverse?[...radial].reverse():radial,
+      strength:Array(33).fill(1),polarity:1};
+    Object.assign(ctx.params,{lineRenderMode:render,lineTubeSides:8,lineColourMode:"radial-polarity",
+      linePositiveColor:"#ee8811",lineNegativeColor:"#1133cc"});
+    const group=ctx.makeFieldLineGroup([line],"exterior",[line],1),g=group.children[0].geometry;
+    for(const endpoint of [0,32]) {
+      const expected=new RealTHREE.Color(line.radial_field[endpoint]>0?"#ee8811":"#1133cc");
+      const a=render==="lines"?g.getAttribute(endpoint===0?"instanceColorStart":"instanceColorEnd"):g.getAttribute("color");
+      const i=render==="lines"?(endpoint===0?0:31):endpoint*8;
+      for(const [value,want] of [[a.getX(i),expected.r],[a.getY(i),expected.g],[a.getZ(i),expected.b]])
+        assert.ok(Math.abs(value-want)<1e-7);
+    }
+    ctx.disposeFieldLineGroupResources(group);
+  }
+  // Starting-footpoint mode deliberately stays positive at the negative return.
+  ctx.params.lineColourMode="polarity";
+  assert.equal(ctx.getFieldLineVertexColor(1,1,0,2,radial.at(-1)).getHexString(),"ee8811");
+});
+
+test("both polarity colours invalidate cached geometry and round-trip with validation", () => {
+  const ctx=viewer();ctx.params.lineColourMode="radial-polarity";
+  const original=ctx.getFieldLineObjectCacheKey();
+  assert.equal(ctx.applySnapshotParam("linePositiveColor","#123456"),true);
+  const positive=ctx.getFieldLineObjectCacheKey();assert.notEqual(original,positive);
+  assert.equal(ctx.applySnapshotParam("lineNegativeColor","#ABCDEF"),true);
+  assert.notEqual(positive,ctx.getFieldLineObjectCacheKey());
+  const saved=ctx.decodeViewState(ctx.encodeViewState(ctx.collectViewState()));
+  ctx.params.linePositiveColor="#ffffff";ctx.params.lineNegativeColor="#000000";
+  ctx.applyViewStateParams(saved);
+  assert.equal(ctx.params.linePositiveColor,"#123456");assert.equal(ctx.params.lineNegativeColor,"#ABCDEF");
+  for(const invalid of [null,23,"red","#12","#abcdef00","url(x)","#GG0000"])
+    for(const key of ["linePositiveColor","lineNegativeColor"])assert.equal(ctx.applySnapshotParam(key,invalid),false);
+  assert.equal(ctx.applySnapshotParam("lineColourMode","invalid"),false);
+  assert.equal(ctx.params.linePositiveColor,"#123456");
+});
+
+test("custom polarity colours match DOM and export legends in both modes", () => {
+  const ctx=viewer();Object.assign(ctx.params,{legendVisible:true,legendCollapsed:false,showFieldLines:true,
+    linePositiveColor:"#33aa77",lineNegativeColor:"#cc2288"});
+  const elements=Object.fromEntries(["line-positive-label","line-negative-label","line-polarity-note"].map(k=>[k,{}]));
+  const swatches={".yellow":{style:{}},".blue":{style:{}}};
+  ctx.lineLegendEl={style:{},querySelector:key=>swatches[key]};ctx.document={getElementById:key=>elements[key]};
+  ctx.getVisibleColourbarSlots=()=>[];ctx.drawRoundedRectPath=()=>{};ctx.window.innerWidth=1000;
+  vm.runInContext(definition("setLineLegendMode")+"\n"+definition("drawExportColourbars"),ctx);
+  for(const mode of ["polarity","radial-polarity"]) {
+    ctx.params.lineColourMode=mode;ctx.setLineLegendMode(mode);
+    assert.equal(swatches[".yellow"].style.background,"#33aa77");assert.equal(swatches[".blue"].style.background,"#cc2288");
+    const exported=[];
+    const canvas={save(){},restore(){},fill(){},stroke(){},fillText(){},fillRect(){exported.push(this.fillStyle)}};
+    ctx.drawExportColourbars(canvas,1000,700);assert.deepEqual(exported,["#33aa77","#cc2288"]);
+  }
 });
