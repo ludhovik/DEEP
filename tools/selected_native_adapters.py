@@ -51,16 +51,16 @@ def selected_leeds(c):
         elif geometry['has_conducting_inner_core'] and not any(np.max(np.abs(raw[k][:start]))>args.magnetic_tol for k in ('Br','Bt','Bp') if k in raw):
             if args.geometry=='conducting-inner-core':raise ValueError('No resolved inner-core magnetic field.')
             geometry.update(has_conducting_inner_core=False,physical_geometry='spherical_shell')
-    for name in ('C','Comp'):
-        if not selection.needs(name):continue
-        if c[name] is None:continue
-        print(f'Transforming required {name}...',flush=True)
+    for source_name, output_name in (('C','T'),('Comp','C')):
+        if not selection.needs(output_name):continue
+        if c[source_name] is None:continue
+        print(f'Transforming required {source_name} as {output_name}...',flush=True)
         if regular:
-            stored,offset,_=leeds.fullsphere_storage_info(representations[name],name)
-            values=c['SH_to_spat_fullsphere'](c[name],r,lmax,mmax,power_offset=offset,regular_coefficients=stored)
-        else:values=c['SH_to_spat'](c[name],lmax,mmax)
+            stored,offset,_=leeds.fullsphere_storage_info(representations[source_name],source_name)
+            values=c['SH_to_spat_fullsphere'](c[source_name],r,lmax,mmax,power_offset=offset,regular_coefficients=stored)
+        else:values=c['SH_to_spat'](c[source_name],lmax,mmax)
         theta,phi=values[-2:];a=leeds.as_r_theta_phi(values[0],len(r),len(theta),len(phi))
-        raw[name]=leeds.regularize_scalar_center(a,c['center_mask'],name) if regular else a
+        raw[output_name]=leeds.regularize_scalar_center(a,c['center_mask'],source_name) if regular else a
     if theta is None:raise ValueError('None of the selected output dependencies are available in this Leeds state.')
     raw={k:v for k,v in raw.items() if selection.needs(k)}
     fluid=r[start:];master=r.copy();radii={}
@@ -99,7 +99,7 @@ def selected_xshells(c):
     except ImportError:
         from tools.convert_magic_to_viewer import convert_adapted_snapshot
     args=c['args'];selection=OutputSelection(args);raw={};radii={}
-    mapping={'velocity':('ur','ut','up'),'magnetic':('Br','Bt','Bp'),'temperature':('C',),'composition':('Comp',)}
+    mapping={'velocity':('ur','ut','up'),'magnetic':('Br','Bt','Bp'),'temperature':('T',),'composition':('C',)}
     for source,names in mapping.items():
         if source not in c['loaded'] or not selection.needs(names[0]):continue
         field=c['loaded'][source];rr=c['radial_grids'][source]

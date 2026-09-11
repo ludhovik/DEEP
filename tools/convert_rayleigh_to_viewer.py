@@ -52,7 +52,7 @@ def build_arg_parser():
     p.add_argument('--composition-quantity',type=int,help='Spherical_3D composition quantity code; never guessed.')
     p.add_argument('--composition-field',help='Checkpoint scalar filename, e.g. Xa001; never guessed.')
     p.add_argument('--constant-density',type=float,help='Explicit checkpoint reference density when equation_coefficients is absent.')
-    p.add_argument('--n2-convention',choices=['none','deepscope'],default='none',help='Default omits N2; deepscope explicitly selects r*Ek^2*(RaT/Pr*C_r+RaC/Sc*Comp_r).')
+    p.add_argument('--n2-convention',choices=['none','deepscope'],default='none',help='Default omits N2; deepscope explicitly selects r*Ek^2*(RaT/Pr*T_r+RaC/Sc*C_r).')
     p.add_argument('--modules-dir',help='CLI compatibility; no external modules.py or Rayleigh Python installation is needed.')
     return add_viewer_arguments(p,'public/data_rayleigh')
 
@@ -112,13 +112,13 @@ def input_control(path,args):
 
 def field_paths(path,args):
     if path.name=='grid_etc':
-        names={'ur':'W','utor':'Z','Br':'C','Btor':'A','C':'T','P':'P'}
-        if args.composition_field:names['Comp']=args.composition_field
+        names={'ur':'W','utor':'Z','Br':'C','Btor':'A','T':'T','P':'P'}
+        if args.composition_field:names['C']=args.composition_field
         result={k:path.parent/v for k,v in names.items() if (path.parent/v).is_file()}
-        if args.composition_field and 'Comp' not in result:raise FileNotFoundError(path.parent/args.composition_field)
+        if args.composition_field and 'C' not in result:raise FileNotFoundError(path.parent/args.composition_field)
     else:
-        prefix=path.name.split('_')[0];mapping=dict(QUANTITIES,C=args.thermal_quantity)
-        if args.composition_quantity is not None:mapping['Comp']=args.composition_quantity
+        prefix=path.name.split('_')[0];mapping=dict(QUANTITIES,T=args.thermal_quantity)
+        if args.composition_quantity is not None:mapping['C']=args.composition_quantity
         files={}
         for f in path.parent.glob(prefix+'_*'):
             code=f.name[len(prefix)+1:]
@@ -126,7 +126,7 @@ def field_paths(path,args):
                 if int(code) in files:raise ValueError(f'Duplicate quantity code {code}.')
                 files[int(code)]=f
         result={k:files[q] for k,q in mapping.items() if q in files}
-        if args.composition_quantity is not None and 'Comp' not in result:raise ValueError('Requested composition quantity is missing.')
+        if args.composition_quantity is not None and 'C' not in result:raise ValueError('Requested composition quantity is missing.')
     groups=[('ur','utor'),('Br','Btor')] if path.name=='grid_etc' else [('ur','ut','up'),('Br','Bt','Bp')]
     for group in groups:
         if any(k in result for k in group) and not all(k in result for k in group):raise ValueError(f'Incomplete vector: need all {group}.')
@@ -170,7 +170,7 @@ def convert_state(path,outdir,args):
             elif ref.is_file():density=read_reference(ref,r)
             else:raise ValueError('Velocity potentials describe mass flux: supply equation_coefficients or an explicit --constant-density.')
         def read(key):return read_coefficients(files[key],len(r),lmax,grid['endian'])
-        for key,components,tor in [('ur',('ur','ut','up'),'utor'),('Br',('Br','Bt','Bp'),'Btor'),('C',None,None),('Comp',None,None),('P',None,None)]:
+        for key,components,tor in [('ur',('ur','ut','up'),'utor'),('Br',('Br','Bt','Bp'),'Btor'),('T',None,None),('C',None,None),('P',None,None)]:
             if key not in files:continue
             print(f'Synthesizing Rayleigh {key}, l <= {leff}...',flush=True)
             values=synthesize_checkpoint(read(key),r,lmax,leff,theta,phi,read(tor) if tor else None,density if key=='ur' else None)
@@ -190,9 +190,9 @@ def convert_state(path,outdir,args):
                 prmag=native.get('magnetic_prandtl_number',math.nan),sc=native.get('schmidt_number',math.nan),ra=native.get('rayleigh_number',math.nan),raxi=native.get('compositional_rayleigh_number',math.nan),radratio=r[0]/r[-1])
     params=resolve_graph_parameters(args,{**native,**params},str(control or path))
     factors={}
-    if args.n2_convention=='deepscope' and (selection.wants('N2') or selection.wants('N2_full')):
+    if args.n2_convention=='deepscope' and (selection.wants('N2') or selection.wants('N2_nom0')):
         ek=args.Ek if args.Ek is not None else params['ek']
-        for field,ra,pr in [('C',args.RaT if args.RaT is not None else params['ra'],args.Pr if args.Pr is not None else params['pr']),('Comp',params['raxi'],params['sc'])]:
+        for field,ra,pr in [('T',args.RaT if args.RaT is not None else params['ra'],args.Pr if args.Pr is not None else params['pr']),('C',params['raxi'],params['sc'])]:
             if field in fields:
                 if any(v is None or not math.isfinite(v) for v in (ek,ra,pr)) or pr<=0:raise ValueError(f'N2 for {field} needs finite Ek, Rayleigh and positive Pr/Sc.')
                 factors[field]=r*ek**2*ra/pr

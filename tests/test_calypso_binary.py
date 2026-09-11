@@ -130,7 +130,7 @@ class CalypsoBinaryTests(unittest.TestCase):
         th=np.asarray(coords["theta"])[None,:,None]
         ph=np.asarray(coords["phi"])[None,None,:]
         expected=1-r*r+.1*r*np.sin(th)*np.cos(ph)
-        np.testing.assert_allclose(field("C"),expected,rtol=1e-6,atol=1e-7)
+        np.testing.assert_allclose(field("T"),expected,rtol=1e-6,atol=1e-7)
         np.testing.assert_allclose(field("Babs"),np.sqrt(1.2),rtol=1e-6)
         np.testing.assert_allclose(field("Uabs")[0],0,atol=1e-7)
         before=(out/"Br_volume.f32").read_bytes()

@@ -172,10 +172,10 @@ def physical_parameters(records, args, radius, r_icb=None):
     composition = coefficient("coef_4_composit_buoyancy_ctl")
     factors = {}
     if cv is not None and cv > 0 and cor is not None and cor != 0:
-        for field, coef in (("C", thermal), ("Comp", composition)):
+        for field, coef in (("T", thermal), ("C", composition)):
             if coef is not None:
                 factors[field] = radius * (4 * cv * coef / cor**2)
-    for field, cli, denominator in (("C", "RaT", "pr"), ("Comp", "RaC", "sc")):
+    for field, cli, denominator in (("T", "RaT", "pr"), ("C", "RaC", "sc")):
         if getattr(args, cli) is not None or (field not in factors and params["_parameter_sources"].get(cli) == "prompt"):
             ek, denom = params["ek"], params[denominator]
             if ek is None or denom is None or denom <= 0:
@@ -184,7 +184,7 @@ def physical_parameters(records, args, radius, r_icb=None):
     info = {"native_dimensionless_numbers": dim,
             "momentum_coefficients": {"time": cv, "coriolis": cor, "thermal_buoyancy": thermal,
                                       "compositional_buoyancy": composition},
-            "N2_definition": "N2/Omega^2 = r * (c_T*dT/dr + c_C*dComp/dr) / (c_v*(c_Omega/(2*c_v))^2)",
+            "N2_definition": "N2/Omega^2 = r * (c_T*dT/dr + c_C*dC/dr) / (c_v*(c_Omega/(2*c_v))^2)",
             "N2_cli_override": [name for name in ("RaT", "RaC") if getattr(args, name) is not None],
             "N2_available_scalars": list(factors)}
     return params, factors, info
@@ -223,7 +223,7 @@ def convert_state(path, outdir, args, records, grid, control_files):
     fields = {}
     for native, names in (("velocity", ("ur", "ut", "up")),
                            ("magnetic_field", ("Br", "Bt", "Bp")),
-                           ("temperature", ("C",)), ("composition", ("Comp",)), ("pressure", ("P",))):
+                           ("temperature", ("T",)), ("composition", ("C",)), ("pressure", ("P",))):
         if native not in spectra or not any(selection.needs(name) for name in names):
             continue
         vector = len(names) == 3

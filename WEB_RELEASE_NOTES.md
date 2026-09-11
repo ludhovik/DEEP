@@ -1,5 +1,15 @@
 # v0.4.0 — static hosted/local-data viewer
 
+## Canonical scalar field names (2026-09-11)
+
+- Use `T` for temperature/codensity and `C` for composition in all converted
+  datasets. Unsuffixed diagnostics are full fields; `_nom0` removes the
+  axisymmetric component.
+- Translate legacy saved-view selections by scientific meaning when they are
+  applied to a new naming-version-2 dataset.
+- Incremental reconversion replaces legacy managed `.f32` names with exact
+  metadata-matching filenames while retaining the dataset's `view.DTV2`.
+
 ## Linked meridian halves and reversible two-plane clipping (2026-09-11)
 
 - Link both halves of each meridional slice by default, sharing the field,
@@ -19,9 +29,9 @@
   shared. New DTV2 codes retain every setting; older codes mirror their former
   whole-plane settings to both halves.
 - All six converters now export cylindrical-radial and axial gradients of
-  thermal/codensity `C` and composition `Comp`: `grad_s*` and `grad_z*`, with
-  both full and `m=0`-removed forms. Explicit `--output` selection supports the
-  same names.
+  thermal/codensity `T` and composition `C`: `grad_s*` and `grad_z*`. The
+  unsuffixed names are full fields and `_nom0` removes `m=0`. Explicit
+  `--output` selection supports the same names.
 - Existing datasets remain loadable. Reconversion is required only to add the
   new gradient volumes. No Cloudflare Worker change is needed.
 

@@ -207,8 +207,8 @@ class ConverterPackageTests(unittest.TestCase):
         required = {
             "ur", "ut", "up", "us", "uz", "Uabs", "helicity",
             "Br", "Bt", "Bp", "Babs",
-            "C", "Comp", "Cnom0", "Compnom0",
-            "N2", "N2_full",
+            "T", "C", "T_nom0", "C_nom0",
+            "N2", "N2_nom0",
             "EMFr", "EMFt", "EMFp", "EMFabs",
             "EMFr_fluct", "EMFt_fluct", "EMFp_fluct",
             "Ir", "It", "Ip", "Iz", "Iabs",
@@ -424,13 +424,10 @@ class ConverterPackageTests(unittest.TestCase):
                 metadata = self.magic.convert_graph(pathlib.Path("G_1.test"), output, args)
             expected_size = metadata["nr"] * metadata["ntheta"] * metadata["nphi"] * 4
             self.assertEqual(metadata["viewer_field_contract"], "dynamo-three-viewer-v2-common")
-            self.assertIn("Comp", metadata["fields"])
-            for alias, canonical in (("C_nom0", "Cnom0"), ("Comp_nom0", "Compnom0")):
-                self.assertIn(canonical, metadata["fields"])
-                self.assertNotIn(alias, metadata["fields"])
-                self.assertNotIn(alias, metadata["ranges"])
-                self.assertNotIn(alias, metadata["field_domains"])
-                self.assertFalse((output / f"{alias}_volume.f32").exists())
+            self.assertIn("T", metadata["fields"])
+            self.assertIn("C", metadata["fields"])
+            for canonical in ("T_nom0", "C_nom0"):
+                self.assertNotIn(canonical, metadata["fields"])
             for filename in metadata["fields"].values():
                 self.assertEqual((output / filename).stat().st_size, expected_size)
 
@@ -534,7 +531,7 @@ class ConverterPackageTests(unittest.TestCase):
             import json
             coordinates = json.loads((cut[0]/"coordinates.json").read_text())
             expected = 3 + np.asarray(coordinates["r"])[:,None,None]*np.cos(coordinates["theta"])[None,:,None]
-            values = np.fromfile(cut[0]/cut[1]["fields"]["C"], dtype="<f4").reshape(cut[1]["nr"],cut[1]["ntheta"],cut[1]["nphi"])
+            values = np.fromfile(cut[0]/cut[1]["fields"]["T"], dtype="<f4").reshape(cut[1]["nr"],cut[1]["ntheta"],cut[1]["nphi"])
             np.testing.assert_allclose(values, np.broadcast_to(expected,values.shape), atol=3e-7)
 
     def test_magic_downsampled_bundle_passes_publication_validation(self):

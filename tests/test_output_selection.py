@@ -46,6 +46,21 @@ class SelectionTests(unittest.TestCase):
         th=theta[None,:,None]
         np.testing.assert_allclose(gs,np.broadcast_to(2*np.sin(th)+3*np.cos(th),gr.shape),atol=1e-14)
         np.testing.assert_allclose(gz,np.broadcast_to(2*np.cos(th)-3*np.sin(th),gr.shape),atol=1e-14)
+
+    def test_removing_m0_before_or_after_gradient_is_equivalent(self):
+        r=np.linspace(.35,1.,8);theta=np.linspace(.15,np.pi-.15,10)
+        phi=np.linspace(0,2*np.pi,16,endpoint=False)
+        rr=r[:,None,None];th=theta[None,:,None];ph=phi[None,None,:]
+        scalar=rr**2*np.cos(th)+rr*np.sin(th)*np.cos(2*ph)
+        full=magic.gradient_scalar_3d(scalar,r,theta,phi)
+        before=magic.gradient_scalar_3d(magic.remove_m0_phi(scalar),r,theta,phi)
+        after=tuple(magic.remove_m0_phi(component) for component in full)
+        for lhs,rhs in zip(before,after):
+            np.testing.assert_allclose(lhs,rhs,rtol=2e-13,atol=2e-13)
+        before_sz=cylindrical_gradient(before[0],before[1],theta)
+        after_sz=tuple(magic.remove_m0_phi(component) for component in cylindrical_gradient(full[0],full[1],theta))
+        for lhs,rhs in zip(before_sz,after_sz):
+            np.testing.assert_allclose(lhs,rhs,rtol=2e-13,atol=2e-13)
     def magic_run(self,out,outputs=None,extra=()):
         g=fixtures.ConverterPackageTests.fake_magic_graph();source=self.root/'G_1.test';source.write_text('fixture')
         args=magic.build_arg_parser().parse_args(['--graph',str(source),'--out',str(out),'--skip-field-lines','--no-earth-br','--no-parameter-prompt',
@@ -97,7 +112,7 @@ class SelectionTests(unittest.TestCase):
              mock.patch.object(leeds,'read_state_radial_representations',return_value=reps), \
              mock.patch.object(leeds,'read_netcdf_attributes',return_value={}):
             leeds.run_leeds_conversion(args)
-            args.out=str(self.root/'selected');args.output=['ur','Br','C','vort_r','grad_rC_full']
+            args.out=str(self.root/'selected');args.output=['ur','Br','T','vort_r','grad_rT']
             leeds.run_leeds_conversion(args)
         self.compare(self.root/'full',self.root/'selected',args.output)
         meta=self.meta(self.root/'selected');self.assertTrue(meta['full_sphere']);self.assertEqual(meta['r_inner'],0.)
@@ -130,27 +145,27 @@ class SelectionTests(unittest.TestCase):
             mod=importlib.import_module(module);full=self.root/f'full{index}';out=self.root/f'out{index}'
             common=[*source,'--skip-field-lines','--no-earth-br','--no-parameter-prompt']
             with contextlib.redirect_stdout(io.StringIO()):mod.main([*common,'--out',str(full)])
-            self.assertTrue({'grad_sC','grad_zC','grad_sC_full','grad_zC_full'} <= set(self.meta(full)['fields']))
-            names=['ur','Br','C','vort_r']
+            self.assertTrue({'grad_sT','grad_zT','grad_sT_nom0','grad_zT_nom0'} <= set(self.meta(full)['fields']))
+            names=['ur','Br','T','vort_r']
             with contextlib.redirect_stdout(io.StringIO()):mod.main([*common,'--out',str(out),'--output',*names])
             self.compare(full,out,names)
-            with contextlib.redirect_stdout(io.StringIO()) as log:mod.main([*common,'--out',str(out),'--output','C'])
-            self.compare(full,out,['C'])
+            with contextlib.redirect_stdout(io.StringIO()) as log:mod.main([*common,'--out',str(out),'--output','T'])
+            self.compare(full,out,['T'])
             text=log.getvalue()
             self.assertNotIn('Synthesizing velocity',text);self.assertNotIn('Synthesizing magnetic',text)
             self.assertNotIn('Synthesizing ur',text);self.assertNotIn('Synthesizing Br',text)
             self.assertNotIn('Synthesizing Rayleigh ur',text);self.assertNotIn('Synthesizing Rayleigh Br',text)
-            gradient_names=['grad_sC_full','grad_zC']
-            if 'Comp' in self.meta(full)['fields']:gradient_names += ['grad_sComp','grad_zComp_full']
+            gradient_names=['grad_sT','grad_zT_nom0']
+            if 'C' in self.meta(full)['fields']:gradient_names += ['grad_sC_nom0','grad_zC']
             with contextlib.redirect_stdout(io.StringIO()):
                 mod.main([*common,'--out',str(out),'--output',*gradient_names])
             self.compare(full,out,gradient_names)
     def test_direct_selection_does_not_call_any_diagnostic(self):
-        args=magic.build_arg_parser().parse_args(['--output','C'])
-        raw={'C':np.ones((3,4,6))};r=np.arange(3)+1
+        args=magic.build_arg_parser().parse_args(['--output','T'])
+        raw={'T':np.ones((3,4,6))};r=np.arange(3)+1
         ops={k:mock.Mock(side_effect=AssertionError(k)) for k in ('gradient','curl','emf','helicity','mean','nom0','remap')}
-        fields=selected_native_fields(OutputSelection(args),raw,{'C':r},np.arange(4),np.arange(6),{},args,operations=ops)
-        self.assertEqual(set(fields),{'C'})
+        fields=selected_native_fields(OutputSelection(args),raw,{'T':r},np.arange(4),np.arange(6),{},args,operations=ops)
+        self.assertEqual(set(fields),{'T'})
         for fn in ops.values():fn.assert_not_called()
 
 if __name__=='__main__':unittest.main()

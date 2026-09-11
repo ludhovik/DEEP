@@ -66,13 +66,13 @@ Keep the accompanying files together:
 | --- | --- | --- |
 | `W`, `Z` | Velocity mass-flux poloidal/toroidal potentials | `ur`, `ut`, `up` and derived fields |
 | `C`, `A` | Magnetic poloidal/toroidal potentials | `Br`, `Bt`, `Bp` and derived fields |
-| `T` | Stored thermal scalar | `C` |
+| `T` | Stored thermal scalar | `T` |
 | `P` | Stored pressure | `P` |
-| Explicit `--composition-field Xa001` (or another scalar filename) | Selected composition scalar | `Comp` |
+| Explicit `--composition-field Xa001` (or another scalar filename) | Selected composition scalar | `C` |
 | `equation_coefficients` | Reference functions, including density | Used to reconstruct velocity |
 | `main_input` | Model parameters and angular resolution | Metadata and model checks |
 
-Native magnetic potential `C` is **not** the viewer's thermal scalar `C`.
+Native magnetic potential `C` is **not** the viewer's composition scalar `C`.
 Only the selected composition scalar is converted; names are not guessed.
 `--main-input FILE` overrides the automatically discovered control file.
 
@@ -115,9 +115,9 @@ Fortran `(phi, theta, r)` order. Both byte orders are supported.
 | --- | --- |
 | 1, 2, 3 | `ur`, `ut`, `up` |
 | 801, 802, 803 | `Br`, `Bt`, `Bp` |
-| 501 | Thermal `C` (override with `--thermal-quantity`) |
+| 501 | Thermal `T` (override with `--thermal-quantity`) |
 | 502 | Pressure `P` |
-| Explicit `--composition-quantity CODE` | Composition `Comp` |
+| Explicit `--composition-quantity CODE` | Composition `C` |
 
 Request the needed quantities using Rayleigh's `full3d_values` and an appropriate
 `full3d_frequency`. Check the quantity lookup for your Rayleigh version/model.
@@ -216,7 +216,7 @@ background thermal/compositional profiles are not added. Helicity is
 `curl(u × B)`; it is not the complete magnetic time derivative including diffusion.
 
 N2 is **off by default**. `--n2-convention deepscope` explicitly selects the
-existing `r Ek² [(RaT/Pr) ∂r C + (RaC/Sc) ∂r Comp]` convention and requires finite
+existing `r Ek² [(RaT/Pr) ∂r T + (RaC/Sc) ∂r C]` convention and requires finite
 parameters for the available scalars. This is not a universal Rayleigh N2 formula:
 anelastic gravity, entropy units and reference profiles may require another
 normalization. Omit it unless that convention matches your model.

@@ -91,12 +91,12 @@ When their source quantities exist, the MagIC converter writes:
 
 - velocity: `ur`, `ut`, `up`, `us`, `uz`, `Uabs`, and kinetic `helicity`;
 - magnetic field: `Br`, `Bt`, `Bp`, and `Babs`;
-- entropy/temperature: `C` plus the backward-compatible `T` alias;
-- composition: `Comp` from MagIC `xi`;
+- entropy/temperature or codensity: `T`;
+- composition: `C` from MagIC `xi`;
 - MagIC-only quantities: `P` (pressure) and `Phase`;
 - azimuthal averages and `m=0`-removed variants;
 - full and `m=0`-removed scalar gradients;
-- `N2_full` and `N2` when the required control parameters and scalar fields
+- `N2` and `N2_nom0` when the required control parameters and scalar fields
   exist;
 - optional motional EMF and induction through `--emf` and `--induction`;
 - CMB and Earth-surface radial magnetic maps;
@@ -119,7 +119,7 @@ segments together when changing stride. Regenerate older bundles to add them.
 Fields absent from a MagIC run are skipped; the converter does not invent a
 magnetic, compositional, pressure, or phase field.
 
-From converter version 3.3, `Cnol0` and `Compnol0` are deliberately omitted;
+Legacy `Cnol0` and `Compnol0` spellings are deliberately omitted;
 the azimuthal (`m=0`) mean and fluctuation fields remain available. Exterior
 `Btheta` and `Bphi` are evaluated with analytic spherical-harmonic derivatives,
 including the finite `m=1` pole limits, rather than finite differences of the

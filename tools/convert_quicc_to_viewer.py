@@ -114,7 +114,7 @@ def convert_state(path, outdir, args):
                 method='native spectral truncation before Worland/vector harmonic synthesis')
     pairs = modes(data['lmax'], data['mmax'], data['minc'], data['scheme'][-1])
     fields = {}
-    for name, components in [('ur',('ur','ut','up')), ('Br',('Br','Bt','Bp')), ('C',None), ('Comp',None)]:
+    for name, components in [('ur',('ur','ut','up')), ('Br',('Br','Bt','Bp')), ('T',None), ('C',None)]:
         if name not in data['fields'] or not selection.needs(name): continue
         print(f'Synthesizing {name}, l <= {leff}...', flush=True)
         coef = data['fields'][name]
@@ -135,9 +135,9 @@ def convert_state(path, outdir, args):
     if args.n2_convention == 'quicc-rotating' and interval is not None and not math.isclose(interval[1]-interval[0],1.,rel_tol=1e-10,abs_tol=1e-12):
         raise ValueError('--n2-convention quicc-rotating for shells assumes the standard unit-gap dynamo model; select none for other nondimensionalizations.')
     factors = {}
-    if args.n2_convention != 'none' and (selection.wants('N2') or selection.wants('N2_full')):
+    if args.n2_convention != 'none' and (selection.wants('N2') or selection.wants('N2_nom0')):
         ek = args.Ek if args.Ek is not None else params['ek']
-        for field, ra_key, pr_key, ra_arg, pr_arg in [('C','ra','pr','RaT','Pr'), ('Comp','raxi','sc','RaC','Sc')]:
+        for field, ra_key, pr_key, ra_arg, pr_arg in [('T','ra','pr','RaT','Pr'), ('C','raxi','sc','RaC','Sc')]:
             ra = getattr(args,ra_arg) if getattr(args,ra_arg) is not None else params[ra_key]
             pr = getattr(args,pr_arg) if getattr(args,pr_arg) is not None else params[pr_key]
             shell_rotating = args.n2_convention == 'quicc-rotating' and interval is not None
@@ -147,7 +147,7 @@ def convert_state(path, outdir, args):
                     factors[field] = (radius/radius[-1]) * ek * ra
                 else:
                     factors[field] = radius * ek**(2 if args.n2_convention == 'deepscope' else 1) * ra/pr
-    elif not args.no_gradients and any(k in fields for k in ('C','Comp')):
+    elif not args.no_gradients and any(k in fields for k in ('T','C')):
         print('N2 omitted: select --n2-convention to match the source nondimensional equations.', flush=True)
     adapted = dict(n2_factors=factors, r_shell=radius, r_master=radius, r_fluid_inner=ri, theta=theta, phi=phi,
         fields=fields, minc=data['minc'], has_conducting_inner_core=False, magnetic_extends_inner_core=False,

@@ -11,12 +11,22 @@
 - All 147 viewer/geometry tests pass and the production Vite build succeeds
   with only its existing bundle-size advisory.
 
+## Canonical scalar names (2026-09-11)
+
+- All converters use `T` for temperature/codensity and `C` for composition.
+  Unsuffixed scalar diagnostics include `m=0`; `_nom0` removes it.
+- Bundle validation requires every field `name` to map to the matching
+  `name_volume.f32`. Incremental publication drops obsolete managed volumes
+  while preserving `view.DTV2`.
+- Legacy saved-view field names are translated when applied to a version-2
+  dataset, including gradients and `N2`.
+
 ## Cylindrical gradients and split meridians (2026-09-11)
 
 - The scalar-gradient projection is tested directly against the spherical-to-
   cylindrical basis transformation. Default and explicit selected exports are
-  compared for `grad_sC`, `grad_zC`, `grad_sComp`, `grad_zComp` and their full
-  variants through native-format converter fixtures.
+  compared for the full `grad_sT`/`grad_zT` and `grad_sC`/`grad_zC` fields and
+  their `_nom0` variants through native-format converter fixtures.
 - The converter suite runs 179 tests successfully; six optional external-data
   checks skip. All 145 viewer/geometry tests pass. The production Vite build
   succeeds with only its existing bundle-size advisory.

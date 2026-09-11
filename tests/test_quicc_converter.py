@@ -100,7 +100,7 @@ class MathTests(unittest.TestCase):
                     np.testing.assert_allclose(u[0],0,atol=1e-14)
                     np.testing.assert_allclose(u[1],0,atol=1e-14)
                     np.testing.assert_allclose(u[2],np.broadcast_to(r[:,None,None]*st,u[2].shape),atol=1e-14)
-                    c=synthesize_field(state['fields']['C'],pairs,r,th,ph,3,norm)
+                    c=synthesize_field(state['fields']['T'],pairs,r,th,ph,3,norm)
                     np.testing.assert_allclose(c,np.broadcast_to(1+r[:,None,None]**2,c.shape),atol=2e-14)
 
     def test_radial_derivatives(self):
@@ -140,8 +140,8 @@ class IOTests(unittest.TestCase):
         out=self.root/'bundle';validate_bundle(out)
         m=json.loads((out/'metadata.json').read_text())
         self.assertTrue(m['full_sphere']);self.assertEqual(m['r_inner'],0.)
-        self.assertTrue({'Br','Bt','Bp','ur','ut','up','C','Comp','EMFr','Ir','helicity','grad_rC'} <= set(m['fields']))
-        self.assertNotIn('C_nom0',m['fields'])
+        self.assertTrue({'Br','Bt','Bp','ur','ut','up','T','C','EMFr','Ir','helicity','grad_rT'} <= set(m['fields']))
+        self.assertIn('C_nom0',m['fields'])
         saved={p.name:p.read_bytes() for p in out.glob('*.f32')}
         log=self.convert('--emf','--induction','--cmb-br-ltrunc','3')
         self.assertIn('skipped',log)
@@ -157,16 +157,16 @@ class IOTests(unittest.TestCase):
     def test_n2_scaling_requires_explicit_convention(self):
         self.convert()
         m=json.loads((self.root/'bundle/metadata.json').read_text())
-        self.assertNotIn('N2_full',m['fields'])
+        self.assertNotIn('N2',m['fields'])
         self.convert('--n2-convention','quicc-rotating','--RaC','0')
         m=json.loads((self.root/'bundle/metadata.json').read_text())
         shape=(m['nr'],m['ntheta'],m['nphi'])
-        value=np.fromfile(self.root/'bundle/N2_full_volume.f32',dtype='<f4').reshape(shape)
+        value=np.fromfile(self.root/'bundle/N2_volume.f32',dtype='<f4').reshape(shape)
         # C=1+r^2, E=.001, Ra=100, Pr=1 gives N2=0.2 r^2.
         r=np.asarray(json.loads((self.root/'bundle/coordinates.json').read_text())['r'])
         np.testing.assert_allclose(value,np.broadcast_to(.2*r[:,None,None]**2,shape),rtol=2e-5,atol=1e-6)
         self.convert('--n2-convention','deepscope','--Ek','.01','--RaC','0')
-        changed=np.fromfile(self.root/'bundle/N2_full_volume.f32',dtype='<f4').reshape(shape)
+        changed=np.fromfile(self.root/'bundle/N2_volume.f32',dtype='<f4').reshape(shape)
         np.testing.assert_allclose(changed,value*.1,rtol=2e-5,atol=1e-6)
 
     def test_invalid_input_does_not_replace_bundle(self):

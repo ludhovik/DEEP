@@ -841,14 +841,10 @@ def convert_xshells(args: argparse.Namespace) -> None:
                 {"path": paths["temperature"], "transform": transform_signature}, calculation_identity(type(temperature).spat_full)), dtype=np.float64)
         rt = radial_grids["temperature"]
         T = sanitise_synthesised_field(T, rt, "temperature")
-        scalar_native["C"] = (T, rt, "temperature")
-        register("C", T, rt, "temperature")
-        register("T", T, rt, "temperature")  # backward-compatible XSHELLS alias
-        Cnom0 = remove_m0_phi(T)
-        register("Cnom0", Cnom0, rt, "temperature")
-        register("C_phiavg", phi_average_volume(T), rt, "temperature")
+        scalar_native["T"] = (T, rt, "temperature")
+        register("T", T, rt, "temperature")
         if not args.no_m0_fields:
-            register("T_nom0", Cnom0, rt, "temperature")
+            register("T_nom0", remove_m0_phi(T), rt, "temperature")
             register("T_phiavg", phi_average_volume(T), rt, "temperature")
 
     composition = loaded.get("composition")
@@ -861,11 +857,11 @@ def convert_xshells(args: argparse.Namespace) -> None:
                 {"path": paths["composition"], "transform": transform_signature}, calculation_identity(type(composition).spat_full)), dtype=np.float64)
         rc = radial_grids["composition"]
         Comp = sanitise_synthesised_field(Comp, rc, "composition")
-        scalar_native["Comp"] = (Comp, rc, "composition")
-        register("Comp", Comp, rc, "composition")
-        Compnom0 = remove_m0_phi(Comp)
-        register("Compnom0", Compnom0, rc, "composition")
-        register("Comp_phiavg", phi_average_volume(Comp), rc, "composition")
+        scalar_native["C"] = (Comp, rc, "composition")
+        register("C", Comp, rc, "composition")
+        if not args.no_m0_fields:
+            register("C_nom0", remove_m0_phi(Comp), rc, "composition")
+            register("C_phiavg", phi_average_volume(Comp), rc, "composition")
 
     gradients: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, str]] = {}
     if not args.no_gradients:
@@ -874,17 +870,17 @@ def convert_xshells(args: argparse.Namespace) -> None:
             gr, gt, gp = gradient_scalar_3d(scalar, rr, theta, phi)
             gs, gz = cylindrical_gradient(gr, gt, theta)
             gradients[name] = (gr, gt, gp, rr, source_key)
-            register(f"grad_r{name}_full", gr, rr, source_key)
-            register(f"grad_theta{name}_full", gt, rr, source_key)
-            register(f"grad_phi{name}_full", gp, rr, source_key)
-            register(f"grad_s{name}_full", gs, rr, source_key)
-            register(f"grad_z{name}_full", gz, rr, source_key)
+            register(f"grad_r{name}", gr, rr, source_key)
+            register(f"grad_theta{name}", gt, rr, source_key)
+            register(f"grad_phi{name}", gp, rr, source_key)
+            register(f"grad_s{name}", gs, rr, source_key)
+            register(f"grad_z{name}", gz, rr, source_key)
             if not args.no_m0_fields:
-                register(f"grad_r{name}", remove_m0_phi(gr), rr, source_key)
-                register(f"grad_theta{name}", remove_m0_phi(gt), rr, source_key)
-                register(f"grad_phi{name}", remove_m0_phi(gp), rr, source_key)
-                register(f"grad_s{name}", remove_m0_phi(gs), rr, source_key)
-                register(f"grad_z{name}", remove_m0_phi(gz), rr, source_key)
+                register(f"grad_r{name}_nom0", remove_m0_phi(gr), rr, source_key)
+                register(f"grad_theta{name}_nom0", remove_m0_phi(gt), rr, source_key)
+                register(f"grad_phi{name}_nom0", remove_m0_phi(gp), rr, source_key)
+                register(f"grad_s{name}_nom0", remove_m0_phi(gs), rr, source_key)
+                register(f"grad_z{name}_nom0", remove_m0_phi(gz), rr, source_key)
 
     optional_diagnostics = {
         "emf_requested": bool(args.emf),
@@ -933,8 +929,8 @@ def convert_xshells(args: argparse.Namespace) -> None:
 
     Ek, Pr, Sc, RaT, RaC = (resolved_parameters[k] for k in ("Ek", "Pr", "Sc", "RaT", "RaC"))
 
-    grad_t = gradients.get("C")
-    grad_c = gradients.get("Comp")
+    grad_t = gradients.get("T")
+    grad_c = gradients.get("C")
     can_n2 = np.isfinite(Ek) and (
         (grad_t is not None and np.isfinite(Pr) and np.isfinite(RaT))
         or (grad_c is not None and np.isfinite(Sc) and np.isfinite(RaC))
@@ -953,9 +949,9 @@ def convert_xshells(args: argparse.Namespace) -> None:
         if grad_c is not None and np.isfinite(Sc) and np.isfinite(RaC):
             grc = radial_remap_to_master(grad_c[0], grad_c[3], r_n2)
             N2_full += r_n2[:, None, None].astype(np.float32) * np.float32(Ek**2 * RaC / Sc) * grc
-        register("N2_full", N2_full, r_n2, "scalar_shell")
+        register("N2", N2_full, r_n2, "scalar_shell")
         if not args.no_m0_fields:
-            register("N2", remove_m0_phi(N2_full), r_n2, "scalar_shell")
+            register("N2_nom0", remove_m0_phi(N2_full), r_n2, "scalar_shell")
         n2_native = (N2_full, r_n2)
     else:
         print("N2 not generated: provide scalar field(s) and finite Ek/Ra/Pr or Ek/RaC/Sc values.")
@@ -1320,6 +1316,7 @@ def convert_xshells(args: argparse.Namespace) -> None:
         "description": "Converted physical-space quantities from XSHELLS field files using pyxshells.",
         "source_format": "xshells",
         "converter_version": CONVERTER_PACKAGE_VERSION,
+        "scalar_naming_version": 2,
         "sampling": sampling.description(),
         "invalid_value_policy": "reject_nonfinite_and_float32_overflow",
         "viewer_field_contract": "dynamo-three-viewer-v2-common",

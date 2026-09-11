@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.8.0
+
+- Standardize viewer scalars across every converter: `T` is
+  temperature/codensity and `C` is composition.
+- Make unsuffixed derived fields the complete `m=0`-included quantity and use
+  `_nom0` exclusively for the non-axisymmetric part, including gradients and
+  `N2`.
+- Give every volume a filename identical to its metadata field name. Normal
+  incremental reconversion removes obsolete managed volumes and preserves the
+  dataset `view.DTV2`; legacy view fields migrate when opened with a new bundle.
+
 ## 3.7.2
 
 - Support Calypso full-sphere half-Chebyshev grids and their separate centre

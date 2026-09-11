@@ -12,15 +12,14 @@ Both converters can now write these field names when the corresponding input dat
 - magnetic m=0 helpers: `Br_phiavg`, `Bt_phiavg`, `Bp_phiavg`
 - optional EMF with `--emf`: `EMFr`, `EMFt`, `EMFp`, `EMFabs`, `EMFr_fluct`, `EMFt_fluct`, `EMFp_fluct`, `EMFabs_fluct`
 - optional induction with `--induction`: `Ir`, `It`, `Ip`, `Iz`, `Iabs`
-- buoyancy: `N2`, `N2_full` when scalar fields and parameters are sufficient
+- buoyancy: full `N2` and non-axisymmetric `N2_nom0` when scalar fields and parameters are sufficient
 - scalar-gradient fields unless `--no-gradients` is used
 - CMB and Earth-surface Br products when magnetic field and truncation options are enabled
 
 The scalar names differ where the simulation codes differ:
 
-- Leeds codensity is written as `C`.
-- XSHELLS temperature is written as `T`.
-- Composition is written as `Comp` in both converters.
+- Leeds codensity and XSHELLS temperature are written as `T`.
+- Composition is written as `C` in both converters.
 
 ## Optional diagnostics
 
@@ -54,4 +53,3 @@ Relevant options:
 --fluid-inner-radius RICB     # manually set the fluid ICB radius if auto-detection is ambiguous
 --inner-core-velocity-tol X   # leading-zero-flow detection tolerance
 ```
-

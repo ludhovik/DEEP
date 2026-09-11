@@ -3315,12 +3315,12 @@ def convert_state(args: argparse.Namespace) -> None:
     grad_zComp_fluct = remove_m0_phi(grad_zComp_3d)
 
     n2_available = all(np.isfinite(value) for value in (E, Pr, Sc, RaT, RaC)) and Pr > 0 and Sc > 0
-    N2_full = N2_volume = None
+    N2_full = N2_nom0 = None
     if n2_available:
         N2_full = r[:, None, None] * E**2 * (
             grad_rComp_3d * RaC / Sc + grad_rC_3d * RaT / Pr
         )
-        N2_volume = remove_m0_phi(N2_full)
+        N2_nom0 = remove_m0_phi(N2_full)
     else:
         print("N2 omitted: finite Ek/RaT/RaC and positive Pr/Sc are required.", flush=True)
 
@@ -3342,7 +3342,7 @@ def convert_state(args: argparse.Namespace) -> None:
 
     # Keep simple 1-D profiles for reference.
     N2_profile = np.mean(N2_full, axis=(1, 2)) if n2_available else None
-    N2_fluct_rms = np.sqrt(np.mean(N2_volume * N2_volume, axis=(1, 2))) if n2_available else None
+    N2_nom0_rms = np.sqrt(np.mean(N2_nom0 * N2_nom0, axis=(1, 2))) if n2_available else None
     grad_rC_mean_r = np.mean(grad_rC_3d, axis=(1, 2))
     grad_rComp_mean_r = np.mean(grad_rComp_3d, axis=(1, 2))
 
@@ -3364,19 +3364,19 @@ def convert_state(args: argparse.Namespace) -> None:
         "ut_nom0": remove_m0_phi(Ut),
         "up_nom0": remove_m0_phi(Up),
         "helicity": helicity,
-        "C": Cspat,
-        "Comp": Compspat,
-        "Cnom0": Cspatnom0,
-        "Compnom0": Compspatnom0,
-        "C_phiavg": phi_average_volume(Cspat, "C"),
-        "Comp_phiavg": phi_average_volume(Compspat, "Comp"),
-        "N2": N2_volume,
-        "N2_full": N2_full,
+        "T": Cspat,
+        "C": Compspat,
+        "T_nom0": Cspatnom0,
+        "C_nom0": Compspatnom0,
+        "T_phiavg": phi_average_volume(Cspat, "T"),
+        "C_phiavg": phi_average_volume(Compspat, "C"),
+        "N2": N2_full,
+        "N2_nom0": N2_nom0,
     }
 
     if not n2_available:
         fields.pop("N2")
-        fields.pop("N2_full")
+        fields.pop("N2_nom0")
     fields.update(vorticity)
 
     # Optional magnetic diagnostics are written only when explicitly requested.
@@ -3419,31 +3419,31 @@ def convert_state(args: argparse.Namespace) -> None:
         }
 
     if not args.no_gradients:
-        print("Exporting 3-D scalar gradients for C and Comp, both fluctuating and full m=0-included fields...")
+        print("Exporting full and m=0-removed 3-D gradients of thermal T and composition C...")
 
-        # Historical/default names: m=0 removed, i.e. non-axisymmetric fluctuations.
-        fields["grad_rC"] = grad_rC_fluct
-        fields["grad_thetaC"] = grad_thetaC_fluct
-        fields["grad_phiC"] = grad_phiC_fluct
-        fields["grad_rComp"] = grad_rComp_fluct
-        fields["grad_thetaComp"] = grad_thetaComp_fluct
-        fields["grad_phiComp"] = grad_phiComp_fluct
-        fields["grad_sC"] = grad_sC_fluct
-        fields["grad_zC"] = grad_zC_fluct
-        fields["grad_sComp"] = grad_sComp_fluct
-        fields["grad_zComp"] = grad_zComp_fluct
+        # Unsuffixed names are the complete fields, including m=0.
+        fields["grad_rT"] = grad_rC_3d
+        fields["grad_thetaT"] = grad_thetaC_3d
+        fields["grad_phiT"] = grad_phiC_3d
+        fields["grad_sT"] = grad_sC_3d
+        fields["grad_zT"] = grad_zC_3d
+        fields["grad_rC"] = grad_rComp_3d
+        fields["grad_thetaC"] = grad_thetaComp_3d
+        fields["grad_phiC"] = grad_phiComp_3d
+        fields["grad_sC"] = grad_sComp_3d
+        fields["grad_zC"] = grad_zComp_3d
 
-        # Full fields: m=0 retained.
-        fields["grad_rC_full"] = grad_rC_3d
-        fields["grad_thetaC_full"] = grad_thetaC_3d
-        fields["grad_phiC_full"] = grad_phiC_3d
-        fields["grad_rComp_full"] = grad_rComp_3d
-        fields["grad_thetaComp_full"] = grad_thetaComp_3d
-        fields["grad_phiComp_full"] = grad_phiComp_3d
-        fields["grad_sC_full"] = grad_sC_3d
-        fields["grad_zC_full"] = grad_zC_3d
-        fields["grad_sComp_full"] = grad_sComp_3d
-        fields["grad_zComp_full"] = grad_zComp_3d
+        # _nom0 names explicitly remove the axisymmetric component.
+        fields["grad_rT_nom0"] = grad_rC_fluct
+        fields["grad_thetaT_nom0"] = grad_thetaC_fluct
+        fields["grad_phiT_nom0"] = grad_phiC_fluct
+        fields["grad_sT_nom0"] = grad_sC_fluct
+        fields["grad_zT_nom0"] = grad_zC_fluct
+        fields["grad_rC_nom0"] = grad_rComp_fluct
+        fields["grad_thetaC_nom0"] = grad_thetaComp_fluct
+        fields["grad_phiC_nom0"] = grad_phiComp_fluct
+        fields["grad_sC_nom0"] = grad_sComp_fluct
+        fields["grad_zC_nom0"] = grad_zComp_fluct
 
     # Downsample after all derived quantities are computed.
     dr = max(1, int(args.downsample_r))
@@ -3454,7 +3454,7 @@ def convert_state(args: argparse.Namespace) -> None:
     fields = {name: sampling.volume(arr) for name, arr in fields.items()}
     r_out, theta_out, phi_out = sampling.r, sampling.theta, sampling.phi
     N2_profile_out = sampling.radial(N2_profile) if n2_available else []
-    N2_fluct_rms_out = sampling.radial(N2_fluct_rms) if n2_available else []
+    N2_nom0_rms_out = sampling.radial(N2_nom0_rms) if n2_available else []
     grad_rC_mean_r_out = sampling.radial(grad_rC_mean_r)
     grad_rComp_mean_r_out = sampling.radial(grad_rComp_mean_r)
 
@@ -3589,13 +3589,13 @@ def convert_state(args: argparse.Namespace) -> None:
     profiles = {
         "r": [json_number(x) for x in r_out],
         "N2": [json_number(x) for x in N2_profile_out],
-        "N2_fluct_rms": [json_number(x) for x in N2_fluct_rms_out],
-        "grad_rC_mean_r": [json_number(x) for x in grad_rC_mean_r_out],
-        "grad_rComp_mean_r": [json_number(x) for x in grad_rComp_mean_r_out],
+        "N2_nom0_rms": [json_number(x) for x in N2_nom0_rms_out],
+        "grad_rT_mean_r": [json_number(x) for x in grad_rC_mean_r_out],
+        "grad_rC_mean_r": [json_number(x) for x in grad_rComp_mean_r_out],
     }
     if not n2_available:
         profiles.pop("N2")
-        profiles.pop("N2_fluct_rms")
+        profiles.pop("N2_nom0_rms")
     with open(outdir / "profiles.json", "w", encoding="utf-8") as f:
         json.dump(profiles, f, allow_nan=False)
 
@@ -3792,6 +3792,7 @@ def convert_state(args: argparse.Namespace) -> None:
         "description": "Converted physical-space quantities from Leeds spherical-dynamo state file.",
         "source_format": "leeds",
         "converter_version": CONVERTER_PACKAGE_VERSION,
+        "scalar_naming_version": 2,
         "viewer_field_contract": "dynamo-three-viewer-v2-common",
         "source_state": path,
         "state_number": state_number,

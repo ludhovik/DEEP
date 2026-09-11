@@ -172,8 +172,8 @@ class MagicArchiveTests(unittest.TestCase):
         self.assertFalse(meta["inner_core"]["available"])
         self.assertFalse(meta["magnetic"]["extends_into_inner_core"])
         self.assertEqual(meta["r_inner"], meta["r_icb"])
-        self.assertIn("C", meta["fields"])
-        self.assertNotIn("Comp", meta["fields"])
+        self.assertIn("T", meta["fields"])
+        self.assertNotIn("C", meta["fields"])
         self.assertEqual(self.path.read_bytes(), original)
 
 

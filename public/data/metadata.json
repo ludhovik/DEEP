@@ -1,5 +1,6 @@
 {
-  "description": "Synthetic demo data. Replace with converted physical statefile later.",
+  "description": "Synthetic DEEPscope demo data.",
+  "scalar_naming_version": 2,
   "nr": 64,
   "ntheta": 128,
   "nphi": 256,
@@ -15,7 +16,7 @@
     "ur": "ur_volume.f32",
     "ut": "ut_volume.f32",
     "up": "up_volume.f32",
-    "C": "C_volume.f32",
+    "T": "T_volume.f32",
     "Babs": "Babs_volume.f32"
   },
   "ranges": {
@@ -43,7 +44,7 @@
       "min": -0.1499534249305725,
       "max": 0.7999388575553894
     },
-    "C": {
+    "T": {
       "min": -0.9403735995292664,
       "max": 0.9403736591339111
     },

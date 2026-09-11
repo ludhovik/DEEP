@@ -154,8 +154,8 @@ transform to the same Cartesian vector from every direction.
 
 Scalar fields are reconstructed **as stored**. Imposed fields, reference
 profiles and background/source files are not implicitly added. In particular,
-`C_phiavg` includes only the stored axisymmetric scalar, and `Cnom0` removes
-that mean. The name `N2_full` means m=0 is retained; it does not imply that an
+`T_phiavg` includes only the stored axisymmetric thermal/codensity scalar, and
+`T_nom0` removes that mean. The name `N2` means m=0 is retained; it does not imply that an
 absent conductive reference profile has been reconstructed.
 
 ### N2 and physical units
@@ -165,10 +165,10 @@ QuICC models can use different Rayleigh and time scales. To avoid silently
 applying the wrong scale, **N2 is off by default** for this converter; scalar
 gradients are still exported. Select the convention appropriate to the model:
 
-- `--n2-convention deepscope`: \(N^2=rE^2(Ra_T C_r/Pr+Ra_C Comp_r/Sc)\).
+- `--n2-convention deepscope`: \(N^2=rE^2(Ra_T T_r/Pr+Ra_C C_r/Sc)\).
 - `--n2-convention quicc-rotating`: for full spheres,
-  \(N^2=rE(Ra_T C_r/Pr+Ra_C Comp_r/Sc)\). For shells,
-  \(N^2=(r/r_o)E(Ra_T C_r+Ra_C Comp_r)\), matching the standard unit-gap
+  \(N^2=rE(Ra_T T_r/Pr+Ra_C C_r/Sc)\). For shells,
+  \(N^2=(r/r_o)E(Ra_T T_r+Ra_C C_r)\), matching the standard unit-gap
   QuICC shell dynamo's modified Rayleigh number and gravity. Its thermal
   buoyancy coefficient contains no Pr factor. Composition uses the analogous
   convention when selected by the user. This shell convention is rejected for

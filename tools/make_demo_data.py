@@ -59,7 +59,7 @@ def demo_fields(nr: int, nt: int, np_: int, r_inner: float, r_outer: float):
     ut = 0.45 * np.sin(np.pi * shell) * np.cos(TH) * np.sin(2.0 * PH)
     up = 0.80 * R * np.sin(TH) + 0.15 * np.sin(np.pi * shell) * np.cos(5.0 * PH)
 
-    C = (
+    T = (
         0.8 * np.cos(4.0 * PH) * np.sin(TH) ** 2 * np.sin(np.pi * shell)
         + 0.3 * np.cos(3.0 * TH)
         + 0.15 * np.sin(8.0 * PH + 2.0 * TH)
@@ -74,7 +74,7 @@ def demo_fields(nr: int, nt: int, np_: int, r_inner: float, r_outer: float):
         "ur": ur,
         "ut": ut,
         "up": up,
-        "C": C,
+        "T": T,
         "Babs": Babs,
     }
 
@@ -165,6 +165,7 @@ def main():
         json.dump(lines, f)
 
     metadata = {
+        "scalar_naming_version": 2,
         "description": "Synthetic demo data. Replace with converted physical statefile later.",
         "nr": nr,
         "ntheta": ntheta,

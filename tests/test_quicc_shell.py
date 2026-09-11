@@ -76,7 +76,7 @@ class ShellTests(unittest.TestCase):
                 u=synthesize_field((s['fields']['ur'],s['fields']['utor']),pairs,r,th,ph,3,radial_interval=s['radial_interval'])
                 np.testing.assert_allclose(u[0],0,atol=1e-14);np.testing.assert_allclose(u[1],0,atol=1e-14)
                 np.testing.assert_allclose(u[2],np.broadcast_to(r[:,None,None]*st,u[2].shape),atol=2e-14)
-                c=synthesize_field(s['fields']['C'],pairs,r,th,ph,3,radial_interval=s['radial_interval'])
+                c=synthesize_field(s['fields']['T'],pairs,r,th,ph,3,radial_interval=s['radial_interval'])
                 np.testing.assert_allclose(c,np.broadcast_to(1+r[:,None,None]**2,c.shape),atol=2e-14)
     def test_geometry_export_and_incremental_addition(self):
         self.convert('--geometry','shell','--fluid-inner-radius','.5')
@@ -91,7 +91,7 @@ class ShellTests(unittest.TestCase):
         self.convert('--n2-convention','quicc-rotating','--Pr','7','--RaC','0')
         m=json.loads((self.root/'out/metadata.json').read_text());shape=(m['nr'],m['ntheta'],m['nphi'])
         r=np.asarray(json.loads((self.root/'out/coordinates.json').read_text())['r'])
-        n2=np.fromfile(self.root/'out/N2_full_volume.f32',dtype='<f4').reshape(shape)
+        n2=np.fromfile(self.root/'out/N2_volume.f32',dtype='<f4').reshape(shape)
         np.testing.assert_allclose(n2,np.broadcast_to(.2*r[:,None,None]**2/1.5,shape),rtol=3e-5,atol=1e-6)
     def test_boundaries_are_required_and_checked(self):
         for key,value in [('lower1d',0.),('upper1d',.1),('rratio',.9)]:

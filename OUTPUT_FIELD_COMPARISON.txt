@@ -25,15 +25,15 @@ Optional induction, with --induction:
   Ir, It, Ip, Iz, Iabs
 
 Buoyancy:
-  N2, N2_full
+  N2, N2_nom0
 
 Scalars:
-  Leeds: C, Comp
-  XSHELLS: T, Comp
+  Leeds: T, C
+  XSHELLS: T, C
 
 Reason for the scalar-name difference:
-  Leeds C is the codensity field in the Leeds state file.
-  XSHELLS fieldT is temperature and fieldC is composition.
+  Leeds native C is codensity and is exported as T.
+  XSHELLS fieldT is temperature; composition is exported as C.
 
 Conducting inner core logic for Leeds
 -------------------------------------

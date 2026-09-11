@@ -6,6 +6,7 @@ from pathlib import Path
 import json
 import math
 import os
+import re
 import shutil
 import tempfile
 import uuid
@@ -187,9 +188,23 @@ def validate_bundle(root):
         raise ValueError("Colatitudes are outside [0, pi].")
     if coordinates["phi"][-1] - coordinates["phi"][0] >= 2 * math.pi - 1e-10:
         raise ValueError("Longitude coordinates duplicate the periodic seam.")
-    if not meta.get("fields"):
+    fields = meta.get("fields")
+    if not isinstance(fields, dict) or not fields:
         raise ValueError("No volume fields were exported.")
-    binaries = [(name, math.prod(shape)) for name in meta["fields"].values()]
+    filenames = list(fields.values())
+    if any(not isinstance(filename, str) for filename in filenames):
+        raise ValueError("Volume field filenames must be strings.")
+    if len(set(filenames)) != len(filenames):
+        raise ValueError("Volume field filenames must be unique.")
+    for name, filename in fields.items():
+        if not isinstance(name, str) or re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", name) is None:
+            raise ValueError(f"Unsafe volume field name: {name!r}")
+        expected = f"{name}_volume.f32"
+        if filename != expected:
+            raise ValueError(
+                f"Volume field {name!r} must use filename {expected!r}, not {filename!r}."
+            )
+    binaries = [(name, math.prod(shape)) for name in filenames]
     binaries += [(info["file"], shape[1] * shape[2]) for info in meta.get("surface_fields", {}).values()]
     for filename, length in binaries:
         path = bundle_path(root, filename)

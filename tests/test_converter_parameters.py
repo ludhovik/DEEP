@@ -159,6 +159,6 @@ class ParameterTests(unittest.TestCase):
             magic.convert_adapted_snapshot(Path('G_1.test'),Path(folder),args,magic.adapt_graph(graph),native)
             meta=json.loads((Path(folder)/'metadata.json').read_text())
         self.assertEqual(ask.call_count,1);self.assertEqual(meta['parameters']['Pm'],7)
-        self.assertEqual(meta['parameter_sources']['Pm'],'prompt');self.assertIn('N2_full',meta['fields'])
+        self.assertEqual(meta['parameter_sources']['Pm'],'prompt');self.assertIn('N2',meta['fields'])
 
 if __name__=='__main__':unittest.main()

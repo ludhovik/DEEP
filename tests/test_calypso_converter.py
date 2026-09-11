@@ -140,14 +140,14 @@ class CalypsoTests(unittest.TestCase):
                   -.4*np.sin(p)-.2*np.cos(p))
         for name,a in zip(("Br","Bt","Bp"),expected):
             np.testing.assert_allclose(field(name),np.broadcast_to(a,shape),atol=1e-7)
-        np.testing.assert_allclose(field("C"),1-r*r+.1*r*np.sin(t)*np.cos(p),atol=1e-7)
+        np.testing.assert_allclose(field("T"),1-r*r+.1*r*np.sin(t)*np.cos(p),atol=1e-7)
         np.testing.assert_allclose(field("up"),np.broadcast_to(r*np.sin(t),shape),atol=1e-7)
         np.testing.assert_allclose(field("Uabs"),field("up"),atol=1e-7)
         np.testing.assert_allclose(field("Babs"),np.sqrt(1.2),atol=1e-7)
         np.testing.assert_allclose(field("EMFr"),-field("up")*field("Bt"),atol=1e-7)
         self.assertTrue(meta["optional_magnetic_diagnostics"]["induction_exported"])
-        self.assertTrue({"Cnom0","Compnom0","N2","N2_full","grad_thetaC_full"} <= meta["fields"].keys())
-        self.assertFalse({"C_nom0","Comp_nom0","T"} & meta["fields"].keys())
+        self.assertTrue({"T_nom0","C_nom0","N2","N2_nom0","grad_thetaT"} <= meta["fields"].keys())
+        self.assertFalse({"Cnom0","Compnom0","Comp","N2_full"} & meta["fields"].keys())
 
     def test_full_sphere_has_one_regular_cartesian_centre(self):
         out,meta,_=self.run_converter(geometry="full")
@@ -156,7 +156,7 @@ class CalypsoTests(unittest.TestCase):
         self.assertEqual(coords["r"][0],0);self.assertEqual(coords["r"].count(0),1)
         shape=(meta["nr"],meta["ntheta"],meta["nphi"])
         field=lambda n:np.fromfile(out/meta["fields"][n],dtype="<f4").reshape(shape)
-        np.testing.assert_allclose(field("C")[0],1)
+        np.testing.assert_allclose(field("T")[0],1)
         np.testing.assert_allclose(field("Babs")[0],np.sqrt(1.2),atol=1e-7)
         np.testing.assert_allclose(field("Uabs")[0],0,atol=1e-7)
         np.testing.assert_allclose(field("Br")[0],field("Br")[1],atol=1e-7)
@@ -255,11 +255,11 @@ class CalypsoTests(unittest.TestCase):
         args=converter.build_arg_parser().parse_args([])
         params,factors,_=converter.physical_parameters(records,args,r)
         self.assertIsNone(params["ra"])
-        np.testing.assert_allclose(factors["C"],.2*r)
-        np.testing.assert_allclose(factors["Comp"],.01*r)
+        np.testing.assert_allclose(factors["T"],.2*r)
+        np.testing.assert_allclose(factors["C"],.01*r)
         args.RaT=20
         _,factors,_=converter.physical_parameters(records,args,r)
-        np.testing.assert_allclose(factors["C"],.001*r)
+        np.testing.assert_allclose(factors["T"],.001*r)
 
     def test_cutoff_removes_high_degree_without_rotating_retained_scalar(self):
         r=np.array([.4,.7,1.]);theta=np.arccos(np.polynomial.legendre.leggauss(8)[0][::-1])

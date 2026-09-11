@@ -118,6 +118,96 @@ class IncrementalTests(unittest.TestCase):
             cc.run_conversion(args, "test", [source], convert)
             self.assertEqual(convert.call_count, 4)
 
+    def test_incremental_rebuild_removes_legacy_volumes_and_preserves_view(self):
+        """A naming migration publishes only the new field/file vocabulary."""
+        from tools.viewer_bundle import write_f32
+
+        with tempfile.TemporaryDirectory() as folder, redirect_stdout(io.StringIO()):
+            root = Path(folder)
+            source = root / "state"
+            source.write_bytes(b"unchanged simulation")
+            out = root / "out"
+            args = argparse.Namespace(
+                out=str(out), incremental=True, cache_dir=None, force=False,
+                naming_version=1,
+            )
+
+            def write_bundle(destination, fields):
+                destination.mkdir(parents=True, exist_ok=True)
+                (destination / "coordinates.json").write_text(json.dumps({
+                    "r": [0.35, 1.0], "theta": [0.1, 3.0], "phi": [0.0, 3.0],
+                }))
+                files = {}
+                for index, name in enumerate(fields, start=1):
+                    filename = f"{name}_volume.f32"
+                    write_f32(destination / filename, np.full((2, 2, 2), index, dtype=np.float32))
+                    files[name] = filename
+                (destination / "metadata.json").write_text(json.dumps({
+                    "nr": 2, "ntheta": 2, "nphi": 2,
+                    "r_inner": 0.35, "r_outer": 1.0,
+                    "coordinates": "coordinates.json", "fields": files,
+                }))
+
+            def convert(opts):
+                if opts.naming_version == 1:
+                    names = ("C", "Comp", "grad_sComp", "grad_sComp_full")
+                else:
+                    names = ("T", "C", "grad_sC", "grad_sC_nom0")
+                write_bundle(Path(opts.out), names)
+
+            cc.run_conversion(args, "test", [source], convert)
+            (out / "view.DTV2").write_text("saved legacy view")
+
+            # A converter naming change alters the request while retaining the
+            # expensive-input cache. Publication must not merge old binaries.
+            args.naming_version = 2
+            cc.run_conversion(args, "test", [source], convert)
+
+            metadata = json.loads((out / "metadata.json").read_text())
+            self.assertEqual(set(metadata["fields"]), {
+                "T", "C", "grad_sC", "grad_sC_nom0",
+            })
+            self.assertEqual(
+                metadata["fields"],
+                {name: f"{name}_volume.f32" for name in metadata["fields"]},
+            )
+            self.assertEqual(
+                {path.name for path in out.glob("*_volume.f32")},
+                set(metadata["fields"].values()),
+            )
+            for obsolete in (
+                "Comp_volume.f32", "grad_sComp_volume.f32",
+                "grad_sComp_full_volume.f32",
+            ):
+                self.assertFalse((out / obsolete).exists(), obsolete)
+            self.assertEqual((out / "view.DTV2").read_text(), "saved legacy view")
+
+    def test_bundle_validation_requires_canonical_safe_unique_volume_names(self):
+        from tools.viewer_bundle import validate_bundle
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            fixtures.ConverterPackageTests.minimal_bundle(root)
+            metadata_path = root / "metadata.json"
+            metadata = json.loads(metadata_path.read_text())
+
+            (root / "renamed_volume.f32").write_bytes((root / "C_volume.f32").read_bytes())
+            metadata["fields"] = {"C": "renamed_volume.f32"}
+            metadata_path.write_text(json.dumps(metadata))
+            with self.assertRaisesRegex(ValueError, "must use filename"):
+                validate_bundle(root)
+
+            metadata["fields"] = {"bad-name": "bad-name_volume.f32"}
+            (root / "bad-name_volume.f32").write_bytes((root / "C_volume.f32").read_bytes())
+            metadata_path.write_text(json.dumps(metadata))
+            with self.assertRaisesRegex(ValueError, "Unsafe volume field name"):
+                validate_bundle(root)
+
+            metadata["fields"] = {"C": "C_volume.f32", "T": "C_volume.f32"}
+            metadata_path.write_text(json.dumps(metadata))
+            with self.assertRaisesRegex(ValueError, "must be unique"):
+                validate_bundle(root)
+
     def test_failed_reconversion_keeps_previous_bundle_and_view(self):
         with tempfile.TemporaryDirectory() as folder, redirect_stdout(io.StringIO()):
             root = Path(folder)
@@ -261,7 +351,7 @@ class IncrementalTests(unittest.TestCase):
                 leeds.run_leeds_conversion(args)
                 unknown = json.loads((root / "unknown" / "metadata.json").read_text())
                 self.assertIsNone(unknown["parameters"]["Pr"])
-                self.assertNotIn("N2_full", unknown["fields"])
+                self.assertNotIn("N2", unknown["fields"])
                 self.assertIn("vort_z", unknown["fields"])
                 self.assertNotIn("N2", json.loads((root / "unknown" / "profiles.json").read_text()))
 

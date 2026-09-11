@@ -81,11 +81,9 @@ physical-field export pipeline. Run `--help` for the complete list.
   radial/colatitude/longitude downsampling preserves physical boundaries.
 - Velocity `ur`, `ut`, `up`, cylindrical `us`, `uz`, speed and helicity.
 - Magnetic `Br`, `Bt`, `Bp`, strength, azimuthal means and fluctuations.
-- Temperature as canonical `C`, composition as `Comp`, and pressure as `P`
-  when present; scalar means/fluctuations, full and fluctuating gradients.
-  `Cnom0`/`Compnom0` are the canonical fluctuation names, without duplicate
-  `C_nom0`/`Comp_nom0` files.
-- `N2` and `N2_full` when buoyancy and rotation coefficients can be resolved.
+- Temperature/codensity as `T`, composition as `C`, and pressure as `P` when
+  present. Unsuffixed scalar diagnostics retain `m=0`; `_nom0` removes it.
+- `N2` and `N2_nom0` when buoyancy and rotation coefficients can be resolved.
 - Optional `--emf` and `--induction`, CMB/Earth magnetic maps, internal and
   exterior field lines with connected return branches, pairing identifiers
   and field strengths usable by the viewer's B² tubes.
@@ -188,7 +186,7 @@ uses `Omega_* = c_Omega/(2 c_v)` and exports:
 {c_v\,\Omega_*^2}.
 ```
 
-`N2_full` includes the azimuthal mean; `N2` removes it. These are the signed
+`N2` includes the azimuthal mean; `N2_nom0` removes it. These are the signed
 stratification diagnostics defined above, not a claim that every run uses
 the same buoyancy units. If a coefficient cannot be resolved, its contribution
 is omitted and availability is recorded. Explicit `--RaT`/`--RaC` overrides

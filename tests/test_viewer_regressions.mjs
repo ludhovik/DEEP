@@ -75,7 +75,7 @@ function viewer() {
     DEFAULT_DATASET_ROOT: "demo", DEFAULT_SECONDARY_DATASET_ROOT: "secondary",
     THREE: { Mesh, Color, MeshPhongMaterial: Material, DoubleSide: 2, NormalBlending: 1, NoBlending: 0 },
     metadata: { nr: 3, ntheta: 3, nphi: 4, r_inner: 0.35, r_outer: 1,
-      fields: { ur: "ur.f32", Br: "Br.f32", C: "C.f32" } },
+      fields: { ur: "ur.f32", Br: "Br.f32", T: "T.f32", C: "C.f32" } },
     coords: { r: [0.35, 0.7, 1], theta: [0.1, 1.5, 3.0], phi: [0, Math.PI / 2, Math.PI, 3 * Math.PI / 2] },
     dataBasePath: "demo", datasetRootPath: "demo", secondaryDataset: null,
     activeDatasetFolderSource: null, datasetFolderSources: new Map(),
@@ -105,7 +105,7 @@ function viewer() {
     applyCameraViewFromParams: () => {}, applyTitleLayout: () => {}, applyLegendLayout: () => {},
     applyExportPanelLayout: () => {}, buildGui: () => {}, updateVisibility: () => {},
     getAvailableColormapNames: () => ["blue-white-red", "viridis"],
-    getCmbFieldNames: () => ["Br", "C", "ur"],
+    getCmbFieldNames: () => ["Br", "T", "C", "ur"],
     getEarthFieldNames: () => ["Br_Earth_lmax13"],
     PANEL_POSITIONS: new Set(["custom", "top-left", "left-center", "bottom-right"]),
     OPAQUE_OPACITY: 0.999,
@@ -140,7 +140,7 @@ function viewer() {
     "invalidateRenderRequests", "loadForRender", "pinHeavyCacheEntry", "isEffectivelyOpaque", "applyOpacityAndDepth",
     "normaliseDatasetLabel", "secondaryPrefix", "isSecondaryFieldName", "rawSecondaryFieldName", "prefixedSecondaryFieldName",
     "resolveFieldSource", "getPrimaryVolumeFieldNames", "getSecondaryVolumeFieldNames", "getVolumeFieldNames",
-    "normaliseScalarFieldMetadata", "canonicalScalarFieldName",
+    "normaliseScalarFieldMetadata", "canonicalScalarFieldName", "migrateLegacyScalarFieldName",
     "normalizePhi", "isAngleInCCWSector", "getFourSectorBoundaries", "getSectorIndexForPhi", "shouldKeepSurfaceCellForClip",
     "meridianSidesAreIndependent", "syncLinkedMeridianSide", "meridianFieldSummary",
     "getIsosurfaceObjectCacheKey", "getFieldLineObjectCacheKey", "buildIsosurfaceObjectCacheEntry",
@@ -185,6 +185,15 @@ test("duplicate scalar choices disappear for old primary and secondary bundles w
   assert.deepEqual(ctx.normaliseScalarFieldMetadata(ctx.metadata), ctx.metadata);
 });
 
+test("version-2 composition C_nom0 remains a canonical viewer field", () => {
+  const ctx = viewer();
+  const current = { scalar_naming_version: 2,
+    fields: { T: "T_volume.f32", C: "C_volume.f32", C_nom0: "C_nom0_volume.f32" } };
+  assert.equal(ctx.normaliseScalarFieldMetadata(current), current);
+  ctx.metadata = current;
+  assert.equal(ctx.canonicalScalarFieldName("C_nom0"), "C_nom0");
+});
+
 test("legacy scalar selections in view codes map to canonical primary and secondary fields", () => {
   const ctx = viewer();
   ctx.metadata.fields = { Cnom0: "Cnom0.f32", Compnom0: "Compnom0.f32" };
@@ -196,6 +205,35 @@ test("legacy scalar selections in view codes map to canonical primary and second
   assert.equal(ctx.params.meridianField, "D2:Compnom0");
   assert.equal(ctx.params.isoField, "Compnom0");
   assert.equal(ctx.canonicalScalarFieldName("grad_rC_full"), "grad_rC_full");
+});
+
+test("legacy scalar view names migrate by meaning for naming-version-2 bundles", () => {
+  const ctx = viewer();
+  ctx.metadata = {
+    scalar_naming_version: 2,
+    fields: {
+      T: "T_volume.f32", C: "C_volume.f32",
+      T_nom0: "T_nom0_volume.f32", C_nom0: "C_nom0_volume.f32",
+      grad_sT: "grad_sT_volume.f32", grad_sT_nom0: "grad_sT_nom0_volume.f32",
+      grad_sC: "grad_sC_volume.f32", grad_sC_nom0: "grad_sC_nom0_volume.f32",
+      N2: "N2_volume.f32", N2_nom0: "N2_nom0_volume.f32",
+    },
+  };
+  const legacy = ctx.decodeViewState(presetCode(ctx, {
+    equatorField: "C", equator2Field: "Comp",
+    meridianField: "grad_sC_full", meridianLeftField: "grad_sC",
+    meridian2Field: "grad_sComp_full", meridian2LeftField: "grad_sComp",
+    isoField: "N2_full",
+  }));
+  assert.deepEqual(Array.from(ctx.applyViewStateParams(legacy)), []);
+  assert.equal(ctx.params.equatorField, "T");
+  assert.equal(ctx.params.equator2Field, "C");
+  assert.equal(ctx.params.meridianField, "grad_sT");
+  assert.equal(ctx.params.meridianLeftField, "grad_sT_nom0");
+  assert.equal(ctx.params.meridian2Field, "grad_sC");
+  assert.equal(ctx.params.meridian2LeftField, "grad_sC_nom0");
+  assert.equal(ctx.params.isoField, "N2");
+  assert.equal(ctx.collectViewState().scalarNamingVersion, 2);
 });
 
 test("older view codes mirror each meridian setting to its new left half", () => {

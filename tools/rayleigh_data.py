@@ -15,7 +15,7 @@ except ImportError:
     from tools.conversion_cache import cached_calculation
     from tools.spectral_truncation import harmonic_basis
 
-QUANTITIES = {'ur':1,'ut':2,'up':3,'Br':801,'Bt':802,'Bp':803,'C':501,'P':502}
+QUANTITIES = {'ur':1,'ut':2,'up':3,'Br':801,'Bt':802,'Bp':803,'T':501,'P':502}
 
 
 def endian(path):

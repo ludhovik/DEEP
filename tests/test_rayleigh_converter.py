@@ -103,8 +103,8 @@ class RayleighTests(unittest.TestCase):
         m=self.metadata();self.assertEqual(m['source_code'],'Rayleigh');self.assertEqual(m['time'],.1)
         self.assertFalse(m['full_sphere']);self.assertEqual(m['r_icb'],.5)
         self.assertFalse((self.root/'out/N2_volume.f32').exists())
-        np.testing.assert_allclose(self.volume('Comp'),2*self.volume('C'))
-        self.assertFalse((self.root/'out/C_nom0_volume.f32').exists());validate_bundle(self.root/'out')
+        np.testing.assert_allclose(self.volume('C'),2*self.volume('T'))
+        self.assertTrue((self.root/'out/T_nom0_volume.f32').exists());validate_bundle(self.root/'out')
         log=self.convert('--composition-field','Xa001','--emf','--induction')
         self.assertIn('Reuse calculation: synthesize_checkpoint',log)
         self.assertTrue((self.root/'out/Ir_volume.f32').exists())
@@ -112,22 +112,22 @@ class RayleighTests(unittest.TestCase):
     def test_physical_export_truncation_and_unknown_time(self):
         path,_=physical_fixture(self.root/'physical')
         self.convert(state=path);m=self.metadata();self.assertIsNone(m['time']);self.assertEqual(m['ntheta'],10)
-        size=(self.root/'out/C_volume.f32').stat().st_size
+        size=(self.root/'out/T_volume.f32').stat().st_size
         self.convert('--spectral-lmax','2',state=path);m=self.metadata()
         self.assertEqual(m['spectral']['lmax'],2);self.assertEqual(m['ntheta'],4)
-        self.assertLess((self.root/'out/C_volume.f32').stat().st_size,size)
-        c=self.volume('C');np.testing.assert_allclose(c,np.broadcast_to(c[:,:1,:1],c.shape),atol=1e-6)
+        self.assertLess((self.root/'out/T_volume.f32').stat().st_size,size)
+        c=self.volume('T');np.testing.assert_allclose(c,np.broadcast_to(c[:,:1,:1],c.shape),atol=1e-6)
         validate_bundle(self.root/'out')
     def test_checkpoint_spectral_truncation(self):
-        self.convert();original=self.volume('C');self.assertEqual(original.shape,(12,8,16))
+        self.convert();original=self.volume('T');self.assertEqual(original.shape,(12,8,16))
         self.convert('--spectral-lmax','1');m=self.metadata()
-        self.assertEqual(m['spectral']['lmax'],1);self.assertEqual(self.volume('C').shape,(12,4,8))
-        np.testing.assert_allclose(self.volume('C')[:,0,0],original[:,0,0],atol=1e-6)
+        self.assertEqual(m['spectral']['lmax'],1);self.assertEqual(self.volume('T').shape,(12,4,8))
+        np.testing.assert_allclose(self.volume('T')[:,0,0],original[:,0,0],atol=1e-6)
     def test_n2_is_explicit_and_requires_parameters(self):
         self.convert('--n2-convention','deepscope');m=self.metadata()
         r=np.asarray(json.loads((self.root/'out/coordinates.json').read_text())['r'])
-        np.testing.assert_allclose(self.volume('N2_full'),np.broadcast_to(.2*r[:,None,None]**2,self.volume('C').shape),atol=2e-6)
-        with self.assertRaisesRegex(ValueError,'N2 for Comp'):self.convert('--n2-convention','deepscope','--composition-field','Xa001')
+        np.testing.assert_allclose(self.volume('N2'),np.broadcast_to(.2*r[:,None,None]**2,self.volume('T').shape),atol=2e-6)
+        with self.assertRaisesRegex(ValueError,'N2 for C'):self.convert('--n2-convention','deepscope','--composition-field','Xa001')
     def test_incomplete_vectors_preserve_previous_bundle(self):
         self.convert();before=(self.root/'out/metadata.json').read_bytes()
         (self.state/'A').unlink()

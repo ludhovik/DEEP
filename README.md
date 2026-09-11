@@ -642,7 +642,8 @@ viewer_data/
 ├── Br_volume.f32
 ├── Bt_volume.f32
 ├── Bp_volume.f32
-├── C_volume.f32
+├── T_volume.f32              # temperature or codensity
+├── C_volume.f32              # composition, when present
 └── ...
 ```
 
@@ -662,6 +663,7 @@ nr × ntheta × nphi
   "nphi": 256,
   "fields": {
     "Br": "Br_volume.f32",
+    "T": "T_volume.f32",
     "C": "C_volume.f32"
   },
   "coordinates": "coordinates.json"
@@ -915,7 +917,7 @@ The latest restart is selected; `--state-number 0` selects the initial state.
 All source degrees are retained by default. For the supplied L=63 benchmark,
 `--spectral-lmax 32` reduces the angular output grid from 96 × 192 to 34 × 66.
 Add `--sequence-first 0 --sequence-last 1 --sequence-step 1` to convert both
-supplied restarts. Temperature is `C`; composition, when present, is `Comp`.
+supplied restarts. Temperature/codensity is `T`; composition, when present, is `C`.
 
 Full-sphere `half_Chebyshev` grids and native `merged_bin_gz` restarts are
 supported, including the separately stored centre node. For the supplied
@@ -1036,10 +1038,10 @@ python3 tools/convert_leeds_to_viewer.py \
   --state /path/to/state00001.cdf.dat \
   --out public/data_selected \
   --incremental \
-  --output ur Br C vort_r
+  --output ur Br T vort_r
 ```
 
-This writes only `ur_volume.f32`, `Br_volume.f32`, `C_volume.f32` and
+This writes only `ur_volume.f32`, `Br_volume.f32`, `T_volume.f32` and
 `vort_r_volume.f32`, together with the metadata and coordinates needed by the
 viewer. Other volume diagnostics, surface maps and field lines are skipped,
 even if map or field-line options appear in the command. Native input readers
@@ -1055,19 +1057,26 @@ calculation but export only the named components, for example:
 ```text
 --output ur Br EMFr --emf
 --output vort_r vort_z Ir Iz --induction
---output grad_sC_full grad_zC_full grad_sComp grad_zComp
+--output grad_sT grad_zT grad_sC_nom0 grad_zC_nom0
 ```
 
-Here `s = r sin(theta)` is cylindrical radius. For thermal/codensity `C` and
-composition `Comp`, the converters export `grad_sC`, `grad_zC`, `grad_sComp`
-and `grad_zComp` with the axisymmetric part removed, plus corresponding
-`*_full` fields retaining `m=0`. They are projections of the physical spherical
-gradient:
+Here `s = r sin(theta)` is cylindrical radius. Across every converter, `T`
+means temperature or codensity and `C` means composition. An unsuffixed field
+contains the complete scalar, including `m=0`; `_nom0` means that the
+axisymmetric component has been removed. Thus `grad_sT` is the full thermal
+gradient and `grad_sT_nom0` is its non-axisymmetric part. They are projections
+of the physical spherical gradient:
 
 ```text
 grad_s f = sin(theta) grad_r f + cos(theta) grad_theta f
 grad_z f = cos(theta) grad_r f - sin(theta) grad_theta f
 ```
+
+The implementation differentiates the full scalar and then removes its
+azimuthal mean for `_nom0`. Because differentiation and the cylindrical basis
+projection are linear and their coefficients do not depend on longitude, this
+is mathematically equivalent to removing `m=0` before taking the gradient (up
+to floating-point roundoff). A regression test checks both routes directly.
 
 The stored thermal variable is named `C` consistently across converters;
 `T` remains a compatibility alias where it already existed.
@@ -1266,14 +1275,13 @@ or the grid synthesized at the retained degree when `--spectral-lmax` reduces
 the source. Leave the strides at 1 when no further viewer-grid filtering is
 wanted.
 
-`Cnol0` and `Compnol0` are no longer exported. The `m=0`-removed diagnostics
-(`Cnom0`, `Compnom0`) are unchanged. From converter 3.4.2, the duplicate names
-`C_nom0` and `Comp_nom0` and their separate files are no longer exported.
-The viewer removes these duplicate choices from older bundles too, and maps
-old saved-view selections to `Cnom0`/`Compnom0`. If an old bundle contains only
-an underscored name, its existing file is exposed under the canonical name.
-Updating the viewer fixes the field menus without reconverting old datasets;
-it does not delete files from existing local or remote bundles.
+Scalar naming version 2 uses one unambiguous contract: temperature/codensity
+is `T`, composition is `C`, unsuffixed diagnostics retain `m=0`, and `_nom0`
+removes it. Consequently the full buoyancy diagnostic is `N2` and its
+non-axisymmetric part is `N2_nom0`. The viewer migrates old saved-view field
+choices when they are applied to a version-2 bundle. Rerunning a normal
+conversion with `--incremental` publishes canonical `.f32` filenames and
+removes obsolete managed volume files while preserving `view.DTV2`.
 
 All three converter CLIs build into a staging directory and validate the
 complete bundle before replacing `--out`. A failed conversion or sequence frame

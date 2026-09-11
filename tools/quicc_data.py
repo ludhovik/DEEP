@@ -51,14 +51,14 @@ def read_state(path):
             nmax, lmax, mmax, minc = [integer('Truncation/' + k) for k in ('N', 'L', 'M', 'Mp')]
             paths = {'ur': 'Velocity/VelocityPol', 'utor': 'Velocity/VelocityTor',
                      'Br': 'Magnetic/MagneticPol', 'Btor': 'Magnetic/MagneticTor',
-                     'C': 'Codensity/Codensity'}
+                     'T': 'Codensity/Codensity'}
             phys, timekey = 'PhysicalParameters', 'RunParameters/Time'
         else:
             nmax, lmax, mmax = [integer('truncation/spectral/dim' + k + 'D') for k in ('1','2','3')]
             minc = 1
             paths = {'ur': 'velocity/velocity_pol', 'utor': 'velocity/velocity_tor',
                      'Br': 'magnetic/magnetic_pol', 'Btor': 'magnetic/magnetic_tor',
-                     'C': 'temperature/temperature', 'Comp': 'composition/composition'}
+                     'T': 'temperature/temperature', 'C': 'composition/composition'}
             phys, timekey = 'physical', 'run/time'
         if nmax < 0 or lmax < 0 or mmax < 0 or mmax > lmax or minc < 1:
             raise ValueError('Invalid spectral truncation.')

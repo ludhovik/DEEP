@@ -296,8 +296,8 @@ def adapt_graph(graph: Any) -> dict[str, Any]:
         "ur": "vr",
         "ut": "vtheta",
         "up": "vphi",
-        "C": "entropy",
-        "Comp": "xi",
+        "T": "entropy",
+        "C": "xi",
         "Phase": "phase",
         "P": "pre",
         "Br": "Br",
@@ -641,26 +641,21 @@ def convert_adapted_snapshot(path, outdir, args, adapted, graph_parameters, *,
                     register(f"{name}_nom0", remove_m0_phi(arr), r_magnetic, "magnetic")
 
         scalars: dict[str, tuple[np.ndarray, np.ndarray, str]] = {}
+        if "T" in raw:
+            T = raw["T"]
+            thermal_source = adapted.get("thermal_source", "entropy")
+            scalars["T"] = (T, r_shell, thermal_source)
+            register("T", T, r_shell, thermal_source)
+            if not args.no_m0_fields:
+                register("T_nom0", remove_m0_phi(T), r_shell, thermal_source)
+                register("T_phiavg", phi_average_volume(T), r_shell, thermal_source)
         if "C" in raw:
             C = raw["C"]
-            thermal_source = adapted.get("thermal_source", "entropy")
-            scalars["C"] = (C, r_shell, thermal_source)
-            register("C", C, r_shell, thermal_source)
-            if source_format == "magic_graph":
-                register("T", C, r_shell, "entropy")
-            if source_format == "magic_graph" or not args.no_m0_fields:
-                register("Cnom0", remove_m0_phi(C), r_shell, thermal_source)
-                register("C_phiavg", phi_average_volume(C), r_shell, thermal_source)
-            if source_format == "magic_graph" and not args.no_m0_fields:
-                register("T_nom0", remove_m0_phi(C), r_shell, "entropy")
-                register("T_phiavg", phi_average_volume(C), r_shell, "entropy")
-        if "Comp" in raw:
-            Comp = raw["Comp"]
-            scalars["Comp"] = (Comp, r_shell, "composition")
-            register("Comp", Comp, r_shell, "composition")
-            if source_format == "magic_graph" or not args.no_m0_fields:
-                register("Compnom0", remove_m0_phi(Comp), r_shell, "composition")
-                register("Comp_phiavg", phi_average_volume(Comp), r_shell, "composition")
+            scalars["C"] = (C, r_shell, "composition")
+            register("C", C, r_shell, "composition")
+            if not args.no_m0_fields:
+                register("C_nom0", remove_m0_phi(C), r_shell, "composition")
+                register("C_phiavg", phi_average_volume(C), r_shell, "composition")
         for optional in ("Phase", "P"):
             if optional in raw:
                 register(optional, raw[optional], r_shell, optional.lower())
@@ -672,17 +667,17 @@ def convert_adapted_snapshot(path, outdir, args, adapted, graph_parameters, *,
                 gr, gt, gp = gradient_scalar_3d(scalar, radius, theta, phi)
                 gs, gz = cylindrical_gradient(gr, gt, theta)
                 gradients[name] = (gr, gt, gp)
-                register(f"grad_r{name}_full", gr, radius, source)
-                register(f"grad_theta{name}_full", gt, radius, source)
-                register(f"grad_phi{name}_full", gp, radius, source)
-                register(f"grad_s{name}_full", gs, radius, source)
-                register(f"grad_z{name}_full", gz, radius, source)
+                register(f"grad_r{name}", gr, radius, source)
+                register(f"grad_theta{name}", gt, radius, source)
+                register(f"grad_phi{name}", gp, radius, source)
+                register(f"grad_s{name}", gs, radius, source)
+                register(f"grad_z{name}", gz, radius, source)
                 if not args.no_m0_fields:
-                    register(f"grad_r{name}", remove_m0_phi(gr), radius, source)
-                    register(f"grad_theta{name}", remove_m0_phi(gt), radius, source)
-                    register(f"grad_phi{name}", remove_m0_phi(gp), radius, source)
-                    register(f"grad_s{name}", remove_m0_phi(gs), radius, source)
-                    register(f"grad_z{name}", remove_m0_phi(gz), radius, source)
+                    register(f"grad_r{name}_nom0", remove_m0_phi(gr), radius, source)
+                    register(f"grad_theta{name}_nom0", remove_m0_phi(gt), radius, source)
+                    register(f"grad_phi{name}_nom0", remove_m0_phi(gp), radius, source)
+                    register(f"grad_s{name}_nom0", remove_m0_phi(gs), radius, source)
+                    register(f"grad_z{name}_nom0", remove_m0_phi(gz), radius, source)
 
         diagnostics = {
             "emf_requested": bool(args.emf),
@@ -735,16 +730,16 @@ def convert_adapted_snapshot(path, outdir, args, adapted, graph_parameters, *,
                     if scalar in gradients:
                         N2_full += np.asarray(factor)[:, None, None] * gradients[scalar][0]
                         used = True
-            elif "C" in gradients and np.isfinite(Pr) and Pr != 0.0 and np.isfinite(RaT):
-                N2_full += r_shell[:, None, None] * (Ek**2 * RaT / Pr) * gradients["C"][0]
+            elif "T" in gradients and np.isfinite(Pr) and Pr != 0.0 and np.isfinite(RaT):
+                N2_full += r_shell[:, None, None] * (Ek**2 * RaT / Pr) * gradients["T"][0]
                 used = True
-            if n2_factors is None and "Comp" in gradients and np.isfinite(Sc) and Sc != 0.0 and np.isfinite(RaC):
-                N2_full += r_shell[:, None, None] * (Ek**2 * RaC / Sc) * gradients["Comp"][0]
+            if n2_factors is None and "C" in gradients and np.isfinite(Sc) and Sc != 0.0 and np.isfinite(RaC):
+                N2_full += r_shell[:, None, None] * (Ek**2 * RaC / Sc) * gradients["C"][0]
                 used = True
             if used:
-                register("N2_full", N2_full, r_shell, "scalar_shell")
+                register("N2", N2_full, r_shell, "scalar_shell")
                 if not args.no_m0_fields:
-                    register("N2", remove_m0_phi(N2_full), r_shell, "scalar_shell")
+                    register("N2_nom0", remove_m0_phi(N2_full), r_shell, "scalar_shell")
             else:
                 N2_full = None
 
@@ -991,6 +986,7 @@ def convert_adapted_snapshot(path, outdir, args, adapted, graph_parameters, *,
         "field_lines": field_lines_meta,
     }
     metadata.update(adapted.get("metadata", {}))
+    metadata["scalar_naming_version"] = 2
     if selection.names is not None:
         metadata["output_selection"] = list(selection.names)
     with open(outdir / "metadata.json", "w", encoding="utf-8") as stream:

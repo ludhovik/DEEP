@@ -294,13 +294,13 @@ const params = {
   cmbField: "Br",
   icbField: "Br",
   radialField: "Br",
-  equatorField: "C",
-  equator2Field: "C",
-  meridianField: "C",
-  meridianLeftField: "C",
+  equatorField: "T",
+  equator2Field: "T",
+  meridianField: "T",
+  meridianLeftField: "T",
   meridianIndependentSides: false,
-  meridian2Field: "C",
-  meridian2LeftField: "C",
+  meridian2Field: "T",
+  meridian2LeftField: "T",
   meridian2IndependentSides: false,
 
   showIsosurfaces: false,
@@ -3348,6 +3348,7 @@ function stripLegacyCpsMetadata(meta) {
 
 function normaliseScalarFieldMetadata(meta) {
   if (!meta?.fields) return meta;
+  if (Number(meta.scalar_naming_version) >= 2) return meta;
   const result = { ...meta };
   for (const key of ["fields", "ranges", "field_domains"]) {
     if (!meta[key]) continue;
@@ -3365,7 +3366,30 @@ function normaliseScalarFieldMetadata(meta) {
 
 function canonicalScalarFieldName(name) {
   // Includes labelled secondary fields, e.g. D2:Comp_nom0.
-  return String(name).replace(/(^|:)(C|Comp)_nom0$/, "$1$2nom0");
+  const value = String(name);
+  const targetMetadata = isSecondaryFieldName(value) ? secondaryDataset?.metadata : metadata;
+  if (Number(targetMetadata?.scalar_naming_version) >= 2) return value;
+  return value.replace(/(^|:)(C|Comp)_nom0$/, "$1$2nom0");
+}
+
+function migrateLegacyScalarFieldName(name) {
+  const value = String(name);
+  const separator = value.indexOf(":");
+  const prefix = separator >= 0 ? value.slice(0, separator + 1) : "";
+  const raw = separator >= 0 ? value.slice(separator + 1) : value;
+  const targetMetadata = separator >= 0 ? secondaryDataset?.metadata : metadata;
+  if (Number(targetMetadata?.scalar_naming_version) < 2) return value;
+  const direct = {
+    C: "T", Comp: "C", Cnom0: "T_nom0", C_nom0: "T_nom0",
+    Compnom0: "C_nom0", Comp_nom0: "C_nom0",
+    C_phiavg: "T_phiavg", Comp_phiavg: "C_phiavg",
+    N2: "N2_nom0", N2_full: "N2",
+  };
+  if (Object.prototype.hasOwnProperty.call(direct, raw)) return prefix + direct[raw];
+  const gradient = raw.match(/^grad_(r|theta|phi|s|z)(C|Comp)(_full)?$/);
+  if (!gradient) return value;
+  const scalar = gradient[2] === "C" ? "T" : "C";
+  return `${prefix}grad_${gradient[1]}${scalar}${gradient[3] ? "" : "_nom0"}`;
 }
 
 async function loadMetadataForBase(basePath) {
@@ -7016,20 +7040,20 @@ function applyDefaultFields() {
   const fields = getVolumeFieldNames();
   if (fields.length === 0) throw new Error("metadata.fields is empty.");
 
-  params.cmbField = chooseField(["Br", "Br_CMB_lmax13", "Br_CMB_lmax10", "C", "Comp", "ur", "Uabs"], getCmbFieldNames());
+  params.cmbField = chooseField(["Br", "Br_CMB_lmax13", "Br_CMB_lmax10", "T", "C", "Comp", "ur", "Uabs"], getCmbFieldNames());
   const earthFields = getEarthFieldNames();
   if (earthFields.length > 0) {
     params.earthField = chooseField(["Br_Earth_lmax13"], earthFields);
   }
-  params.icbField = chooseField(["Br", "C", "Comp", "ur", "Uabs"], fields);
-  params.radialField = chooseField(["Br", "C", "Comp", "ur", "Uabs"], fields);
-  params.equatorField = chooseField(["C", "Comp", "Br", "Uabs"], fields);
-  params.equator2Field = chooseField(["C", "Comp", "Br", "Uabs"], fields);
-  params.meridianField = chooseField(["C", "Comp", "Br", "Uabs"], fields);
+  params.icbField = chooseField(["Br", "T", "C", "Comp", "ur", "Uabs"], fields);
+  params.radialField = chooseField(["Br", "T", "C", "Comp", "ur", "Uabs"], fields);
+  params.equatorField = chooseField(["T", "C", "Comp", "Br", "Uabs"], fields);
+  params.equator2Field = chooseField(["T", "C", "Comp", "Br", "Uabs"], fields);
+  params.meridianField = chooseField(["T", "C", "Comp", "Br", "Uabs"], fields);
   params.meridianLeftField = params.meridianField;
-  params.meridian2Field = chooseField(["C", "Comp", "Br", "Uabs"], fields);
+  params.meridian2Field = chooseField(["T", "C", "Comp", "Br", "Uabs"], fields);
   params.meridian2LeftField = params.meridian2Field;
-  params.isoField = chooseField([params.isoField, "ur", "C", "Comp", "Br", "Uabs"], fields);
+  params.isoField = chooseField([params.isoField, "ur", "T", "C", "Comp", "Br", "Uabs"], fields);
 }
 
 function addDisplayControls(gui, slot, label, fieldParam, showParam, opacityParam, rebuildFn, availableFields) {
@@ -7161,7 +7185,12 @@ function collectViewState() {
   syncCameraParamsFromCamera(false);
   syncLinkedMeridianSide("meridian");
   syncLinkedMeridianSide("meridian2");
-  const snapshot = { version: 2, scope: "view-only", params: {} };
+  const snapshot = {
+    version: 2,
+    scope: "view-only",
+    scalarNamingVersion: Number(metadata?.scalar_naming_version) >= 2 ? 2 : 1,
+    params: {},
+  };
   for (const [key, value] of Object.entries(params)) {
     if (typeof value !== "function" && !VIEW_STATE_EXCLUDED_PARAMS.has(key)) {
       snapshot.params[key] = value;
@@ -7222,7 +7251,16 @@ function applyViewStateParams(snapshot) {
     || (snapshot.params !== undefined && (!snapshot.params || typeof snapshot.params !== "object" || Array.isArray(snapshot.params)))) {
     throw new Error("View state must contain a parameter object.");
   }
-  const snap = snapshot?.params ? snapshot : { params: snapshot || {} };
+  let snap = snapshot?.params ? snapshot : { params: snapshot || {} };
+  if (Number(snap.scalarNamingVersion || 1) < 2 && Number(metadata?.scalar_naming_version) >= 2) {
+    const migrated = { ...snap.params };
+    for (const [key, value] of Object.entries(migrated)) {
+      if (key.endsWith("Field") && typeof value === "string") {
+        migrated[key] = migrateLegacyScalarFieldName(value);
+      }
+    }
+    snap = { ...snap, scalarNamingVersion: 2, params: migrated };
+  }
   // Full view codes created before body selection always used the Earth image.
   // Partial parameter objects still change only the supplied options.
   if (snapshot.params && snapshot.version && !Object.prototype.hasOwnProperty.call(snap.params, "earthTextureBody")) {
