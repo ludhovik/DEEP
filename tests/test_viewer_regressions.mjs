@@ -141,6 +141,8 @@ function viewer() {
     "normaliseDatasetLabel", "secondaryPrefix", "isSecondaryFieldName", "rawSecondaryFieldName", "prefixedSecondaryFieldName",
     "resolveFieldSource", "getPrimaryVolumeFieldNames", "getSecondaryVolumeFieldNames", "getVolumeFieldNames",
     "normaliseScalarFieldMetadata", "canonicalScalarFieldName",
+    "normalizePhi", "isAngleInCCWSector", "getFourSectorBoundaries", "getSectorIndexForPhi", "shouldKeepSurfaceCellForClip",
+    "meridianSidesAreIndependent", "syncLinkedMeridianSide", "meridianFieldSummary",
     "getIsosurfaceObjectCacheKey", "getFieldLineObjectCacheKey", "buildIsosurfaceObjectCacheEntry",
     "ensureIsosurfaceObjectCacheEntry", "detachActiveIsosurfaces", "rebuildIsosurfaces", "makeIsoMaterial",
     "geometryMemoryBytes", "object3DMemoryBytes", "isActiveIsosurfaceEntry", "isActiveFieldLineEntry",
@@ -213,8 +215,47 @@ test("older view codes mirror each meridian setting to its new left half", () =>
   assert.equal(ctx.params.meridianLeftOpacity, .35);
   assert.equal(ctx.params.meridian2LeftField, "C");
   assert.equal(ctx.params.meridian2LeftColormap, "viridis");
+  assert.equal(ctx.params.meridianIndependentSides, false);
+  assert.equal(ctx.params.meridian2IndependentSides, false);
   const roundTrip = ctx.decodeViewState(ctx.encodeViewState(ctx.collectViewState()));
   assert.equal(roundTrip.params.meridianLeftField, "Br");
+});
+
+test("meridian halves are linked by default and preserve explicit independent legacy views", () => {
+  const ctx = viewer();
+  ctx.metadata.fields = { C: "C.f32", Br: "Br.f32" };
+  ctx.params.meridianField = "Br";
+  ctx.params.meridianLeftField = "C";
+  ctx.params.meridianLeftColormap = "viridis";
+  ctx.syncLinkedMeridianSide("meridian");
+  assert.equal(ctx.params.meridianLeftField, "Br");
+  assert.equal(ctx.params.meridianLeftColormap, ctx.params.meridianColormap);
+  assert.equal(ctx.meridianFieldSummary("meridian"), "Br");
+
+  const split = ctx.decodeViewState(presetCode(ctx, {
+    meridianField: "C", meridianLeftField: "Br",
+    meridianColormap: "blue-white-red", meridianLeftColormap: "viridis",
+  }));
+  assert.deepEqual(Array.from(ctx.applyViewStateParams(split)), []);
+  assert.equal(ctx.params.meridianIndependentSides, true);
+  assert.equal(ctx.params.meridianLeftField, "Br");
+  assert.equal(ctx.meridianFieldSummary("meridian"), "C/Br");
+  assert.deepEqual(Array.from(ctx.applyViewStateParams({ backgroundColor: "#112233" })), []);
+  assert.equal(ctx.params.meridianIndependentSides, true,
+    "an unrelated partial view must not relink an existing split meridian");
+});
+
+test("front and rear choose opposite CMB sectors between two meridians", () => {
+  const ctx = viewer();
+  const options = {
+    enabled: true, mode: "between-meridians-behind", hasTwoPlanes: true,
+    phiA: 0, phiB: Math.PI / 2, side: "positive",
+  };
+  assert.equal(ctx.shouldKeepSurfaceCellForClip(Math.PI / 2, Math.PI / 4, options), false);
+  assert.equal(ctx.shouldKeepSurfaceCellForClip(Math.PI / 2, Math.PI, options), true);
+  options.side = "negative";
+  assert.equal(ctx.shouldKeepSurfaceCellForClip(Math.PI / 2, Math.PI / 4, options), true);
+  assert.equal(ctx.shouldKeepSurfaceCellForClip(Math.PI / 2, Math.PI, options), false);
 });
 
 function surfaceViewer() {

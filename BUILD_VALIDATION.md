@@ -1,5 +1,16 @@
 # Integrated package validation
 
+## Linked meridians and two-plane clip side (2026-09-11)
+
+- Viewer regressions verify that linked meridian halves copy all appearance
+  settings, while legacy view codes with different half settings enable
+  independent mode automatically.
+- A geometric mask test verifies that Front and Rear retain complementary CMB
+  sectors between two meridional planes. The same mask is shared by optional
+  isosurface clipping.
+- All 147 viewer/geometry tests pass and the production Vite build succeeds
+  with only its existing bundle-size advisory.
+
 ## Cylindrical gradients and split meridians (2026-09-11)
 
 - The scalar-gradient projection is tested directly against the spherical-to-

@@ -202,15 +202,16 @@ Every CMB, ICB, radial, equatorial, and meridional display has:
 - manual minimum and maximum values;
 - opacity.
 
-Each meridional plane has independent **Right (+s, longitude phi)** and
-**Left (-s, longitude phi + 180°)** controls. The two halves may display
-different fields with separate scale ranges, colour maps, opacity and
-colourbars. Longitude and visibility remain common to the plane. Old `DTV2`
-view codes containing only one meridional setting copy it to both halves,
-preserving their original appearance; new codes save both halves.
+Each meridional plane displays the same field, scale, colour map and opacity on
+both halves by default. Enable **Independent sides** to expose separate controls
+for **Right (+s, longitude phi)** and **Left (-s, longitude phi + 180°)**,
+including separate colourbars. Longitude and visibility remain common to the
+plane. Old `DTV2` view codes containing only one meridional setting stay linked;
+codes that already contain different half settings retain the independent view.
 
 The CMB can be clipped by one or two meridional planes or by an explicit
-eight-quarter mask. Open **Planet / moon surface**, enable **Show**, choose
+eight-quarter mask. In **Between meridional planes** mode, **CMB side** switches
+between the complementary front and rear sectors. Open **Planet / moon surface**, enable **Show**, choose
 **Display → Surface image**, then select **Image body**: Earth, Mars, Ganymede,
 Mercury, Venus (radar surface), Enceladus or Moon. **Texture longitude**, **Image
 radius / outer**, and **Opacity** adjust its placement and appearance. Images

@@ -1,5 +1,16 @@
 # v0.4.0 — static hosted/local-data viewer
 
+## Linked meridian halves and reversible two-plane clipping (2026-09-11)
+
+- Link both halves of each meridional slice by default, sharing the field,
+  complete colour scale, colour map, opacity and one colourbar. An **Independent
+  sides** toggle reveals the existing separate left-side controls when needed.
+- Make **CMB side: Rear / Front** select complementary sectors in **Between
+  meridional planes** mode. The same correction applies to optional isosurface
+  clipping.
+- Preserve older one-field views as linked and infer independent mode for view
+  codes that already store different settings on the two halves.
+
 ## Split meridional fields and cylindrical scalar gradients (2026-09-11)
 
 - Give the right (`+s`, longitude `phi`) and left (`-s`, longitude `phi+180°`)
