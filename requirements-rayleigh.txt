@@ -1,0 +1,3 @@
+numpy
+scipy
+# Native Rayleigh reader; no Rayleigh build, SHTns or modules.py required.

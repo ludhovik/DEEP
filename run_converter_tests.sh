@@ -12,3 +12,4 @@ python3 tests/test_calypso_binary.py
 python3 tests/test_field_line_performance.py
 python3 tests/test_quicc_converter.py
 python3 tests/test_quicc_shell.py
+python3 tests/test_rayleigh_converter.py

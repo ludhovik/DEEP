@@ -10,7 +10,9 @@ and convection simulations. It includes converters for:
 - Calypso merged ASCII/binary spectral restarts (`*.fst` / `*.fsb`, also
   native gzip) with their matching grid controls;
 - QuICC/EPMDynamoCode spherical HDF5 spectral states: full-sphere `WLFl`/`WLFm`
-  and spherical-shell `SLFl`/`SLFm` ordering.
+  and spherical-shell `SLFl`/`SLFm` ordering;
+- Rayleigh `Spherical_3D` outputs and single-domain version-2 Chebyshev checkpoints
+  (see [Rayleigh converter and public example](RAYLEIGH_CONVERTER.md)).
 
 Open the hosted viewer at
 [the DEEPscope viewer](https://ludhovik.github.io/DEEP/), or run it locally
@@ -382,7 +384,7 @@ Older bundles without line identifiers retain independent stride selection;
 new converter output already contains the pairing information. Shell lines
 without an exported exterior partner remain available for display.
 
-All five converters trace a line in Cartesian coordinates with arclength-like
+All six converters trace a line in Cartesian coordinates with arclength-like
 parameter `s`:
 
 ```text
@@ -406,7 +408,7 @@ Bphi_lm(r)   = -q_lm (R/r)^(l+2)/(l+1)/sin(theta) dY_lm/dphi
 ```
 
 This field is divergence-free and curl-free. Leeds obtains `q_lm` from its CMB
-poloidal coefficients, while XSHELLS, MagIC, Calypso and QuICC analyse the physical CMB `Br`.
+poloidal coefficients, while XSHELLS, MagIC, Calypso, QuICC and Rayleigh analyse the physical CMB `Br`.
 The SHTns spheroidal coefficient is fixed analytically to
 `S_lm = -Q_lm/(l+1)`; it is no longer selected from line appearance.
 
@@ -681,18 +683,19 @@ python -m pip install -r requirements-xshells.txt     # XSHELLS
 python -m pip install -r requirements-magic.txt       # MagIC bridge
 python -m pip install -r requirements-calypso.txt     # Calypso (NumPy/SciPy)
 python -m pip install -r requirements-quicc.txt       # QuICC/EPM (NumPy/SciPy/h5py)
+python -m pip install -r requirements-rayleigh.txt    # Rayleigh (NumPy/SciPy)
 ```
 
 Run any converter with `--help` for the complete and current option list.
 
 ### Angular spectral truncation
 
-All five converters accept `--spectral-lmax L`. **The default is 0: keep all
+All six converters accept `--spectral-lmax L`. **The default is 0: keep all
 available source degrees.** Omitting the option is equivalent to setting it to
 0. This changes the Leeds converter's previous default of 128; specify 128
 explicitly to retain that cutoff.
 
-For example, add this to a Leeds, XSHELLS, MagIC, Calypso or QuICC conversion command:
+For example, add this to a Leeds, XSHELLS, MagIC, Calypso, QuICC or Rayleigh conversion command:
 
 ```bash
 --spectral-lmax 128
@@ -707,11 +710,11 @@ above the available degree leaves the original grid and fields unchanged.
 `spectral_truncation`.
 
 Leeds, XSHELLS, Calypso and QuICC truncate their native scalar and poloidal/toroidal
-coefficients before physical-space synthesis. XSHELLS retains radial ghost
+coefficients before physical-space synthesis. Rayleigh checkpoints do the same. XSHELLS retains radial ghost
 coefficients and each field's radial domain. Omit explicit `--nlat`/`--nphi`
 when you want XSHELLS to choose its smaller grid automatically.
 
-MagIC graphic files contain physical samples. The converter first reads the
+MagIC graphic files and Rayleigh Spherical_3D files contain physical samples. The converter first reads the
 native data, projects it onto scalar/vector spherical harmonics, and
 synthesizes the retained degrees on a smaller grid. Scalars keep their
 degree-zero mean; velocity and magnetic fields use the coupled vector
@@ -724,7 +727,7 @@ Gradients, EMF, induction and field lines are then calculated from the
 truncated source fields. Nonlinear products can contain higher degrees than
 the input cutoff; reduced output grids do not preserve all native nonlinear
 detail. Check convergence for the quantities you use. CMB/Earth map cutoffs
-and MagIC/Calypso/QuICC's `--external-lmax` (default 32) remain separate controls.
+and MagIC/Calypso/QuICC/Rayleigh's `--external-lmax` (default 32) remain separate controls.
 
 ## Leeds converter
 
@@ -920,9 +923,27 @@ identify the model’s Rayleigh normalization; gradients are exported by default
 See [QUICC_CONVERTER.md](QUICC_CONVERTER.md) for equations, normalization limits,
 a verified downloadable dynamo benchmark and the validation command.
 
+## Rayleigh converter
+
+Rayleigh full `Spherical_3D` snapshots and supported version-2, single-domain
+Chebyshev checkpoints can be converted without installing Rayleigh:
+
+```bash
+python3 tools/convert_rayleigh_to_viewer.py \
+  --checkpoint /path/to/run/Checkpoints/00040000 \
+  --out public/data_rayleigh \
+  --incremental --cache-dir "$HOME/.cache/deepscope"
+```
+
+For physical outputs, use `--snapshot /path/to/Spherical_3D/00040000_grid`.
+The shared diagnostics and magnetic field-line options apply when the source
+contains the required fields. N2 is omitted unless a matching convention is
+explicitly selected. See [RAYLEIGH_CONVERTER.md](RAYLEIGH_CONVERTER.md) for
+supported layouts, equations, sequences and a tested public convection dataset.
+
 ## Useful converter options
 
-The five converters intentionally share common controls where possible:
+The six converters intentionally share common controls where possible:
 
 ```text
 --spectral-lmax L
@@ -947,7 +968,7 @@ quantities.
 
 ### Incremental conversion
 
-All five converters accept **`--incremental`**. Add it to the same conversion
+All six converters accept **`--incremental`**. Add it to the same conversion
 command, keeping its source and output paths:
 
 ```text
@@ -979,14 +1000,14 @@ output and `public/`. Deleting this disposable cache leaves converted data
 intact; missing calculations will be rebuilt when needed.
 
 Combine **`--incremental --force`** to recompute and refresh cached calculations.
-Without `--incremental`, conversion runs normally. Leeds, MagIC, Calypso and QuICC sequence
+Without `--incremental`, conversion runs normally. Leeds, MagIC, Calypso, QuICC and Rayleigh sequence
 extensions reuse unchanged frames and preserve root and per-frame `view.DTV2`
 files. XSHELLS keeps its existing single-snapshot interface. Previous output
 backups and validation before publication also apply to incremental runs.
 
 ### Field-line runtime and progress
 
-All five converters use the shared serial CPU tracer. They now report the
+All six converters use the shared serial CPU tracer. They now report the
 internal, exterior and return-branch stages, completed seed counts, current
 integration step and elapsed time approximately every five seconds. Writing
 large line files, saving completed line calculations and final validation

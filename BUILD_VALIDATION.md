@@ -478,3 +478,27 @@ A clean `npm ci && npm run build` was attempted twice. The source build could no
 npm ci
 npm run build
 ```
+
+
+## Rayleigh converter — 2026-09-10
+
+- Added a native NumPy/SciPy reader for Rayleigh Spherical_3D fields and
+  single-domain version-2 Chebyshev checkpoints, using the common viewer export
+  and incremental calculation cache. Unsupported checkpoint representations
+  and incomplete vectors fail explicitly.
+- Full converter suite: 150 tests, 144 passed and 6 optional-fixture tests
+  skipped. The 13 Rayleigh tests were also run with the official downloaded
+  benchmark enabled: all 13 passed. These cover byte order/layout, analytic
+  scalar and vector normalization, density scaling, centre limits, spectral
+  truncation, incremental additions, sequences and connected exterior arcs.
+- The official Rayleigh Sample Outputs checkpoint 00040000 was converted into
+  a validated 23-field bundle. Independently integrated kinetic energy was
+  58.3478350673 versus the published case-0 benchmark value 58.348. Native
+  Shell_Slices velocity comparisons differ by less than 0.012% in relative L2;
+  those diagnostics precede the checkpoint by one timestep. The thermal
+  boundary values reconstruct to 1 and 0 within float32/roundoff tolerance.
+- Production viewer build passed after adding Rayleigh to the converter note.
+  The existing large-chunk warning remains. No viewer behavior changed.
+- Scope: the downloaded benchmark is hydrodynamic and a spherical shell.
+  Magnetic and full-sphere checks use analytic fixtures; no claim of validating
+  every Rayleigh model/checkpoint variant is made. See RAYLEIGH_CONVERTER.md.
