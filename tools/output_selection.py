@@ -11,6 +11,16 @@ INDUCTION = {'Ir','It','Ip','Iz','Iabs'}
 SCALARS = {'T','C','Phase','P','T_nom0','C_nom0','T_phiavg','C_phiavg'}
 GRADIENTS = {f'grad_{axis}{scalar}{suffix}' for axis in ('r','theta','phi','s','z') for scalar in ('T','C') for suffix in ('','_nom0')}
 FIELDS = VELOCITY | MAGNETIC | EMF | INDUCTION | SCALARS | GRADIENTS | {'N2','N2_nom0'}
+COMPOSITION = {'C','C_nom0','C_phiavg'} | {
+    name for name in GRADIENTS if name.startswith('grad_') and
+    (name.endswith('C') or name.endswith('C_nom0'))
+}
+
+
+def composition_disabled(args):
+    """True only for an explicit compositional Rayleigh override of zero."""
+    value = getattr(args, 'RaC', None)
+    return value is not None and float(value) == 0.0
 
 
 def cylindrical_gradient(grad_r, grad_theta, theta):
@@ -36,6 +46,13 @@ class OutputSelection:
     def __init__(self, args):
         names = getattr(args,'output',None)
         self.names = None if names is None else tuple(dict.fromkeys(names))
+        self.composition_disabled = composition_disabled(args)
+        disabled = set(self.names or ()) & COMPOSITION
+        if self.composition_disabled and disabled:
+            raise ValueError(
+                '--RaC 0 disables composition outputs; remove '
+                + ', '.join(sorted(disabled)) + ' from --output or use a non-zero --RaC.'
+            )
         if self.names is None: return
         if not self.names: raise ValueError('--output needs at least one volume field.')
         unknown = set(self.names)-FIELDS
@@ -50,6 +67,7 @@ class OutputSelection:
 
     def wants(self,name):return self.names is None or name in self.names
     def needs(self,name):
+        if self.composition_disabled and name == 'C':return False
         if self.names is None:return True
         names=set(self.names)
         if name in ('ur','ut','up','utor'):return bool(names&(VELOCITY|EMF|INDUCTION))

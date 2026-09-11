@@ -129,6 +129,35 @@ class SelectionTests(unittest.TestCase):
             args=magic.build_arg_parser().parse_args(['--graph','G_1.test',*options])
             with self.assertRaises(ValueError):OutputSelection(args)
         self.assertIsNone(OutputSelection(magic.build_arg_parser().parse_args([])).names)
+
+    def test_explicit_zero_RaC_disables_composition_and_rejects_conflicting_outputs(self):
+        args=magic.build_arg_parser().parse_args(['--RaC','0'])
+        selection=OutputSelection(args)
+        self.assertTrue(selection.composition_disabled)
+        self.assertFalse(selection.needs('C'))
+        self.assertTrue(selection.needs('T'))
+        for name in ('C','C_nom0','C_phiavg','grad_rC','grad_zC_nom0'):
+            args=magic.build_arg_parser().parse_args(['--RaC','0','--output',name])
+            with self.subTest(name=name),self.assertRaisesRegex(ValueError,'--RaC 0 disables composition'):
+                OutputSelection(args)
+
+    def test_zero_RaC_full_export_is_thermal_only_and_incremental_removes_composition(self):
+        out=self.root/'bundle'
+        self.magic_run(out,extra=['--incremental'])
+        original=self.meta(out)
+        self.assertIn('C',original['fields'])
+        (out/'view.DTV2').write_text('keep this view')
+        log=self.magic_run(out,extra=['--incremental','--RaC','0'])
+        metadata=self.meta(out)
+        self.assertIn('Composition disabled',log)
+        self.assertTrue(metadata['composition_disabled_by_RaC_zero'])
+        self.assertIn('T',metadata['fields'])
+        self.assertFalse(any(name in {'C','C_nom0','C_phiavg'} or
+                             (name.startswith('grad_') and (name.endswith('C') or name.endswith('C_nom0')))
+                             for name in metadata['fields']))
+        self.assertFalse((out/'C_volume.f32').exists())
+        self.assertEqual((out/'view.DTV2').read_text(),'keep this view')
+        validate_bundle(out)
     def test_selected_incremental_reuses_dependencies_and_updates_exact_inventory(self):
         out=self.root/'selected';self.magic_run(out,['vort_r'],['--incremental'])
         log=self.magic_run(out,['vort_r','vort_z'],['--incremental'])
@@ -146,6 +175,12 @@ class SelectionTests(unittest.TestCase):
             common=[*source,'--skip-field-lines','--no-earth-br','--no-parameter-prompt']
             with contextlib.redirect_stdout(io.StringIO()):mod.main([*common,'--out',str(full)])
             self.assertTrue({'grad_sT','grad_zT','grad_sT_nom0','grad_zT_nom0'} <= set(self.meta(full)['fields']))
+            thermal=self.root/f'thermal{index}'
+            with contextlib.redirect_stdout(io.StringIO()):mod.main([*common,'--out',str(thermal),'--RaC','0'])
+            thermal_meta=self.meta(thermal)
+            self.assertTrue(thermal_meta['composition_disabled_by_RaC_zero'])
+            self.assertIn('T',thermal_meta['fields'])
+            self.assertFalse(set(thermal_meta['fields']) & {'C','C_nom0','C_phiavg','grad_rC','grad_zC_nom0'})
             names=['ur','Br','T','vort_r']
             with contextlib.redirect_stdout(io.StringIO()):mod.main([*common,'--out',str(out),'--output',*names])
             self.compare(full,out,names)

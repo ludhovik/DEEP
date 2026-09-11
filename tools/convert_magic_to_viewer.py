@@ -566,6 +566,8 @@ def convert_adapted_snapshot(path, outdir, args, adapted, graph_parameters, *,
     theta = adapted["theta"]
     phi = adapted["phi"]
     selection = OutputSelection(args)
+    if selection.composition_disabled:
+        print("Composition disabled by explicit --RaC 0; composition fields and diagnostics are omitted.")
     raw = {key: value for key, value in adapted["fields"].items() if selection.needs(key)}
     r_icb, r_cmb = float(adapted.get("r_fluid_inner", r_shell[0])), float(r_shell[-1])
     has_inner_core = r_icb > RADIAL_ATOL
@@ -954,6 +956,7 @@ def convert_adapted_snapshot(path, outdir, args, adapted, graph_parameters, *,
                        "PrMag": json_number(resolved_parameters["Pm"]),
                        "radius_ratio": json_number(getattr(graph, "radratio", None))},
         "parameter_sources": graph_parameters["_parameter_sources"],
+        "composition_disabled_by_RaC_zero": selection.composition_disabled,
         "spectral_truncation": spectral_truncation,
         "spectral": {"lmax": lmax, "minc": int(adapted["minc"]),
                      "nlat": len(theta), "nphi": len(phi),

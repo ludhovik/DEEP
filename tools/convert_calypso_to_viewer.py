@@ -173,9 +173,13 @@ def physical_parameters(records, args, radius, r_icb=None):
     factors = {}
     if cv is not None and cv > 0 and cor is not None and cor != 0:
         for field, coef in (("T", thermal), ("C", composition)):
+            if field == "C" and getattr(args, "RaC", None) == 0.0:
+                continue
             if coef is not None:
                 factors[field] = radius * (4 * cv * coef / cor**2)
     for field, cli, denominator in (("T", "RaT", "pr"), ("C", "RaC", "sc")):
+        if field == "C" and getattr(args, "RaC", None) == 0.0:
+            continue
         if getattr(args, cli) is not None or (field not in factors and params["_parameter_sources"].get(cli) == "prompt"):
             ek, denom = params["ek"], params[denominator]
             if ek is None or denom is None or denom <= 0:

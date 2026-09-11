@@ -212,7 +212,10 @@ class InnerCoreTests(unittest.TestCase):
             with mock.patch.object(ic,"extend_leeds_inner_core"):
                 leeds.run_leeds_conversion(args)
             self.assertEqual(reader.call_count,1)
-            self.assertEqual(json.loads((root/"old/metadata.json").read_text())["nr"],3)
+            initial_metadata=json.loads((root/"old/metadata.json").read_text())
+            self.assertEqual(initial_metadata["nr"],3)
+            self.assertTrue(initial_metadata["composition_disabled_by_RaC_zero"])
+            self.assertFalse(set(initial_metadata["fields"]) & {"C","C_nom0","C_phiavg","grad_rC","grad_zC_nom0"})
             args.inner_core_only=True
             leeds.run_leeds_conversion(args)
             self.assertEqual(reader.call_count,1,"the public CLI bypasses load_state and outer transforms")

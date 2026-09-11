@@ -1,5 +1,15 @@
 # Integrated package validation
 
+## Explicit thermal-only conversion (`--RaC 0`, 2026-09-11)
+
+- Selection tests verify that composition fields and every composition-gradient
+  spelling are disabled, contradictory `--output` requests fail, and thermal
+  fields remain available.
+- A full incremental converter regression verifies that an existing composition
+  inventory is removed on thermal-only reconversion while `view.DTV2` survives.
+- Parameter tests verify that a missing `Sc` is not prompted for when explicit
+  `--RaC 0` disables the only calculation that requires it.
+
 ## Linked meridians and two-plane clip side (2026-09-11)
 
 - Viewer regressions verify that linked meridian halves copy all appearance

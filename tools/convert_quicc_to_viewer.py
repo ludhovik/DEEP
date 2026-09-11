@@ -138,6 +138,7 @@ def convert_state(path, outdir, args):
     if args.n2_convention != 'none' and (selection.wants('N2') or selection.wants('N2_nom0')):
         ek = args.Ek if args.Ek is not None else params['ek']
         for field, ra_key, pr_key, ra_arg, pr_arg in [('T','ra','pr','RaT','Pr'), ('C','raxi','sc','RaC','Sc')]:
+            if field == 'C' and selection.composition_disabled: continue
             ra = getattr(args,ra_arg) if getattr(args,ra_arg) is not None else params[ra_key]
             pr = getattr(args,pr_arg) if getattr(args,pr_arg) is not None else params[pr_key]
             shell_rotating = args.n2_convention == 'quicc-rotating' and interval is not None

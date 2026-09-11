@@ -71,6 +71,15 @@ class ParameterTests(unittest.TestCase):
                 values=self.quiet({'Ra_comp':0,'Pm':0},args)
             self.assertEqual(values['RaC'],0);self.assertEqual(values['Pm'],0);self.assertTrue(math.isnan(values['Ek']))
 
+    def test_explicit_zero_RaC_does_not_prompt_for_missing_Sc(self):
+        native={**NATIVE};del native['Sc']
+        args=self.args(RaC=0)
+        with mock.patch.object(sys,'stdin',io.StringIO()) as stdin, mock.patch('builtins.input',side_effect=AssertionError('Sc prompt')):
+            stdin.isatty=lambda:True
+            values=self.quiet(native,args)
+        self.assertTrue(math.isnan(values['Sc']))
+        self.assertEqual(args._parameter_sources['Sc'],'disabled_by_RaC_zero')
+
     def test_prompt_validation_fortran_exponents_blank_and_eof(self):
         with contextlib.redirect_stdout(io.StringIO()) as out, mock.patch('builtins.input',side_effect=['bad','inf','1D-4']):
             self.assertEqual(cp.prompt_parameter('Ek','Ekman'),1e-4)

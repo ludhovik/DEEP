@@ -316,7 +316,7 @@ class IncrementalTests(unittest.TestCase):
             root = Path(folder); source = root / "state00001.cdf.dat"; source.touch()
             args = leeds.build_arg_parser().parse_args(["--state", str(source), "--out", str(root / "out"),
                 "--incremental", "--skip-field-lines", "--no-earth-br", "--downsample-theta", "2",
-                "--Ek", "1e-4", "--Pr", "1", "--Sc", "1", "--RaT", "1e6", "--RaC", "0"])
+                "--Ek", "1e-4", "--Pr", "1", "--Sc", "1", "--RaT", "1e6", "--RaC", "1"])
             with mock.patch.dict(sys.modules, {"modules": backend}), \
                  mock.patch.object(leeds, "read_state_radial_representations", return_value={}), \
                  mock.patch.object(leeds, "read_netcdf_attributes", return_value={}):
@@ -347,7 +347,7 @@ class IncrementalTests(unittest.TestCase):
                 leeds.run_leeds_conversion(args)
                 self.assertEqual(transform_spy.call_count, 0, "C-only export must not synthesize velocity or B")
                 args.output = None
-                args.Pr = None; args.no_parameter_prompt = True; args.out = str(root / "unknown")
+                args.Pr = args.Sc = None; args.no_parameter_prompt = True; args.out = str(root / "unknown")
                 leeds.run_leeds_conversion(args)
                 unknown = json.loads((root / "unknown" / "metadata.json").read_text())
                 self.assertIsNone(unknown["parameters"]["Pr"])
@@ -381,10 +381,11 @@ class IncrementalTests(unittest.TestCase):
                 return np.stack([np.transpose(a[:, :, ::-1], (2, 1, 0)) for a in self.arrays], axis=1)
         with tempfile.TemporaryDirectory() as folder, redirect_stdout(io.StringIO()):
             root = Path(folder)
-            for name in ("fieldU.test", "fieldB.test"):
+            for name in ("fieldU.test", "fieldB.test", "fieldC.test"):
                 (root / name).touch()
             args = xs.build_arg_parser().parse_args(["--velocity", str(root / "fieldU.test"),
-                "--magnetic", str(root / "fieldB.test"), "--out", str(root / "out"),
+                "--magnetic", str(root / "fieldB.test"), "--composition", str(root / "fieldC.test"),
+                "--out", str(root / "out"),
                 "--incremental", "--skip-field-lines", "--no-earth-br", "--downsample-theta", "2",
                 "--Ek", "1e-4", "--Pr", "1", "--Sc", "1", "--RaT", "1e6", "--RaC", "0"])
             def load(path, lazy=True):

@@ -783,6 +783,15 @@ requested individually when running interactively. Blank answers leave values
 unknown (`null` in metadata); prompts appear on separate lines. Use
 `--no-parameter-prompt` for batch jobs; missing values are reported.
 
+An explicit `--RaC 0` selects a thermal-only conversion. All six converters
+skip composition synthesis where their input format permits it and omit `C`,
+`C_nom0`, `C_phiavg`, every composition gradient, and composition profiles.
+`N2` retains its thermal contribution. This policy applies only to the explicit
+CLI option; a zero stored in native metadata does not silently discard a field.
+Combining `--RaC 0` with a composition name in `--output` is an error. With
+`--incremental`, the new staged bundle also removes previously managed
+composition `.f32` files while preserving `view.DTV2`.
+
 Leeds reads NetCDF global attributes: `E → Ek`, `Ra → RaT`, `Ra_comp → RaC`,
 and `Pr`, `Sc`, `Pm` directly. Optional `Ro`, `q` and `riro` (saved as
 `radius_ratio`) are retained when present, without prompting for these

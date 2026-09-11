@@ -7,9 +7,9 @@ except ImportError:
     from tools.converter_parameters import resolve_graph_parameters
 
 try:
-    from output_selection import OutputSelection
+    from output_selection import OutputSelection, composition_disabled
 except ImportError:
-    from tools.output_selection import OutputSelection
+    from tools.output_selection import OutputSelection, composition_disabled
 
 import argparse
 import copy
@@ -111,14 +111,15 @@ def input_control(path,args):
 
 
 def field_paths(path,args):
+    use_composition = not composition_disabled(args)
     if path.name=='grid_etc':
         names={'ur':'W','utor':'Z','Br':'C','Btor':'A','T':'T','P':'P'}
-        if args.composition_field:names['C']=args.composition_field
+        if use_composition and args.composition_field:names['C']=args.composition_field
         result={k:path.parent/v for k,v in names.items() if (path.parent/v).is_file()}
-        if args.composition_field and 'C' not in result:raise FileNotFoundError(path.parent/args.composition_field)
+        if use_composition and args.composition_field and 'C' not in result:raise FileNotFoundError(path.parent/args.composition_field)
     else:
         prefix=path.name.split('_')[0];mapping=dict(QUANTITIES,T=args.thermal_quantity)
-        if args.composition_quantity is not None:mapping['C']=args.composition_quantity
+        if use_composition and args.composition_quantity is not None:mapping['C']=args.composition_quantity
         files={}
         for f in path.parent.glob(prefix+'_*'):
             code=f.name[len(prefix)+1:]
@@ -126,7 +127,7 @@ def field_paths(path,args):
                 if int(code) in files:raise ValueError(f'Duplicate quantity code {code}.')
                 files[int(code)]=f
         result={k:files[q] for k,q in mapping.items() if q in files}
-        if args.composition_quantity is not None and 'C' not in result:raise ValueError('Requested composition quantity is missing.')
+        if use_composition and args.composition_quantity is not None and 'C' not in result:raise ValueError('Requested composition quantity is missing.')
     groups=[('ur','utor'),('Br','Btor')] if path.name=='grid_etc' else [('ur','ut','up'),('Br','Bt','Bp')]
     for group in groups:
         if any(k in result for k in group) and not all(k in result for k in group):raise ValueError(f'Incomplete vector: need all {group}.')
@@ -193,6 +194,7 @@ def convert_state(path,outdir,args):
     if args.n2_convention=='deepscope' and (selection.wants('N2') or selection.wants('N2_nom0')):
         ek=args.Ek if args.Ek is not None else params['ek']
         for field,ra,pr in [('T',args.RaT if args.RaT is not None else params['ra'],args.Pr if args.Pr is not None else params['pr']),('C',params['raxi'],params['sc'])]:
+            if field == 'C' and selection.composition_disabled: continue
             if field in fields:
                 if any(v is None or not math.isfinite(v) for v in (ek,ra,pr)) or pr<=0:raise ValueError(f'N2 for {field} needs finite Ek, Rayleigh and positive Pr/Sc.')
                 factors[field]=r*ek**2*ra/pr

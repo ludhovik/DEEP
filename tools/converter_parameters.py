@@ -68,6 +68,10 @@ def resolve_parameters(native, args, source='simulation metadata', prompt_missin
             value = native_value(native, aliases)
             origin = 'native'
             if value is None:
+                if name == 'Sc' and finite_number(getattr(args, 'RaC', None)) == 0.0:
+                    values[name] = float('nan')
+                    origins[name] = 'disabled_by_RaC_zero'
+                    continue
                 if name in answers:
                     value, origin = answers[name], 'prompt' if answers[name] is not None else 'unknown'
                 else:

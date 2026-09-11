@@ -20,9 +20,9 @@ Requires: numpy, shtns, pyxshells
 from __future__ import annotations
 
 try:
-    from output_selection import add_output_argument, cylindrical_gradient
+    from output_selection import OutputSelection, add_output_argument, cylindrical_gradient
 except ImportError:
-    from tools.output_selection import add_output_argument, cylindrical_gradient
+    from tools.output_selection import OutputSelection, add_output_argument, cylindrical_gradient
 
 import argparse
 import json
@@ -636,6 +636,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def convert_xshells(args: argparse.Namespace) -> None:
+    selection = OutputSelection(args)
     if args.line_seeds is not None:
         args.line_seed_theta, args.line_seed_phi = choose_regular_seed_grid(args.line_seeds)
         print(
@@ -645,11 +646,17 @@ def convert_xshells(args: argparse.Namespace) -> None:
         )
     paths = resolve_inputs(args)
 
+    if selection.composition_disabled and paths.get("composition") is not None:
+        print("Composition disabled by explicit --RaC 0; skipping the XSHELLS composition input.")
+        paths["composition"] = None
+
     print("XSHELLS input files:")
     for name, path in paths.items():
         print(f"  {name:12s}: {path if path is not None else '(not provided)'}")
 
     load_order = [key for key in ("magnetic", "velocity", "temperature", "composition") if paths[key] is not None]
+    if not load_order:
+        raise ValueError("No usable XSHELLS input remains; --RaC 0 disables a composition-only conversion.")
     angular_key = load_order[0]
     angular_reference = load_xshells_field(paths[angular_key])
 
@@ -1331,6 +1338,7 @@ def convert_xshells(args: argparse.Namespace) -> None:
             "Pm": json_number(resolved_parameters["Pm"]),
         },
         "parameter_sources": args._parameter_sources,
+        "composition_disabled_by_RaC_zero": selection.composition_disabled,
         "spectral_truncation": spectral_truncation,
         "spectral": {
             "lmax": int(angular_reference.lmax),

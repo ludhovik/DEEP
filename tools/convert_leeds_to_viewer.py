@@ -34,9 +34,9 @@ where theta is colatitude and phi is longitude.
 from __future__ import annotations
 
 try:
-    from output_selection import add_output_argument, cylindrical_gradient
+    from output_selection import OutputSelection, add_output_argument, cylindrical_gradient
 except ImportError:
-    from tools.output_selection import add_output_argument, cylindrical_gradient
+    from tools.output_selection import OutputSelection, add_output_argument, cylindrical_gradient
 
 import argparse
 import glob
@@ -2750,6 +2750,11 @@ def run_sequence_conversion(args: argparse.Namespace) -> None:
 
 def convert_state(args: argparse.Namespace) -> None:
 
+    selection = OutputSelection(args)
+    composition_enabled = not selection.composition_disabled
+    if not composition_enabled:
+        print("Composition disabled by explicit --RaC 0; Comp and its derived fields are omitted.")
+
     if not math.isfinite(float(args.center_tolerance)) or float(args.center_tolerance) <= 0.0:
         raise ValueError("--center-tolerance must be finite and > 0.")
     if int(args.min_inner_core_points) < 2:
@@ -2837,7 +2842,7 @@ def convert_state(args: argparse.Namespace) -> None:
     BP = state["BP"]
     BT = state["BT"]
     C = state["C"]
-    Comp = state["Comp"]
+    Comp = state["Comp"] if composition_enabled else None
     r = np.ascontiguousarray(np.asarray(state["r"], dtype=np.float64))
     lmax = as_scalar_int(state["lmax"], "lmax")
     mmax = as_scalar_int(state["mmax"], "mmax")
@@ -3047,40 +3052,44 @@ def convert_state(args: argparse.Namespace) -> None:
         C_is_regular, C_offset, C_source = fullsphere_storage_info(
             radial_representations["C"], "C"
         )
-        Comp_is_regular, Comp_offset, Comp_source = fullsphere_storage_info(
-            radial_representations["Comp"], "Comp"
-        )
         Cspat, theta_C, phi_C = SH_to_spat_fullsphere(
             C, r, lmax_transform, mmax_transform,
             power_offset=C_offset, regular_coefficients=C_is_regular,
         )
-        Compspat, theta_Comp, phi_Comp = SH_to_spat_fullsphere(
-            Comp, r, lmax_transform, mmax_transform,
-            power_offset=Comp_offset, regular_coefficients=Comp_is_regular,
-        )
         Cspatnom0, _, _ = SH_to_spat_nom0_fullsphere(
             C, r, lmax_transform, mmax_transform,
             power_offset=C_offset, regular_coefficients=C_is_regular,
-        )
-        Compspatnom0, _, _ = SH_to_spat_nom0_fullsphere(
-            Comp, r, lmax_transform, mmax_transform,
-            power_offset=Comp_offset, regular_coefficients=Comp_is_regular,
         )
         fullsphere_transform_meta["fields"]["C"] = {
             "input": C_source,
             "power_offset": int(C_offset),
             "implementation": "modules.SH_to_spat_fullsphere",
         }
-        fullsphere_transform_meta["fields"]["Comp"] = {
-            "input": Comp_source,
-            "power_offset": int(Comp_offset),
-            "implementation": "modules.SH_to_spat_fullsphere",
-        }
+        Compspat = Compspatnom0 = None
+        if composition_enabled:
+            Comp_is_regular, Comp_offset, Comp_source = fullsphere_storage_info(
+                radial_representations["Comp"], "Comp"
+            )
+            Compspat, theta_Comp, phi_Comp = SH_to_spat_fullsphere(
+                Comp, r, lmax_transform, mmax_transform,
+                power_offset=Comp_offset, regular_coefficients=Comp_is_regular,
+            )
+            Compspatnom0, _, _ = SH_to_spat_nom0_fullsphere(
+                Comp, r, lmax_transform, mmax_transform,
+                power_offset=Comp_offset, regular_coefficients=Comp_is_regular,
+            )
+            fullsphere_transform_meta["fields"]["Comp"] = {
+                "input": Comp_source,
+                "power_offset": int(Comp_offset),
+                "implementation": "modules.SH_to_spat_fullsphere",
+            }
     else:
         Cspat, theta_C, phi_C = SH_to_spat(C, lmax_transform, mmax_transform)
-        Compspat, theta_Comp, phi_Comp = SH_to_spat(Comp, lmax_transform, mmax_transform)
         Cspatnom0, _, _ = SH_to_spat_nom0(C, lmax_transform, mmax_transform)
-        Compspatnom0, _, _ = SH_to_spat_nom0(Comp, lmax_transform, mmax_transform)
+        Compspat = Compspatnom0 = None
+        if composition_enabled:
+            Compspat, theta_Comp, phi_Comp = SH_to_spat(Comp, lmax_transform, mmax_transform)
+            Compspatnom0, _, _ = SH_to_spat_nom0(Comp, lmax_transform, mmax_transform)
 
     theta = np.ascontiguousarray(np.asarray(theta, dtype=np.float64))
     phi = np.ascontiguousarray(np.asarray(phi, dtype=np.float64))
@@ -3098,9 +3107,10 @@ def convert_state(args: argparse.Namespace) -> None:
         Bt = as_r_theta_phi(Bt, nr, ntheta, nphi)
         Bp = as_r_theta_phi(Bp, nr, ntheta, nphi)
     Cspat = as_r_theta_phi(Cspat, nr, ntheta, nphi)
-    Compspat = as_r_theta_phi(Compspat, nr, ntheta, nphi)
     Cspatnom0 = as_r_theta_phi(Cspatnom0, nr, ntheta, nphi)
-    Compspatnom0 = as_r_theta_phi(Compspatnom0, nr, ntheta, nphi)
+    if composition_enabled:
+        Compspat = as_r_theta_phi(Compspat, nr, ntheta, nphi)
+        Compspatnom0 = as_r_theta_phi(Compspatnom0, nr, ntheta, nphi)
 
     center_vector_diagnostics: dict[str, Any] = {}
     if transform_fullsphere:
@@ -3114,9 +3124,10 @@ def convert_state(args: argparse.Namespace) -> None:
             )
             center_vector_diagnostics["magnetic"] = magnetic_center_diag
         Cspat = regularize_scalar_center(Cspat, center_mask, "C")
-        Compspat = regularize_scalar_center(Compspat, center_mask, "Comp")
         Cspatnom0 = regularize_scalar_center(Cspatnom0, center_mask, "C_nom0")
-        Compspatnom0 = regularize_scalar_center(Compspatnom0, center_mask, "Comp_nom0")
+        if composition_enabled:
+            Compspat = regularize_scalar_center(Compspat, center_mask, "Comp")
+            Compspatnom0 = regularize_scalar_center(Compspatnom0, center_mask, "Comp_nom0")
 
     Uabs = np.sqrt(Ur * Ur + Ut * Ut + Up * Up)
     if has_magnetic_field:
@@ -3204,9 +3215,10 @@ def convert_state(args: argparse.Namespace) -> None:
         Ut = zero_inside_fluid_boundary(Ut, fluid_inner_index)
         Up = zero_inside_fluid_boundary(Up, fluid_inner_index)
         Cspat = zero_inside_fluid_boundary(Cspat, fluid_inner_index)
-        Compspat = zero_inside_fluid_boundary(Compspat, fluid_inner_index)
         Cspatnom0 = zero_inside_fluid_boundary(Cspatnom0, fluid_inner_index)
-        Compspatnom0 = zero_inside_fluid_boundary(Compspatnom0, fluid_inner_index)
+        if composition_enabled:
+            Compspat = zero_inside_fluid_boundary(Compspat, fluid_inner_index)
+            Compspatnom0 = zero_inside_fluid_boundary(Compspatnom0, fluid_inner_index)
 
     Uabs = np.sqrt(Ur * Ur + Ut * Ut + Up * Up)
     if has_magnetic_field:
@@ -3280,49 +3292,63 @@ def convert_state(args: argparse.Namespace) -> None:
         grad_rC_f, grad_thetaC_f, grad_phiC_f = gradient_scalar_3d(
             Cspat[fluid_inner_index:], r_fluid, theta, phi
         )
-        grad_rComp_f, grad_thetaComp_f, grad_phiComp_f = gradient_scalar_3d(
-            Compspat[fluid_inner_index:], r_fluid, theta, phi
-        )
         grad_rC_3d = embed_fluid_radial_field(grad_rC_f, len(r), fluid_inner_index)
         grad_thetaC_3d = embed_fluid_radial_field(grad_thetaC_f, len(r), fluid_inner_index)
         grad_phiC_3d = embed_fluid_radial_field(grad_phiC_f, len(r), fluid_inner_index)
-        grad_rComp_3d = embed_fluid_radial_field(grad_rComp_f, len(r), fluid_inner_index)
-        grad_thetaComp_3d = embed_fluid_radial_field(grad_thetaComp_f, len(r), fluid_inner_index)
-        grad_phiComp_3d = embed_fluid_radial_field(grad_phiComp_f, len(r), fluid_inner_index)
+        grad_rComp_3d = grad_thetaComp_3d = grad_phiComp_3d = None
+        if composition_enabled:
+            grad_rComp_f, grad_thetaComp_f, grad_phiComp_f = gradient_scalar_3d(
+                Compspat[fluid_inner_index:], r_fluid, theta, phi
+            )
+            grad_rComp_3d = embed_fluid_radial_field(grad_rComp_f, len(r), fluid_inner_index)
+            grad_thetaComp_3d = embed_fluid_radial_field(grad_thetaComp_f, len(r), fluid_inner_index)
+            grad_phiComp_3d = embed_fluid_radial_field(grad_phiComp_f, len(r), fluid_inner_index)
     else:
         grad_rC_3d, grad_thetaC_3d, grad_phiC_3d = gradient_scalar_3d(Cspat, r, theta, phi)
-        grad_rComp_3d, grad_thetaComp_3d, grad_phiComp_3d = gradient_scalar_3d(Compspat, r, theta, phi)
+        grad_rComp_3d = grad_thetaComp_3d = grad_phiComp_3d = None
+        if composition_enabled:
+            grad_rComp_3d, grad_thetaComp_3d, grad_phiComp_3d = gradient_scalar_3d(Compspat, r, theta, phi)
         if transform_fullsphere:
             grad_rC_3d, grad_thetaC_3d, grad_phiC_3d = regularize_scalar_gradient_center(
                 grad_rC_3d, grad_thetaC_3d, grad_phiC_3d, center_mask
             )
-            grad_rComp_3d, grad_thetaComp_3d, grad_phiComp_3d = regularize_scalar_gradient_center(
-                grad_rComp_3d, grad_thetaComp_3d, grad_phiComp_3d, center_mask
-            )
+            if composition_enabled:
+                grad_rComp_3d, grad_thetaComp_3d, grad_phiComp_3d = regularize_scalar_gradient_center(
+                    grad_rComp_3d, grad_thetaComp_3d, grad_phiComp_3d, center_mask
+                )
 
     # Fluctuating (m != 0) gradient fields.
     grad_rC_fluct = remove_m0_phi(grad_rC_3d)
     grad_thetaC_fluct = remove_m0_phi(grad_thetaC_3d)
     grad_phiC_fluct = remove_m0_phi(grad_phiC_3d)
-    grad_rComp_fluct = remove_m0_phi(grad_rComp_3d)
-    grad_thetaComp_fluct = remove_m0_phi(grad_thetaComp_3d)
-    grad_phiComp_fluct = remove_m0_phi(grad_phiComp_3d)
     grad_sC_3d, grad_zC_3d = cylindrical_gradient(grad_rC_3d, grad_thetaC_3d, theta)
-    grad_sComp_3d, grad_zComp_3d = cylindrical_gradient(grad_rComp_3d, grad_thetaComp_3d, theta)
     grad_sC_fluct = remove_m0_phi(grad_sC_3d)
     grad_zC_fluct = remove_m0_phi(grad_zC_3d)
-    grad_sComp_fluct = remove_m0_phi(grad_sComp_3d)
-    grad_zComp_fluct = remove_m0_phi(grad_zComp_3d)
+    grad_rComp_fluct = grad_thetaComp_fluct = grad_phiComp_fluct = None
+    grad_sComp_3d = grad_zComp_3d = grad_sComp_fluct = grad_zComp_fluct = None
+    if composition_enabled:
+        grad_rComp_fluct = remove_m0_phi(grad_rComp_3d)
+        grad_thetaComp_fluct = remove_m0_phi(grad_thetaComp_3d)
+        grad_phiComp_fluct = remove_m0_phi(grad_phiComp_3d)
+        grad_sComp_3d, grad_zComp_3d = cylindrical_gradient(grad_rComp_3d, grad_thetaComp_3d, theta)
+        grad_sComp_fluct = remove_m0_phi(grad_sComp_3d)
+        grad_zComp_fluct = remove_m0_phi(grad_zComp_3d)
 
-    n2_available = all(np.isfinite(value) for value in (E, Pr, Sc, RaT, RaC)) and Pr > 0 and Sc > 0
+    thermal_n2_available = all(np.isfinite(value) for value in (E, Pr, RaT)) and Pr > 0
+    composition_n2_available = composition_enabled and all(
+        np.isfinite(value) for value in (E, Sc, RaC)
+    ) and Sc > 0
+    n2_available = thermal_n2_available or composition_n2_available
     N2_full = N2_nom0 = None
     if n2_available:
-        N2_full = r[:, None, None] * E**2 * (
-            grad_rComp_3d * RaC / Sc + grad_rC_3d * RaT / Pr
-        )
+        N2_full = np.zeros_like(grad_rC_3d, dtype=np.float64)
+        if thermal_n2_available:
+            N2_full += r[:, None, None] * E**2 * grad_rC_3d * RaT / Pr
+        if composition_n2_available:
+            N2_full += r[:, None, None] * E**2 * grad_rComp_3d * RaC / Sc
         N2_nom0 = remove_m0_phi(N2_full)
     else:
-        print("N2 omitted: finite Ek/RaT/RaC and positive Pr/Sc are required.", flush=True)
+        print("N2 omitted: no scalar has the finite parameters required by its contribution.", flush=True)
 
     if has_inner_core:
         helicity_fluid = compute_helicity(
@@ -3344,7 +3370,7 @@ def convert_state(args: argparse.Namespace) -> None:
     N2_profile = np.mean(N2_full, axis=(1, 2)) if n2_available else None
     N2_nom0_rms = np.sqrt(np.mean(N2_nom0 * N2_nom0, axis=(1, 2))) if n2_available else None
     grad_rC_mean_r = np.mean(grad_rC_3d, axis=(1, 2))
-    grad_rComp_mean_r = np.mean(grad_rComp_3d, axis=(1, 2))
+    grad_rComp_mean_r = np.mean(grad_rComp_3d, axis=(1, 2)) if composition_enabled else None
 
     Ur_phiavg = phi_average_volume(Ur, "ur")
     Ut_phiavg = phi_average_volume(Ut, "ut")
@@ -3365,14 +3391,18 @@ def convert_state(args: argparse.Namespace) -> None:
         "up_nom0": remove_m0_phi(Up),
         "helicity": helicity,
         "T": Cspat,
-        "C": Compspat,
         "T_nom0": Cspatnom0,
-        "C_nom0": Compspatnom0,
         "T_phiavg": phi_average_volume(Cspat, "T"),
-        "C_phiavg": phi_average_volume(Compspat, "C"),
         "N2": N2_full,
         "N2_nom0": N2_nom0,
     }
+
+    if composition_enabled:
+        fields.update({
+            "C": Compspat,
+            "C_nom0": Compspatnom0,
+            "C_phiavg": phi_average_volume(Compspat, "C"),
+        })
 
     if not n2_available:
         fields.pop("N2")
@@ -3419,7 +3449,8 @@ def convert_state(args: argparse.Namespace) -> None:
         }
 
     if not args.no_gradients:
-        print("Exporting full and m=0-removed 3-D gradients of thermal T and composition C...")
+        scalar_description = "thermal T and composition C" if composition_enabled else "thermal T"
+        print(f"Exporting full and m=0-removed 3-D gradients of {scalar_description}...")
 
         # Unsuffixed names are the complete fields, including m=0.
         fields["grad_rT"] = grad_rC_3d
@@ -3427,11 +3458,6 @@ def convert_state(args: argparse.Namespace) -> None:
         fields["grad_phiT"] = grad_phiC_3d
         fields["grad_sT"] = grad_sC_3d
         fields["grad_zT"] = grad_zC_3d
-        fields["grad_rC"] = grad_rComp_3d
-        fields["grad_thetaC"] = grad_thetaComp_3d
-        fields["grad_phiC"] = grad_phiComp_3d
-        fields["grad_sC"] = grad_sComp_3d
-        fields["grad_zC"] = grad_zComp_3d
 
         # _nom0 names explicitly remove the axisymmetric component.
         fields["grad_rT_nom0"] = grad_rC_fluct
@@ -3439,11 +3465,17 @@ def convert_state(args: argparse.Namespace) -> None:
         fields["grad_phiT_nom0"] = grad_phiC_fluct
         fields["grad_sT_nom0"] = grad_sC_fluct
         fields["grad_zT_nom0"] = grad_zC_fluct
-        fields["grad_rC_nom0"] = grad_rComp_fluct
-        fields["grad_thetaC_nom0"] = grad_thetaComp_fluct
-        fields["grad_phiC_nom0"] = grad_phiComp_fluct
-        fields["grad_sC_nom0"] = grad_sComp_fluct
-        fields["grad_zC_nom0"] = grad_zComp_fluct
+        if composition_enabled:
+            fields["grad_rC"] = grad_rComp_3d
+            fields["grad_thetaC"] = grad_thetaComp_3d
+            fields["grad_phiC"] = grad_phiComp_3d
+            fields["grad_sC"] = grad_sComp_3d
+            fields["grad_zC"] = grad_zComp_3d
+            fields["grad_rC_nom0"] = grad_rComp_fluct
+            fields["grad_thetaC_nom0"] = grad_thetaComp_fluct
+            fields["grad_phiC_nom0"] = grad_phiComp_fluct
+            fields["grad_sC_nom0"] = grad_sComp_fluct
+            fields["grad_zC_nom0"] = grad_zComp_fluct
 
     # Downsample after all derived quantities are computed.
     dr = max(1, int(args.downsample_r))
@@ -3456,7 +3488,7 @@ def convert_state(args: argparse.Namespace) -> None:
     N2_profile_out = sampling.radial(N2_profile) if n2_available else []
     N2_nom0_rms_out = sampling.radial(N2_nom0_rms) if n2_available else []
     grad_rC_mean_r_out = sampling.radial(grad_rC_mean_r)
-    grad_rComp_mean_r_out = sampling.radial(grad_rComp_mean_r)
+    grad_rComp_mean_r_out = sampling.radial(grad_rComp_mean_r) if composition_enabled else None
 
     nr_out = len(r_out)
     ntheta_out = len(theta_out)
@@ -3591,8 +3623,9 @@ def convert_state(args: argparse.Namespace) -> None:
         "N2": [json_number(x) for x in N2_profile_out],
         "N2_nom0_rms": [json_number(x) for x in N2_nom0_rms_out],
         "grad_rT_mean_r": [json_number(x) for x in grad_rC_mean_r_out],
-        "grad_rC_mean_r": [json_number(x) for x in grad_rComp_mean_r_out],
     }
+    if composition_enabled:
+        profiles["grad_rC_mean_r"] = [json_number(x) for x in grad_rComp_mean_r_out]
     if not n2_available:
         profiles.pop("N2")
         profiles.pop("N2_nom0_rms")
@@ -3806,6 +3839,7 @@ def convert_state(args: argparse.Namespace) -> None:
             **{key: json_number(value) for key, value in params_resolved.items()},
         },
         "parameter_sources": args._parameter_sources,
+        "composition_disabled_by_RaC_zero": not composition_enabled,
         "spectral": spectral_meta,
         "spectral_truncation": spectral_meta,
         "sampling": sampling.description(),

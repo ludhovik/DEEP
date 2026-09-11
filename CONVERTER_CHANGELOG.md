@@ -2,6 +2,11 @@
 
 ## 3.8.0
 
+- Add an explicit thermal-only policy for `--RaC 0`: avoid composition
+  synthesis where possible, omit all composition volumes/gradients/profiles,
+  retain thermal N2, and reject contradictory selected-output requests.
+- Make incremental thermal-only reconversion remove old managed composition
+  binaries without removing the saved dataset view.
 - Standardize viewer scalars across every converter: `T` is
   temperature/codensity and `C` is composition.
 - Make unsuffixed derived fields the complete `m=0`-included quantity and use
