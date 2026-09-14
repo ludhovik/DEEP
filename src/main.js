@@ -8045,7 +8045,7 @@ function buildGui() {
     "Smooth (may reorder)": "smooth",
   }).name("Transparency").onChange(refreshIsosurfaces);
 
-  const earthFolder = gui.addFolder("Planet / moon surface");
+  const earthFolder = gui.addFolder("Sun / planet / moon surface");
   const rebuildEarth = debouncedViewerTask("Outer surface update", () => updateEarthSurface({ reuseGeometry: false }));
   const recolourEarth = debouncedViewerTask("Outer surface colour update", () => updateEarthSurface({ reuseGeometry: true }));
   const earthFields = getEarthFieldNames();

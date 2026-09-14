@@ -1,6 +1,12 @@
 // Local reference imagery, loaded only when selected. Full provenance and
 // redistribution terms are shipped in public/assets/surfaces/CREDITS.txt.
 export const SURFACE_TEXTURES = Object.freeze({
+  sun: {
+    label: "Sun",
+    file: "assets/surfaces/sun.jpg",
+    credit: "Sun: Solar System Scope / INOVE, CC BY 4.0 (illustrative solar imagery).",
+    sourceUrl: "https://www.solarsystemscope.com/textures/",
+  },
   earth: {
     label: "Earth",
     file: "assets/earth_blue_marble.png",
@@ -18,6 +24,18 @@ export const SURFACE_TEXTURES = Object.freeze({
     file: "assets/surfaces/ganymede.jpg",
     credit: "Ganymede: Askaniy Anpilogov and NASA image contributors, CC BY 3.0. Full credits below.",
     sourceUrl: "https://github.com/CelestiaProject/CelestiaContent/blob/1993a082ee6307c0df7fdc0828eb117a0e8e9958/textures/hires/ganymede.jpg.license",
+  },
+  jupiter: {
+    label: "Jupiter",
+    file: "assets/surfaces/jupiter.jpg",
+    credit: "Jupiter: Solar System Scope / INOVE, CC BY 4.0 (NASA-derived imagery).",
+    sourceUrl: "https://www.solarsystemscope.com/textures/",
+  },
+  saturn: {
+    label: "Saturn",
+    file: "assets/surfaces/saturn.jpg",
+    credit: "Saturn: Solar System Scope / INOVE, CC BY 4.0 (NASA-derived imagery).",
+    sourceUrl: "https://www.solarsystemscope.com/textures/",
   },
   mercury: {
     label: "Mercury",

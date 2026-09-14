@@ -1,12 +1,12 @@
-DEEPscope planet and moon surface imagery
-========================================
+DEEPscope Sun, planet and moon surface imagery
+=============================================
 
 These are reference images, independent of the simulation data and its units.
 Their use does not imply endorsement by the source organisations. Image licences
 below apply separately from the repository's software licence. Include these
 credits when redistributing the images or figures containing them.
 
-All six JPEGs and the Earth PNG are bundled without further image edits by
+All nine JPEGs and the Earth PNG are bundled without further image edits by
 DEEPscope. They are global 2:1 equirectangular maps, with north at the top.
 The viewer uses +z north and places the map centre along +x at zero Texture
 longitude. Positive Texture longitude shifts the imagery toward +y without
@@ -26,6 +26,9 @@ at the horizontal centre. See ../README_EARTH_TEXTURE.txt for replacement maps.
 MARS -- mars.jpg -- 2048 x 1024
 MERCURY -- mercury.jpg -- 2048 x 1024
 VENUS -- venus.jpg -- 2048 x 1024
+SUN -- sun.jpg -- 2048 x 1024
+JUPITER -- jupiter.jpg -- 2048 x 1024
+SATURN -- saturn.jpg -- 2048 x 1024
 Credit for each image: Solar System Scope / INOVE.
 Licence for each image: Creative Commons Attribution 4.0 International (CC BY 4.0).
 Licence: https://creativecommons.org/licenses/by/4.0/
@@ -34,10 +37,17 @@ Downloads:
 https://www.solarsystemscope.com/textures/download/2k_mars.jpg
 https://www.solarsystemscope.com/textures/download/2k_mercury.jpg
 https://www.solarsystemscope.com/textures/download/2k_venus_surface.jpg
+https://www.solarsystemscope.com/textures/download/2k_sun.jpg
+https://www.solarsystemscope.com/textures/download/2k_jupiter.jpg
+https://www.solarsystemscope.com/textures/download/2k_saturn.jpg
 The creator describes NASA-derived maps with enhanced colours and fictional
 terrain used to fill missing coverage where necessary. Treat them as illustrative
 textures, not calibrated colour, elevation or albedo data. Venus is a coloured
 radar-derived surface depiction beneath its clouds, not an optical cloud image.
+Jupiter and Saturn depict atmospheric cloud patterns. The Sun image is an
+illustrative solar texture, not a dated observation or a magnetic-field map.
+These three bodies have evolving features; the textures are static visual
+references, without alignment to a simulation's time or longitude system.
 
 GANYMEDE -- ganymede.jpg -- 4096 x 2048
 Creator's notices, preserved from the upstream file licence:

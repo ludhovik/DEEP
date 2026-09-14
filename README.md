@@ -11,8 +11,11 @@ and convection simulations. It includes converters for:
   native gzip) with their matching grid controls;
 - QuICC/EPMDynamoCode spherical HDF5 spectral states: full-sphere `WLFl`/`WLFm`
   and spherical-shell `SLFl`/`SLFm` ordering;
-- Rayleigh `Spherical_3D` outputs and single-domain version-2 Chebyshev checkpoints
+- Rayleigh `Spherical_3D` outputs and single- or multiple-domain version-2 Chebyshev checkpoints
   (see [Rayleigh converter and public example](RAYLEIGH_CONVERTER.md)).
+
+For complete download, extraction and conversion commands for the selected
+Rayleigh and MagIC datasets, see [the public examples guide](EXAMPLES_DOWNLOAD_AND_CONVERSION.md).
 
 Open the hosted viewer at
 [the DEEPscope viewer](https://ludhovik.github.io/DEEP/), or run it locally
@@ -26,7 +29,7 @@ with Vite. Local datasets are read in the browser and are not uploaded.
 - positive and negative isosurfaces with colour/value legends;
 - magnetic slices and isosurfaces inside a resolved inner core;
 - internal and exterior magnetic field lines, including tubes with diameter proportional to magnetic energy;
-- Earth, Mars, Ganymede, Mercury, Venus, Enceladus and Moon surface images, or
+- Sun, Earth, Mars, Ganymede, Jupiter, Saturn, Mercury, Venus, Enceladus and Moon images, or
   an available extrapolated radial magnetic field;
 - two compatible datasets on the same grid;
 - time sequences with playback, preloading, and bounded memory caching;
@@ -211,9 +214,9 @@ codes that already contain different half settings retain the independent view.
 
 The CMB can be clipped by one or two meridional planes or by an explicit
 eight-quarter mask. In **Between meridional planes** mode, **CMB side** switches
-between the complementary front and rear sectors. Open **Planet / moon surface**, enable **Show**, choose
-**Display → Surface image**, then select **Image body**: Earth, Mars, Ganymede,
-Mercury, Venus (radar surface), Enceladus or Moon. **Texture longitude**, **Image
+between the complementary front and rear sectors. Open **Sun / planet / moon surface**, enable **Show**, choose
+**Display → Surface image**, then select **Image body**: Sun, Earth, Mars, Ganymede,
+Jupiter, Saturn, Mercury, Venus (radar surface), Enceladus or Moon. **Texture longitude**, **Image
 radius / outer**, and **Opacity** adjust its placement and appearance. Images
 use the same closed sphere, polar caps and meridian clipping as the Earth image.
 
@@ -230,7 +233,9 @@ with the viewer and downloaded only when selected, from the same origin as the
 app. They do not use Figshare, Zenodo or the Cloudflare proxy. Source credits
 follow the displayed image; a failed load leaves the previous image in place.
 
-Venus uses a radar-derived surface image. Some maps use enhanced colours or
+Venus uses a radar-derived surface image. Jupiter and Saturn show cloud patterns;
+the Sun uses an illustrative solar texture. These are static visual references.
+Some maps use enhanced colours or
 filled coverage gaps and are intended for illustration. Source mosaics can
 retain lighting differences or limited polar detail even though the sphere
 geometry has no missing seam or cap. See the

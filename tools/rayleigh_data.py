@@ -2,7 +2,7 @@
 
 Checkpoint harmonics use m-major packing, normalized Y_lm, and one real
 contribution for each stored m>=0 (not the usual factor two for m>0).
-Single-domain radial coefficients use c0/2 + sum(cn Tn), on rescaled roots.
+Each radial domain uses c0/2 + sum(cn Tn), on its own rescaled roots.
 """
 from pathlib import Path
 import math
@@ -51,6 +51,60 @@ def validate_axis(values,name):
         raise ValueError(f'Invalid/nonmonotone Rayleigh {name} grid.')
 
 
+def radial_domains(radius):
+    """Find native domain blocks, whose common endpoints are stored twice.
+
+    Only exactly repeated, adjacent interface radii are accepted. Nearby distinct
+    samples are never merged. Each block must contain at least three nodes.
+    """
+    radius=np.asarray(radius)
+    if radius.ndim!=1 or len(radius)<3 or not np.isfinite(radius).all():
+        raise ValueError('Invalid Rayleigh radius grid.')
+    delta=np.diff(radius)
+    if not (np.all(delta>=0) or np.all(delta<=0)) or not np.any(delta):
+        raise ValueError('Invalid/nonmonotone Rayleigh radius grid.')
+    edges=np.r_[0,np.flatnonzero(delta==0)+1,len(radius)]
+    if np.any(np.diff(edges)<3):
+        raise ValueError('Invalid Rayleigh radial interface: each domain needs at least three distinct nodes.')
+    return [slice(int(a),int(b)) for a,b in zip(edges[:-1],edges[1:])]
+
+
+def merge_radial_interfaces(radius,fields,rtol=1e-6):
+    """Average agreeing interface pairs after physical reconstruction.
+
+    The tolerance is relative to the maximum magnitude of each complete field,
+    so nodes on a zero crossing can be checked without an arbitrary unit scale.
+    Discontinuous fields cannot be represented on the viewer's single radial axis
+    and are rejected. No interpolation or radial resampling is performed.
+    """
+    domains=radial_domains(radius)
+    interfaces=np.array([s.stop-1 for s in domains[:-1]],dtype=int)
+    info=dict(domain_count=len(domains),native_nr=len(radius),
+        domain_sizes=[s.stop-s.start for s in domains],
+        domain_bounds=[[float(radius[s.start]),float(radius[s.stop-1])] for s in domains],
+        interface_radii=[float(radius[i]) for i in interfaces],
+        interface_policy='average agreeing pairs after reconstruction; reject discontinuities',
+        interface_relative_tolerance=rtol,interface_relative_jumps={})
+    if not len(interfaces):return radius,fields,info
+    keep=np.ones(len(radius),dtype=bool);keep[interfaces+1]=False
+    merged={}
+    for name,values in fields.items():
+        if values.shape[0]!=len(radius) or not np.isfinite(values).all():
+            raise ValueError(f'Invalid Rayleigh field at radial interfaces: {name}.')
+        scale=float(np.max(np.abs(values)))
+        jump=float(np.max(np.abs(values[interfaces]-values[interfaces+1])))
+        relative=jump/scale if scale else 0.
+        info['interface_relative_jumps'][name]=relative
+        if relative>rtol:
+            raise ValueError(f'Rayleigh {name} is discontinuous at a radial interface '
+                f'(relative jump {relative:.3g} > {rtol:g}); cannot merge duplicate radii.')
+        result=values[keep].copy()
+        positions=np.cumsum(keep)[interfaces]-1
+        result[positions]=.5*values[interfaces]+.5*values[interfaces+1]
+        merged[name]=result
+    return radius[keep],merged,info
+
+
 def read_grid(path,checkpoint=False):
     order=endian(path)
     with Path(path).open('rb') as f:
@@ -71,7 +125,7 @@ def read_grid(path,checkpoint=False):
             theta=read_values(f,order+'f8',nt);time=math.nan;step=int(Path(path).name.split('_')[0])
             if np_!=2*nt:raise ValueError('Spherical_3D expects nphi=2*ntheta.')
         if f.read(1):raise ValueError(f'Unexpected trailing grid data in {path}.')
-    validate_axis(r,'radius');validate_axis(theta,'colatitude')
+    radial_domains(r);validate_axis(theta,'colatitude')
     if min(r)<0 or min(theta)<=0 or max(theta)>=math.pi:raise ValueError('Rayleigh radius/colatitude is out of range.')
     return dict(r=r,theta=theta,phi=np.arange(np_)*2*math.pi/np_,lmax=lmax,time=time,step=step,endian=order)
 
@@ -113,11 +167,23 @@ def read_coefficients(path,nr,lmax,order):
 
 
 def radial_basis(radius):
-    """Validate the native single-domain root grid before differentiating."""
+    """Block-diagonal native synthesis and derivatives, one block per domain."""
+    domains=radial_domains(radius)
+    if len(domains)==1:return single_domain_basis(radius)
+    matrices=[np.zeros((len(radius),len(radius))) for _ in range(3)]
+    for domain in domains:
+        for target,block in zip(matrices,single_domain_basis(radius[domain])):
+            target[domain,domain]=block
+    return tuple(matrices)
+
+
+def single_domain_basis(radius):
+    """Validate the mapped roots, including the native endpoint rescaling."""
     n=len(radius);x=np.cos(np.pi*(np.arange(n)+.5)/n)
     a=(radius[0]-radius[-1])/(x[0]-x[-1]);b=radius[0]-a*x[0]
     if not np.allclose(radius,a*x+b,rtol=1e-11,atol=max(abs(a),1)*1e-12):
-        raise ValueError('Not a single-domain Rayleigh Chebyshev grid. Export Spherical_3D for multidomain/other grids.')
+        raise ValueError('Not a single-domain Rayleigh Chebyshev grid within a radial block. '
+            'Need mapped roots and repeated interface endpoints; export Spherical_3D for other grids.')
     coefficients=np.eye(n);coefficients[0,0]=.5
     basis=np.polynomial.chebyshev.chebval(x,coefficients).T
     derivative=np.polynomial.chebyshev.chebval(x,np.polynomial.chebyshev.chebder(coefficients)).T/a

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert Rayleigh Spherical_3D fields or single-domain spectral checkpoints."""
+"""Convert Rayleigh Spherical_3D fields or single/multidomain spectral checkpoints."""
 from __future__ import annotations
 try:
     from converter_parameters import resolve_graph_parameters
@@ -21,7 +21,7 @@ import shutil
 import numpy as np
 try:
     from rayleigh_data import (QUANTITIES, main_parameters, read_grid, read_reference,
-        read_volume, read_coefficients, synthesize_checkpoint, radial_basis)
+        read_volume, read_coefficients, synthesize_checkpoint, radial_basis, merge_radial_interfaces)
     from conversion_cache import run_conversion, cached_calculation
     from convert_magic_to_viewer import add_viewer_arguments, convert_adapted_snapshot
     from convert_leeds_to_viewer import choose_regular_seed_grid
@@ -29,14 +29,14 @@ try:
     from viewer_bundle import bundle_path
 except ImportError:
     from tools.rayleigh_data import (QUANTITIES, main_parameters, read_grid, read_reference,
-        read_volume, read_coefficients, synthesize_checkpoint, radial_basis)
+        read_volume, read_coefficients, synthesize_checkpoint, radial_basis, merge_radial_interfaces)
     from tools.conversion_cache import run_conversion, cached_calculation
     from tools.convert_magic_to_viewer import add_viewer_arguments, convert_adapted_snapshot
     from tools.convert_leeds_to_viewer import choose_regular_seed_grid
     from tools.spectral_truncation import cutoff_metadata, truncate_graphic_fields
     from tools.viewer_bundle import bundle_path
 
-CONVERTER_PACKAGE_VERSION='1.0.0'
+CONVERTER_PACKAGE_VERSION='1.1.0'
 
 
 def build_arg_parser():
@@ -52,6 +52,8 @@ def build_arg_parser():
     p.add_argument('--composition-quantity',type=int,help='Spherical_3D composition quantity code; never guessed.')
     p.add_argument('--composition-field',help='Checkpoint scalar filename, e.g. Xa001; never guessed.')
     p.add_argument('--constant-density',type=float,help='Explicit checkpoint reference density when equation_coefficients is absent.')
+    p.add_argument('--radial-interface-tolerance',type=float,default=1e-6,
+        help='Maximum interface mismatch relative to each full field before averaging duplicate radii (default 1e-6). Recorded in metadata; increase only as an explicit visualization approximation.')
     p.add_argument('--n2-convention',choices=['none','deepscope'],default='none',help='Default omits N2; deepscope explicitly selects r*Ek^2*(RaT/Pr*T_r+RaC/Sc*C_r).')
     p.add_argument('--modules-dir',help='CLI compatibility; no external modules.py or Rayleigh Python installation is needed.')
     return add_viewer_arguments(p,'public/data_rayleigh')
@@ -156,7 +158,7 @@ def convert_state(path,outdir,args):
     if checkpoint:
         if native.get('compressible') or native.get('pseudo_incompressible'):
             raise ValueError('Compressible/pseudo-incompressible checkpoints need Spherical_3D export; no density convention is guessed.')
-        radial_basis(r) # reject multidomain/other radial layouts before allocating fields
+        radial_basis(r) # validate every domain before allocating fields
         info=cutoff_metadata(args.spectral_lmax,lmax,lmax);leff=info['lmax_effective']
         nt=int(native.get('n_theta',len(theta)))
         if nt<=lmax:raise ValueError('main_input n_theta is inconsistent with checkpoint lmax.')
@@ -181,6 +183,12 @@ def convert_state(path,outdir,args):
     else:
         shape=(len(r),len(theta),len(phi))
         for key,f in files.items():fields[key]=read_volume(f,shape,grid['endian'])
+    r,fields,radial_info=merge_radial_interfaces(r,fields,args.radial_interface_tolerance)
+    if radial_info['domain_count']>1:
+        print(f"Rayleigh radial domains: {radial_info['domain_sizes']}; "
+              f"averaged {radial_info['native_nr']-len(r)} interface pairs within tolerance -> nr={len(r)}",flush=True)
+        print('Relative interface jumps: '+', '.join(f'{k}={v:.3g}'
+              for k,v in radial_info['interface_relative_jumps'].items()),flush=True)
     ir=np.argsort(r);it=np.argsort(theta);r=r[ir];theta=theta[it]
     fields={k:v[ir][:,it,:] for k,v in fields.items()}
     if not checkpoint:
@@ -204,6 +212,7 @@ def convert_state(path,outdir,args):
         metadata=dict(source_code='Rayleigh',description='Native Rayleigh snapshot; no background fields added.',converter_version=CONVERTER_PACKAGE_VERSION,
           source_fields={k:str(v) for k,v in files.items()},state_number=grid['step'],
           rayleigh=dict(input_format='checkpoint' if checkpoint else 'spherical3d',native_parameters=native,
+            radial_domains=radial_info,
             physical_time_known=math.isfinite(time),n2_convention=args.n2_convention,
             scalar_policy='stored thermal/composition fields only; imposed/reference scalar profiles are not added',
             checkpoint_velocity='curlcurl(W e_r)/rho + curl(Z e_r)/rho',
@@ -234,6 +243,8 @@ def run_sequence(args,paths):
 
 def main(argv=None):
     args=build_arg_parser().parse_args(argv)
+    if not math.isfinite(args.radial_interface_tolerance) or args.radial_interface_tolerance<0:
+        raise ValueError('--radial-interface-tolerance must be finite and nonnegative.')
     for name in ('downsample_r','downsample_theta','downsample_phi','line_seed_theta','line_seed_phi','line_max_steps','sequence_step'):
         if getattr(args,name)<1:raise ValueError(f'--{name.replace("_","-")} must be positive.')
     if args.line_step_size is not None and (not math.isfinite(args.line_step_size) or args.line_step_size<=0):raise ValueError('--line-step-size must be finite and positive.')

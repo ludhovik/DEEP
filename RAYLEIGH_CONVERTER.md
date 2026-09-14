@@ -77,13 +77,36 @@ Only the selected composition scalar is converted; names are not guessed.
 `--main-input FILE` overrides the automatically discovered control file.
 
 This reader supports **stream checkpoint version 2, grid_type 2, single-domain
-Chebyshev grids**, for Boussinesq and ordinary anelastic velocity potentials.
-It checks the actual radial nodes before differentiating. Other checkpoint
-layouts, multidomain grids, and compressible/pseudo-incompressible checkpoint
+and stacked multidomain Chebyshev grids**, for Boussinesq and ordinary anelastic
+velocity potentials. Each domain must use Rayleigh's mapped Chebyshev roots;
+the shared interface radius must be stored twice. The reader validates each
+block and reconstructs/differentiates its coefficients independently, including
+the half-weight of each domain's zeroth coefficient. Other checkpoint
+layouts and compressible/pseudo-incompressible checkpoint
 conventions are rejected with an instruction to export `Spherical_3D` instead.
 It does not invent a conducting inner-core field where the source has none.
 Full-fluid-sphere radial grids are supported when the stored potentials satisfy
 the required regular centre limits; the public benchmark validates a shell.
+
+After reconstruction, duplicate interface samples are checked and averaged to
+give the viewer a strictly monotone radial grid. All other radial samples stay
+unchanged. The default mismatch tolerance is `1e-6`, relative to each complete
+field's maximum absolute value. Larger discrepancies stop conversion. An
+explicit `--radial-interface-tolerance VALUE` can permit a larger mismatch as
+a visualization approximation; the tolerance, domain sizes, interface radii and
+measured field discrepancies are recorded in `metadata.json`. Gradients and
+curls near a merged interface depend on this treatment. The same interface
+handling is available for Spherical_3D input.
+
+The [solar tachocline MHD checkpoint](https://zenodo.org/records/7117669)
+`Case_M/Checkpoints/50200000` has three 64-point domains. With
+`--spectral-lmax 128`, the largest reconstructed interface discrepancy is about
+0.743% of the maximum absolute Bp field. Its visualization therefore needs an
+explicit tolerance such as `--radial-interface-tolerance 0.01`. This averages
+two interface pairs, yielding 190 distinct radii. Keep its reference density
+and use `--no-earth-br` for this solar case. No native same-time Spherical_3D
+reference is supplied in this archive; this is not a claim of validation against
+such a reference.
 
 Reference density must be present in `equation_coefficients`. If it is absent,
 `--constant-density 1` is available **only when a unit reference density is

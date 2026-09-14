@@ -10,16 +10,23 @@ import tempfile
 import unittest
 import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
-from rayleigh_data import read_grid, read_coefficients, read_volume, synthesize_checkpoint, radial_basis
+from rayleigh_data import (read_grid, read_coefficients, read_volume,
+                          synthesize_checkpoint, radial_basis, merge_radial_interfaces)
 from convert_rayleigh_to_viewer import main
 from viewer_bundle import validate_bundle
 
 
-def fixture(root, step=1, order='<', ri=.5, axis='z', magnetic=True):
+def fixture(root, step=1, order='<', ri=.5, axis='z', magnetic=True, domains=None):
     path=root/f'{step:08d}';path.mkdir(parents=True,exist_ok=True)
-    nr=12;lmax=3;nt=8
-    x=np.cos(np.pi*(np.arange(nr)+.5)/nr)
-    a=(1.5-ri)/(x[0]-x[-1]);b=1.5-a*x[0];r=a*x+b;r[-1]=ri
+    lmax=3;nt=8
+    domains=domains or [(12,1.5,ri)]
+    roots=[];radii=[]
+    for count,outer,inner in domains:
+        x=np.cos(np.pi*(np.arange(count)+.5)/count)
+        a=(outer-inner)/(x[0]-x[-1]);b=outer-a*x[0]
+        block=a*x+b;block[0]=outer;block[-1]=inner
+        roots.append(x);radii.append(block)
+    r=np.concatenate(radii);nr=len(r)
     with (path/'grid_etc').open('wb') as f:
         np.array([314,2,nr,2,lmax],dtype=order+'i4').tofile(f)
         np.array([.001,.001,*r,.1*step],dtype=order+'f8').tofile(f)
@@ -27,7 +34,11 @@ def fixture(root, step=1, order='<', ri=.5, axis='z', magnetic=True):
     (path/'main_input').write_text('&problem\n n_theta=8, reference_type=1,\n ekman_number=1d-3, prandtl_number=1, rayleigh_number=1d5\n/\n')
     nm=(lmax+1)*(lmax+2)//2;pairs=[(l,m) for m in range(lmax+1) for l in range(m,lmax+1)]
     def coeff(values):
-        c=np.polynomial.chebyshev.chebfit(x,values,nr-1);c[0]*=2;return c
+        pieces=[];start=0
+        for x in roots:
+            c=np.polynomial.chebyshev.chebfit(x,values[start:start+len(x)],len(x)-1)
+            c[0]*=2;pieces.append(c);start+=len(x)
+        return np.concatenate(pieces)
     zero=np.zeros((nr,nm),complex)
     z=zero.copy();z[:,pairs.index((1,0))]=coeff(r*r/math.sqrt(3/(4*math.pi)))
     c=zero.copy()
@@ -146,6 +157,59 @@ class RayleighTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'single-domain'):radial_basis(r)
         with (self.state/'main_input').open('a') as f:f.write('\n pseudo_incompressible=.true.\n')
         with self.assertRaisesRegex(ValueError,'pseudo-incompressible'):self.convert()
+    def test_unequal_radial_domains_analytic_vectors_and_derivatives(self):
+        domains=[(6,1.5,1.2),(9,1.2,.85),(7,.85,.5)]
+        for order in ['<','>']:
+            for axis in 'xyz':
+                p=fixture(self.root/'multi',order=order,axis=axis,domains=domains)
+                g=read_grid(p/'grid_etc',True);r,th,ph=g['r'],g['theta'],g['phi']
+                read=lambda n:read_coefficients(p/n,len(r),3,order)
+                B=synthesize_checkpoint(read('C'),r,3,3,th,ph,read('A'))
+                st,ct=np.sin(th)[None,:,None],np.cos(th)[None,:,None]
+                sp,cp=np.sin(ph)[None,None,:],np.cos(ph)[None,None,:]
+                xyz=(B[0]*st*cp+B[1]*ct*cp-B[2]*sp,
+                     B[0]*st*sp+B[1]*ct*sp+B[2]*cp,B[0]*ct-B[1]*st)
+                for name,value in zip('xyz',xyz):
+                    np.testing.assert_allclose(value,float(name==axis),atol=3e-12)
+                b,d,dd=radial_basis(r);c=read('T')[:,0]/math.sqrt(4*math.pi)
+                np.testing.assert_allclose(b@c,1+r*r,atol=2e-12)
+                np.testing.assert_allclose(d@c,2*r,atol=2e-11)
+                np.testing.assert_allclose(dd@c,2,atol=2e-9)
+                u=synthesize_checkpoint(read('W'),r,3,3,th,ph,read('Z'),2+0*r)
+                np.testing.assert_allclose(u[2],np.broadcast_to(r[:,None,None]*st/2,u[2].shape),atol=3e-12)
+                rr,merged,info=merge_radial_interfaces(r,dict(Br=B[0],Bt=B[1],Bp=B[2]))
+                self.assertEqual(info['domain_sizes'],[6,9,7]);self.assertEqual(len(rr),20)
+                self.assertTrue(np.all(np.diff(rr)<0))
+                self.assertLess(max(info['interface_relative_jumps'].values()),1e-10)
+        self.convert(state=p)
+        m=self.metadata();self.assertEqual(m['nr'],20)
+        self.assertEqual(m['rayleigh']['radial_domains']['domain_count'],3)
+        validate_bundle(self.root/'out')
+    def test_radial_interfaces_reject_discontinuities_and_bad_grids(self):
+        r=np.array([3.,2.5,2.,2.,1.5,1.])
+        fields={'T':r[:,None,None].copy()};fields['T'][3]+=.003
+        with self.assertRaisesRegex(ValueError,'discontinuous'):
+            merge_radial_interfaces(r,fields)
+        rr,values,info=merge_radial_interfaces(r,fields,rtol=.002)
+        self.assertEqual(values['T'][2,0,0],2.0015)
+        self.assertEqual(info['native_nr'],6);self.assertEqual(len(rr),5)
+        for bad in [np.array([3.,2.,2.,2.,1.,0.]),np.array([3.,2.,1.,2.,0.])]:
+            with self.assertRaises(ValueError):radial_basis(bad)
+        for tolerance in ['-1','nan','inf']:
+            with self.assertRaisesRegex(ValueError,'finite and nonnegative'):
+                self.convert('--radial-interface-tolerance',tolerance)
+    def test_physical_multidomain_interfaces(self):
+        path,values=physical_fixture(self.root/'physical_multi')
+        g=read_grid(path);r=g['r'].copy();r[4]=r[3]
+        with path.open('wb') as f:
+            np.array([314,len(r),len(g['theta']),len(g['phi'])],dtype='<i4').tofile(f)
+            np.r_[r,g['theta']].astype('<f8').tofile(f)
+        for code,v in values.items():
+            a=v.copy();a[4]=a[3];a.astype('<f8').tofile(path.parent/f'00000001_{code:05d}')
+        self.convert(state=path)
+        self.assertEqual(self.metadata()['nr'],7)
+        self.assertEqual(self.metadata()['rayleigh']['radial_domains']['domain_sizes'],[4,4])
+        validate_bundle(self.root/'out')
     def test_sequence_and_missing_step(self):
         fixture(self.root/'checkpoints',step=2)
         opts=['--folder',str(self.root/'checkpoints'),'--sequence-first','1','--sequence-last','2',
