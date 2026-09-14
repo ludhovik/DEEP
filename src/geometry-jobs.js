@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { computeLongitudeAverage } from "./longitude-average.js";
 import { buildSphericalIsosurface } from "./isosurface-geometry.js";
 import { simplifyMagneticLine, estimateTubeBytes, makeMagneticTubeGeometry } from "./field-line-tubes.js";
 
@@ -28,6 +29,7 @@ export function unpackGeometry(data) {
 export function geometryTransferList(result) {
   const buffers = new Set();
   for (const data of Array.isArray(result) ? result : [result]) {
+    if (ArrayBuffer.isView(data)) { buffers.add(data.buffer); continue; }
     if (!data?.attributes) continue;
     for (const attribute of Object.values(data.attributes)) buffers.add(attribute.array.buffer);
     if (data.index) buffers.add(data.index.buffer);
@@ -64,6 +66,7 @@ export function prepareTubeLines({ selected, settings, radius, limitBytes }, rep
 }
 
 export function executeGeometryJob(type, payload, report = () => {}) {
+  if (type === "longitude-average") return computeLongitudeAverage(payload, report);
   if (type === "isosurface") return packGeometry(buildSphericalIsosurface(payload, report));
   if (type === "prepare-tubes") return prepareTubeLines(payload, report);
   if (type === "tubes") return payload.lines.map((line, i) => {

@@ -5,6 +5,8 @@ import fs from "node:fs";
 import vm from "node:vm";
 import test from "node:test";
 import { SURFACE_TEXTURES } from "../src/surface-textures.js";
+import { LongitudeAverageCache, longitudeDisplayField, volumeDisplayValue,
+  longitudeFieldLabel, computeLongitudeAverage } from "../src/longitude-average.js";
 import * as RealTHREE from "three";
 import { fieldRadialDomain } from "../src/volume-domain.js";
 import { isosurfaceLegendEntries, updateIsosurfaceLegend } from "../src/isosurface-legend.js";
@@ -58,6 +60,8 @@ class Mesh {
 
 function viewer() {
   const ctx = vm.createContext({
+    LongitudeAverageCache, longitudeDisplayField, volumeDisplayValue, longitudeFieldLabel,
+    longitudeAverageCache: new LongitudeAverageCache(), meridianFieldControllers: [],
     fieldRadialDomain, isosurfaceLegendEntries, updateIsosurfaceLegend, isoLegendEl: null,
     console, DOMException, Response, Blob, AbortController, performance, TextEncoder, Float32Array, btoa, atob,
     SURFACE_TEXTURES, peakLineStrength, estimateTubeBytes, makeMagneticTubeGeometry, simplifyMagneticLine,
@@ -145,7 +149,9 @@ function viewer() {
     "resolveFieldSource", "getPrimaryVolumeFieldNames", "getSecondaryVolumeFieldNames", "getVolumeFieldNames",
     "normaliseScalarFieldMetadata", "canonicalScalarFieldName", "migrateLegacyScalarFieldName",
     "normalizePhi", "isAngleInCCWSector", "getFourSectorBoundaries", "getSectorIndexForPhi", "shouldKeepSurfaceCellForClip",
-    "meridianSidesAreIndependent", "syncLinkedMeridianSide", "meridianFieldSummary",
+    "meridianSidesAreIndependent", "syncLinkedMeridianSide", "meridianFieldSummary", "meridianDisplayLabel",
+    "loadMeridianDisplayField", "phiCalculation", "getMeridianFieldLabel", "getMeridianFieldOptions",
+    "refreshPhiAverageSelections",
     "getIsosurfaceObjectCacheKey", "getFieldLineObjectCacheKey", "buildIsosurfaceObjectCacheEntry",
     "ensureIsosurfaceObjectCacheEntry", "detachActiveIsosurfaces", "rebuildIsosurfaces", "makeIsoMaterial",
     "geometryMemoryBytes", "object3DMemoryBytes", "isActiveIsosurfaceEntry", "isActiveFieldLineEntry",
@@ -298,6 +304,114 @@ function meridianViewer() {
   for (const name of ["rebuildMeridian", "rebuildMeridian2"]) vm.runInContext(definition(name), ctx);
   return ctx;
 }
+
+test("four calculator outputs appear as meridional variables and refresh labels and disabled selections", () => {
+  const ctx = viewer();
+  ctx.params.phiAvgCount = 4;
+  const options = ctx.getMeridianFieldOptions();
+  assert.equal(options["φ1: ⟨T⟩φ"], "PHI:1");
+  assert.equal(options["φ4: ⟨Br⟩φ"], "PHI:4");
+  ctx.params.meridianIndependentSides = true;
+  ctx.params.meridianField = "PHI:1";
+  ctx.params.meridianLeftField = "PHI:4";
+  let displayed;
+  ctx.meridianFieldControllers.push({ options(value) { displayed = value; return this; }, updateDisplay() {} });
+  ctx.params.phiAvg1Field = "ur";
+  ctx.params.phiAvg1Mode = "fluctuation";
+  ctx.refreshPhiAverageSelections();
+  assert.equal(displayed["φ1: ur − ⟨ur⟩φ"], "PHI:1");
+  assert.equal(ctx.params.meridianField, "PHI:1", "source edits preserve the chosen output slot");
+  ctx.params.phiAvgCount = 1;
+  ctx.refreshPhiAverageSelections();
+  assert.equal(ctx.params.meridianLeftField, "Br", "disabled outputs fall back to their source variable");
+  assert.equal(ctx.getVolumeFieldNames().includes("PHI:1"), false, "calculator views do not masquerade as stored volumes");
+});
+
+test("calculator definitions and four selected halves round-trip independent of saved property order", () => {
+  const ctx = viewer();
+  ctx.applyViewStateParams({ version: 2, cameraLengthUnit: "r_outer", params: {
+    meridianField: "PHI:1", meridianLeftField: "PHI:2", meridianIndependentSides: true,
+    meridian2Field: "PHI:3", meridian2LeftField: "PHI:4", meridian2IndependentSides: true,
+    phiAvg4Mode: "fluctuation", phiAvg4Field: "ur", phiAvgCount: 4,
+    phiAvg1Field: "Br", phiAvg2Field: "C", phiAvg3Field: "T",
+  } });
+  const restored = viewer();
+  restored.applyViewStateParams(ctx.decodeViewState(ctx.encodeViewState(ctx.collectViewState())));
+  assert.equal(restored.params.meridian2LeftField, "PHI:4");
+  assert.equal(restored.params.phiAvg4Field, "ur");
+  assert.equal(restored.params.phiAvg4Mode, "fluctuation");
+  assert.equal(restored.params.meridianIndependentSides, true);
+  restored.applyViewStateParams({ phiAvgCount: 1 });
+  assert.equal(restored.params.meridianField, "PHI:1");
+  assert.equal(restored.params.meridian2LeftField, "ur");
+  assert.equal(restored.applySnapshotParam("phiAvgCount", 5), false);
+  assert.equal(restored.applySnapshotParam("phiAvg1Field", "PHI:1"), false);
+  assert.equal(restored.applySnapshotParam("phiAvg1Mode", "invalid"), false);
+  restored.applyViewStateParams({ version: 2, params: { meridianField: "T" } });
+  assert.equal(restored.params.phiAvgCount, 0, "older full views keep their ordinary slices");
+});
+
+test("both meridians update averages, fluctuations and independent halves on the first calculator edit", async () => {
+  for (const [slot, rebuild] of [["meridian", "rebuildMeridian"], ["meridian2", "rebuildMeridian2"]]) {
+    const ctx = meridianViewer();
+    const thermal = Float32Array.from({ length: 36 }, (_, i) => 6 + 2 * Math.cos(i % 4 * Math.PI / 2));
+    const magnetic = Float32Array.from(thermal, value => value + 10);
+    ctx.loadField = async name => name === "Br" ? magnetic : thermal;
+    let reductions = 0;
+    ctx.runGeometryJob = async (type, payload) => { reductions++; return executeGeometryJob(type, payload); };
+    ctx.makeSplitMeridionalSliceGroup = (right, left) => {
+      const mesh = new Mesh(new Geometry(), new Material());
+      mesh.right = right; mesh.left = left; return mesh;
+    };
+    ctx.params.phiAvgCount = 2;
+    ctx.params[`${slot}Field`] = "PHI:1";
+    await ctx[rebuild]();
+    let mesh = ctx[`${slot}Mesh`];
+    assert.equal(volumeDisplayValue(mesh.right, 0), 6);
+    assert.equal(mesh.right, mesh.left);
+    ctx.params.phiAvg1Mode = "fluctuation";
+    await ctx[rebuild]();
+    mesh = ctx[`${slot}Mesh`];
+    assert.equal(volumeDisplayValue(mesh.right, 0), 2);
+    assert.equal(volumeDisplayValue(mesh.left, 2), -2);
+    assert.equal(reductions, 1, "switching operation reuses the source mean");
+    ctx.params[`${slot}IndependentSides`] = true;
+    ctx.params[`${slot}LeftField`] = "PHI:2";
+    await ctx[rebuild]();
+    mesh = ctx[`${slot}Mesh`];
+    assert.equal(volumeDisplayValue(mesh.right, 0), 2);
+    assert.equal(volumeDisplayValue(mesh.left, 2), 16);
+    ctx.params.phiAvg1Field = "Br";
+    ctx.params.phiAvg1Mode = "mean";
+    await ctx[rebuild]();
+    assert.equal(volumeDisplayValue(ctx[`${slot}Mesh`].right, 0), 16);
+    assert.equal(reductions, 2);
+  }
+});
+
+test("late reductions cannot overwrite a newer calculator source or operation", async () => {
+  const ctx = meridianViewer(), pending = deferred();
+  const thermal = new Float32Array(36).fill(6), magnetic = new Float32Array(36).fill(16);
+  ctx.loadField = async name => name === "Br" ? magnetic : thermal;
+  ctx.runGeometryJob = (type, payload) => payload.field === thermal
+    ? pending.promise : Promise.resolve(executeGeometryJob(type, payload));
+  ctx.makeSplitMeridionalSliceGroup = right => {
+    const mesh = new Mesh(new Geometry(), new Material()); mesh.right = right; return mesh;
+  };
+  ctx.params.phiAvgCount = 1;
+  ctx.params.meridianField = "PHI:1";
+  const stale = ctx.rebuildMeridian();
+  await new Promise(resolve => setImmediate(resolve));
+  ctx.params.phiAvg1Field = "Br";
+  ctx.params.phiAvg1Mode = "fluctuation";
+  await ctx.rebuildMeridian();
+  const current = ctx.meridianMesh;
+  assert.equal(volumeDisplayValue(current.right, 0), 0);
+  pending.resolve(new Float64Array(9).fill(6));
+  await stale;
+  assert.equal(ctx.meridianMesh, current);
+  assert.equal(current.geometry.disposed, false);
+});
 
 test("both visible meridians refresh fields, colour maps, and linked/independent halves on the first change", async () => {
   for (const [slot, rebuild] of [["meridian", "rebuildMeridian"], ["meridian2", "rebuildMeridian2"]]) {
@@ -2325,6 +2439,33 @@ test("split meridian uses independent fields and radial domains on its two sides
   assert.equal(right.material.opacity,.8);assert.equal(left.material.opacity,.3);
   assert.ok(right.geometry.attributes.position.array[0]>=0);
   assert.ok(left.geometry.attributes.position.array[0]<=0);
+});
+
+test("real meridional geometry and ranges sample compact means and fluctuations within the field domain", () => {
+  const ctx = viewer();
+  ctx.THREE = RealTHREE;
+  const field = Float32Array.from({ length: 36 }, (_, i) => 6 + 2 * Math.cos(i % 4 * Math.PI / 2));
+  field.viewerDomain = { r_min: .7, r_max: 1, magnetic: false };
+  const mean = computeLongitudeAverage({ field, metadata: ctx.metadata, phi: ctx.coords.phi });
+  const average = longitudeDisplayField(field, mean, "mean", 4);
+  const residual = longitudeDisplayField(field, mean, "fluctuation", 4);
+  ctx.colourMap = v => ({ r: v, g: 0, b: 0 });
+  ctx.applyScale = (_, low, high) => [low, high];
+  for (const name of ["idx", "radiusAtIndex", "thetaAtIndex", "phiAtIndex", "normalizePhi", "angularDistance",
+    "nearestPhiIndex", "rawMinMaxFromSamples", "meridianRange", "makeMeridionalSliceMesh"])
+    vm.runInContext(definition(name), ctx);
+  const right = ctx.makeMeridionalSliceMesh(average, 0, 1, -10, 10, "viridis", "right");
+  const left = ctx.makeMeridionalSliceMesh(residual, 0, 1, -10, 10, "viridis", "left");
+  for (const [mesh, expected] of [[right, 6], [left, -2]]) {
+    const colors = mesh.geometry.attributes.color.array;
+    const positions = mesh.geometry.attributes.position.array;
+    for (let i = 0; i < colors.length; i += 3) {
+      assert.equal(colors[i], expected);
+      assert.ok(Math.hypot(...positions.slice(i, i + 3)) >= .7 - 1e-7);
+    }
+    mesh.geometry.dispose(); mesh.material.dispose();
+  }
+  assert.deepEqual(Array.from(ctx.meridianRange(residual, 0, "meridian")), [-2, 2]);
 });
 
 test("isovalue swatches are included in export even when no colourbars are visible", () => {

@@ -3,6 +3,8 @@ import "./mobile-layout.css";
 import { createMobileLayout } from "./mobile-layout.js";
 
 import * as THREE from "three";
+import { LongitudeAverageCache, longitudeDisplayField,
+  volumeDisplayValue, longitudeFieldLabel } from "./longitude-average.js";
 import { fieldRadialDomain } from "./volume-domain.js";
 import { isosurfaceLegendEntries, updateIsosurfaceLegend } from "./isosurface-legend.js";
 import { bindRecenterGesture } from "./recenter-gesture.js";
@@ -60,6 +62,8 @@ const workProgress = createWorkProgress({
   cancel: document.getElementById("cancel-work"),
 });
 const geometryClient = new GeometryClient();
+const longitudeAverageCache = new LongitudeAverageCache();
+const meridianFieldControllers = [];
 
 async function runGeometryJob(type, payload, label) {
   const progress = workProgress.begin(label, () => geometryClient.cancelAll());
@@ -301,6 +305,11 @@ const params = {
   radialField: "Br",
   equatorField: "T",
   equator2Field: "T",
+  phiAvgCount: 0,
+  phiAvg1Field: "T", phiAvg1Mode: "mean",
+  phiAvg2Field: "Br", phiAvg2Mode: "mean",
+  phiAvg3Field: "T", phiAvg3Mode: "mean",
+  phiAvg4Field: "Br", phiAvg4Mode: "mean",
   meridianField: "T",
   meridianLeftField: "T",
   meridianIndependentSides: false,
@@ -745,7 +754,8 @@ function renderSignature(slot) {
     const clip = ["cmb", "earth"].includes(slot) && (key.startsWith("quarter")
       || key.startsWith("cmbClip") || key === "cmbRearSide"
       || key === "meridianPhiDeg" || key === "meridian2PhiDeg");
-    return own || key === visibility || clip || key === "magneticVolumeDomain";
+    return own || key === visibility || clip || key === "magneticVolumeDomain"
+      || (slot.startsWith("meridian") && key.startsWith("phiAvg"));
   }));
 }
 
@@ -2911,6 +2921,7 @@ function enforceDataCacheLimit() {
 }
 
 function clearLoadedDataCaches(showMessage = false) {
+  longitudeAverageCache.clear();
   disposeHeavyPlaybackCaches();
   dataCache.clear();
   dataCacheMeta.clear();
@@ -3040,6 +3051,7 @@ function getPreloadFieldRequests(meta) {
   const surfaceLength = nt * np;
 
   function addVolume(fieldName) {
+    fieldName = phiCalculation(fieldName).name;
     if (!fieldName || !meta.fields?.[fieldName]) return;
     requests.set(meta.fields[fieldName], volumeLength);
   }
@@ -3727,6 +3739,19 @@ function fieldDisplayDomain(field) {
   return fieldRadialDomain(metadata, coords, field?.viewerDomain, params.magneticVolumeDomain);
 }
 
+async function loadMeridianDisplayField(slot, context) {
+  const { name, mode } = phiCalculation(context.params[`${slot}Field`], context.params);
+  const field = await withCapturedRenderContext(context, () => loadField(name));
+  if (!renderContextIsCurrent(context)) throw new DOMException("Meridian read superseded", "AbortError");
+  if (mode === "slice") return field;
+  const { nr, ntheta, nphi } = context.metadata;
+  const phi = context.coords.phi;
+  const mean = await longitudeAverageCache.get(field, context.metadata, phi,
+    () => runGeometryJob("longitude-average", { field, metadata: { nr, ntheta, nphi }, phi },
+      `Computing φ average: ${name}`));
+  return longitudeDisplayField(field, mean, mode, nphi);
+}
+
 async function loadCmbDisplayField(fieldName) {
   const ref = resolveFieldSource(fieldName);
   const surfaceInfo = ref.meta.surface_fields?.[ref.rawName];
@@ -3984,7 +4009,7 @@ function rawMinMaxFromSamples(field, sampleIndexGenerator) {
   let vmax = -Infinity;
 
   for (const [ir, it, ip] of sampleIndexGenerator()) {
-    const v = field[idx(ir, it, ip)];
+    const v = volumeDisplayValue(field, idx(ir, it, ip));
     if (!Number.isFinite(v)) continue;
     if (v < vmin) vmin = v;
     if (v > vmax) vmax = v;
@@ -4133,8 +4158,13 @@ function syncLinkedMeridianSide(slot) {
 
 function meridianFieldSummary(slot) {
   return meridianSidesAreIndependent(slot)
-    ? `${params[`${slot}Field`]}/${params[`${slot}LeftField`]}`
-    : params[`${slot}Field`];
+    ? `${meridianDisplayLabel(slot)}/${meridianDisplayLabel(`${slot}Left`)}`
+    : meridianDisplayLabel(slot);
+}
+
+function meridianDisplayLabel(slot) {
+  const field = params[`${slot}Field`];
+  return getMeridianFieldLabel(field);
 }
 
 const colourStops = {
@@ -6176,7 +6206,8 @@ function makeMeridionalSliceMesh(field, phiDeg, opacity, vmin, vmax, colormap, s
       const ib = colInfo.pole ? idx(ir, colInfo.it, colInfo.ip === ipFront ? ipBack : ipFront) : -1;
       sampleA.push(ia);
       sampleB.push(ib);
-      const val = ib >= 0 ? 0.5 * (field[ia] + field[ib]) : field[ia];
+      const val = ib >= 0 ? 0.5 * (volumeDisplayValue(field, ia) + volumeDisplayValue(field, ib))
+        : volumeDisplayValue(field, ia);
       const col = colourMap(val, vmin, vmax, colormap);
       colors.push(col.r, col.g, col.b);
     }
@@ -6306,7 +6337,7 @@ function updateSampledMeshColours(mesh, field, expectedKind, vmin, vmax, colorma
     const ia = a[i];
     if (ia < 0) return NaN;
     const ib = b ? b[i] : -1;
-    return ib >= 0 ? 0.5 * (field[ia] + field[ib]) : field[ia];
+    return ib >= 0 ? 0.5 * (volumeDisplayValue(field, ia) + volumeDisplayValue(field, ib)) : volumeDisplayValue(field, ia);
   }, vmin, vmax, colormap);
 }
 
@@ -6544,8 +6575,8 @@ async function rebuildMeridian(options = {}) {
   const request = beginRenderRequest("meridian");
   const independent = meridianSidesAreIndependent("meridian");
   const loaded = await loadForRender(request, async () => {
-    const rightField = await loadField(params.meridianField);
-    const leftField = independent ? await loadField(params.meridianLeftField) : rightField;
+    const rightField = await loadMeridianDisplayField("meridian", request.context);
+    const leftField = independent ? await loadMeridianDisplayField("meridianLeft", request.context) : rightField;
     return [rightField, leftField];
   });
   if (!loaded || !renderRequestIsCurrent(request)) return;
@@ -6556,8 +6587,8 @@ async function rebuildMeridian(options = {}) {
   const [leftMin, leftMax] = independent
     ? meridianHalfRange(leftField, params.meridianPhiDeg, "left", "meridianLeft")
     : [rightMin, rightMax];
-  setColourbarForSlot("meridian", params.meridianField, rightMin, rightMax);
-  setColourbarForSlot("meridianLeft", params.meridianLeftField, leftMin, leftMax);
+  setColourbarForSlot("meridian", meridianDisplayLabel("meridian"), rightMin, rightMax);
+  setColourbarForSlot("meridianLeft", meridianDisplayLabel("meridianLeft"), leftMin, leftMax);
   const replacement = makeSplitMeridionalSliceGroup(rightField, leftField, params.meridianPhiDeg, {
     right: { opacity: params.meridianOpacity, vmin: rightMin, vmax: rightMax, colormap: params.meridianColormap },
     left: { opacity: params.meridianLeftOpacity, vmin: leftMin, vmax: leftMax, colormap: params.meridianLeftColormap },
@@ -6576,8 +6607,8 @@ async function rebuildMeridian2(options = {}) {
   const request = beginRenderRequest("meridian2");
   const independent = meridianSidesAreIndependent("meridian2");
   const loaded = await loadForRender(request, async () => {
-    const rightField = await loadField(params.meridian2Field);
-    const leftField = independent ? await loadField(params.meridian2LeftField) : rightField;
+    const rightField = await loadMeridianDisplayField("meridian2", request.context);
+    const leftField = independent ? await loadMeridianDisplayField("meridian2Left", request.context) : rightField;
     return [rightField, leftField];
   });
   if (!loaded || !renderRequestIsCurrent(request)) return;
@@ -6588,8 +6619,8 @@ async function rebuildMeridian2(options = {}) {
   const [leftMin, leftMax] = independent
     ? meridianHalfRange(leftField, params.meridian2PhiDeg, "left", "meridian2Left")
     : [rightMin, rightMax];
-  setColourbarForSlot("meridian2", params.meridian2Field, rightMin, rightMax);
-  setColourbarForSlot("meridian2Left", params.meridian2LeftField, leftMin, leftMax);
+  setColourbarForSlot("meridian2", meridianDisplayLabel("meridian2"), rightMin, rightMax);
+  setColourbarForSlot("meridian2Left", meridianDisplayLabel("meridian2Left"), leftMin, leftMax);
   const replacement = makeSplitMeridionalSliceGroup(rightField, leftField, params.meridian2PhiDeg, {
     right: { opacity: params.meridian2Opacity, vmin: rightMin, vmax: rightMax, colormap: params.meridian2Colormap },
     left: { opacity: params.meridian2LeftOpacity, vmin: leftMin, vmax: leftMax, colormap: params.meridian2LeftColormap },
@@ -7030,6 +7061,79 @@ function getVolumeFieldNames() {
   return [...getPrimaryVolumeFieldNames(), ...getSecondaryVolumeFieldNames()];
 }
 
+function phiCalculation(fieldName, settings = params) {
+  const match = /^PHI:([1-4])$/.exec(fieldName);
+  if (!match) return { name: fieldName, mode: "slice" };
+  const i = Number(match[1]);
+  if (i > settings.phiAvgCount) throw new Error(`φ calculator output ${i} is disabled.`);
+  return { name: settings[`phiAvg${i}Field`], mode: settings[`phiAvg${i}Mode`] };
+}
+
+function getMeridianFieldLabel(fieldName) {
+  const { name, mode } = phiCalculation(fieldName);
+  const match = /^PHI:([1-4])$/.exec(fieldName);
+  return match ? `φ${match[1]}: ${longitudeFieldLabel(name, mode)}` : name;
+}
+
+function getMeridianFieldOptions() {
+  const fields = getVolumeFieldNames();
+  const options = Object.fromEntries(fields.map(name => [name, name]));
+  for (let i = 1; i <= params.phiAvgCount; i++) {
+    if (fields.includes(params[`phiAvg${i}Field`])) {
+      const id = `PHI:${i}`;
+      options[getMeridianFieldLabel(id)] = id;
+    }
+  }
+  return options;
+}
+
+function refreshPhiAverageSelections() {
+  const options = getMeridianFieldOptions();
+  const available = Object.values(options);
+  for (const slot of ["meridian", "meridianLeft", "meridian2", "meridian2Left"]) {
+    const key = `${slot}Field`;
+    if (available.includes(params[key])) continue;
+    const match = /^PHI:([1-4])$/.exec(params[key]);
+    const source = match ? params[`phiAvg${match[1]}Field`] : params[key];
+    params[key] = available.includes(source) ? source : getVolumeFieldNames()[0];
+  }
+  syncLinkedMeridianSide("meridian");
+  syncLinkedMeridianSide("meridian2");
+  for (let i = 0; i < meridianFieldControllers.length; i++) {
+    meridianFieldControllers[i] = meridianFieldControllers[i].options(options);
+    meridianFieldControllers[i].updateDisplay();
+  }
+}
+
+function addPhiAverageCalculator(gui, fields) {
+  const folder = gui.addFolder("φ-average calculator");
+  const outputs = [];
+  const rebuild = debouncedViewerTask("φ calculator update", async () => {
+    if (params.showMeridian) await rebuildMeridian();
+    if (params.showMeridian2) await rebuildMeridian2();
+    setStatusSummary();
+  });
+  const changed = () => {
+    outputs.forEach((output, i) => {
+      output.domElement.style.display = i < params.phiAvgCount ? "" : "none";
+    });
+    refreshPhiAverageSelections();
+    rebuild();
+  };
+  folder.add(params, "phiAvgCount", 0, 4, 1).name("Number of outputs").onChange(changed);
+  for (let i = 1; i <= 4; i++) {
+    const output = folder.addFolder(`φ${i} output`);
+    output.add(params, `phiAvg${i}Field`, fields).name("Source field").onChange(changed);
+    output.add(params, `phiAvg${i}Mode`, {
+      "φ average": "mean", "Fluctuation (f − ⟨f⟩φ)": "fluctuation",
+    }).name("Calculate").onChange(changed);
+    output.domElement.style.display = i <= params.phiAvgCount ? "" : "none";
+    outputs.push(output);
+  }
+  closeGuiFolder(folder);
+  return folder;
+}
+
 function getPrimaryCmbFieldNames() {
   const volumeFields = getPrimaryVolumeFieldNames();
   const surfaceFields = Object.entries(metadata.surface_fields || {})
@@ -7086,6 +7190,7 @@ function applyDefaultFields() {
   params.meridianLeftField = params.meridianField;
   params.meridian2Field = chooseField(["T", "C", "Comp", "Br", "Uabs"], fields);
   params.meridian2LeftField = params.meridian2Field;
+  for (let i = 1; i <= 4; i++) params[`phiAvg${i}Field`] = chooseField(i % 2 ? ["T", "C", "Comp", "ur"] : ["Br", "Bp", "ur"], fields);
   params.isoField = chooseField([params.isoField, "ur", "T", "C", "Comp", "Br", "Uabs"], fields);
 }
 
@@ -7114,7 +7219,7 @@ function addDisplayControls(gui, slot, label, fieldParam, showParam, opacityPara
 function addMeridianSideControls(folder, label, slot, fieldParam, opacityParam, rebuildFn, availableFields) {
   const side = folder.addFolder(label);
   const rebuild = debouncedViewerTask(`${label} update`, rebuildFn);
-  side.add(params, fieldParam, availableFields).name("Field").onChange(rebuild);
+  meridianFieldControllers.push(side.add(params, fieldParam, availableFields).name("Field").onChange(rebuild));
   side.add(params, `${slot}Scale`, ["symmetric", "minmax", "manual"]).name("Scale").onChange(rebuild);
   side.add(params, `${slot}Colormap`, colourMapNames).name("Colour map").onChange(rebuild);
   side.add(params, `${slot}Min`).name("Manual min").onFinishChange(rebuild);
@@ -7248,7 +7353,9 @@ function decodeViewState(code) {
 }
 
 function validFieldForState(key, value) {
-  if (!["cmbField", "earthField", "icbField", "radialField", "equatorField", "equator2Field", "meridianField", "meridianLeftField", "meridian2Field", "meridian2LeftField", "isoField"].includes(key)) return true;
+  if (/^phiAvg[1-4]Field$/.test(key)) return getVolumeFieldNames().includes(value);
+  if (/^meridian(?:2)?(?:Left)?Field$/.test(key)) return Object.values(getMeridianFieldOptions()).includes(value);
+  if (!["cmbField", "earthField", "icbField", "radialField", "equatorField", "equator2Field", "isoField"].includes(key)) return true;
   if (key === "cmbField") return getCmbFieldNames().includes(value);
   if (key === "earthField") return getEarthFieldNames().includes(value);
   return getVolumeFieldNames().includes(value);
@@ -7275,6 +7382,8 @@ function applySnapshotParam(key, value) {
   if (key === "earthTextureBody" && !Object.prototype.hasOwnProperty.call(SURFACE_TEXTURES, value)) return false;
   if (key === "isoTransparencyMode" && !["stable", "smooth"].includes(value)) return false;
   if (key === "magneticVolumeDomain" && !["all", "fluid", "inner-core"].includes(value)) return false;
+  if (/^phiAvg[1-4]Mode$/.test(key) && !["mean", "fluctuation"].includes(value)) return false;
+  if (key === "phiAvgCount" && (!Number.isInteger(value) || value < 0 || value > 4)) return false;
   if (["legendPosition", "titlePosition", "exportPanelPosition"].includes(key) && !PANEL_POSITIONS.has(value)) return false;
   params[key] = value;
   return true;
@@ -7336,11 +7445,18 @@ function applyViewStateParams(snapshot) {
       }
     }
   }
+  // Calculator definitions must be restored before validating derived selections,
+  // regardless of the JSON property order in a saved or partial view.
+  if (snapshot.params && snapshot.version && !("phiAvgCount" in snap.params)) params.phiAvgCount = 0;
+  for (const [key, value] of Object.entries(snap.params)) {
+    if (key.startsWith("phiAvg")) applySnapshotParam(key, value);
+  }
   const skippedFields = [];
   for (const [key, value] of Object.entries(snap.params || {})) {
     const applied = applySnapshotParam(key, value);
     if (!applied && key.endsWith("Field")) skippedFields.push(String(value));
   }
+  refreshPhiAverageSelections();
   syncLinkedMeridianSide("meridian");
   syncLinkedMeridianSide("meridian2");
   return skippedFields;
@@ -7522,6 +7638,7 @@ const DATASET_FIELD_PARAM_KEYS = [
   "meridian2Field",
   "meridian2LeftField",
   "isoField",
+  "phiAvg1Field", "phiAvg2Field", "phiAvg3Field", "phiAvg4Field",
 ];
 
 function setDatasetLoadingState(loading) {
@@ -7829,6 +7946,7 @@ function addTubeMemoryControls(lineFolder, refreshFieldLines) {
 }
 
 function buildGui() {
+  meridianFieldControllers.length = 0;
   if (guiRoot) guiRoot.destroy();
   if (povGuiRoot) {
     povGuiRoot.destroy();
@@ -7921,7 +8039,9 @@ function buildGui() {
   const eq2Folder = addDisplayControls(gui, "equator2", "Equatorial slice 2", "equator2Field", "showEquator2", "equator2Opacity", rebuildEquator2, volumeFields);
   eq2Folder.add(params, "equator2Z", -0.95, 0.95, 0.01).name("z / r_o")
     .onFinishChange(viewerTaskCallback("Equatorial slice position", rebuildEquator2));
-  const merFolder = addSplitMeridianControls(gui, "meridian", "Meridional slice 1", "showMeridian", rebuildMeridian, volumeFields);
+  addPhiAverageCalculator(gui, volumeFields);
+  const meridianFields = getMeridianFieldOptions();
+  const merFolder = addSplitMeridianControls(gui, "meridian", "Meridional slice 1", "showMeridian", rebuildMeridian, meridianFields);
   const rebuildMeridianView = async () => {
     await rebuildMeridian();
     await rebuildCMB();
@@ -7930,7 +8050,7 @@ function buildGui() {
   merFolder.add(params, "meridianPhiDeg", 0, 360, 1).name("Longitude phi")
     .onFinishChange(viewerTaskCallback("Meridian 1 position", rebuildMeridianView));
 
-  const mer2Folder = addSplitMeridianControls(gui, "meridian2", "Meridional slice 2", "showMeridian2", rebuildMeridian2, volumeFields);
+  const mer2Folder = addSplitMeridianControls(gui, "meridian2", "Meridional slice 2", "showMeridian2", rebuildMeridian2, meridianFields);
   const rebuildMeridian2View = async () => {
     await rebuildMeridian2();
     await rebuildCMB();

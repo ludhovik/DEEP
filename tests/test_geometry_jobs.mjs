@@ -26,6 +26,19 @@ function sphere(n = 24) {
   return { metadata, coords, field, isoValue: 0.7, requestedResolution: n };
 }
 
+test("actual worker computes longitude means without detaching the cached volume", async () => {
+  const client = workerClient(), payload = sphere(8), progress = [];
+  try {
+    payload.phi = payload.coords.phi;
+    const result = await client.run("longitude-average", payload, { onProgress: p => progress.push(p) });
+    assert.ok(result instanceof Float64Array);
+    assert.equal(result.length, 64);
+    for (let row = 0; row < result.length; row++) assert.equal(result[row], payload.field[row * 16]);
+    assert.equal(payload.field.length, 1024);
+    assert.ok(progress.some(p => p.fraction === 1));
+  } finally { client.cancelAll(); }
+});
+
 test("actual worker isosurfaces match synchronous geometry and the analytical radius", async () => {
   const client = workerClient(), payload = sphere(), progress = [];
   try {

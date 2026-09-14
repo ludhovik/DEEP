@@ -220,6 +220,30 @@ including separate colourbars. Longitude and visibility remain common to the
 plane. Old `DTV2` view codes containing only one meridional setting stay linked;
 codes that already contain different half settings retain the independent view.
 
+Open **φ-average calculator** and set **Number of outputs** from 0 to 4. For
+each output, choose a **Source field** and **Calculate → φ average** or
+**Fluctuation (f − ⟨f⟩φ)**. The results appear in both meridional **Field** lists
+with descriptive names such as **φ1: ⟨T⟩φ**. Enable **Independent sides** to
+select two different outputs on each plane, for four displayed results in total.
+Each output can also be used on either plane or compared with an ordinary field.
+Editing a calculator source or operation updates its dropdown label, visible
+cut and colourbar. Reducing the output count returns affected selections to
+their source field. Definitions and selected outputs are saved in view codes.
+
+The calculator uses the existing `.f32` volume at the current sequence frame;
+no conversion or new data files are needed. At fixed `(r, theta)`, uniform
+longitude grids use the arithmetic mean, while nonuniform grids use periodic
+trapezoidal weights, including the closing interval. There is no `sin(theta)`
+or radial weighting. The average is independent of the displayed longitude;
+a fluctuation is sampled at each half's longitude. Spherical components are
+averaged component by component as stored: `⟨|B|⟩φ` differs from `|⟨B⟩φ|`.
+This is an average of the exported volume resolution, not a time average or
+a new spectral transform. Original field domains and values are preserved.
+Reductions use compensated float64 accumulation in the existing background
+worker. The small `(nr, ntheta)` means are cached by source volume and grid,
+shared across outputs, and released with the source cache. Full derived
+volumes are not allocated; fluctuations are evaluated only where displayed.
+
 The CMB can be clipped by one or two meridional planes or by an explicit
 eight-quarter mask. In **Between meridional planes** mode, **CMB side** switches
 between the complementary front and rear sectors. Open **Sun / planet / moon surface**, enable **Show**, choose
