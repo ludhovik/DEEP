@@ -174,6 +174,10 @@ const lineLegendEl = document.getElementById("line-legend");
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x050505);
+// Scientific geometry stays in native coordinates. Normalize its common
+// parent for display, leaving camera controls and lighting in r / r_o units.
+const datasetGroup = new THREE.Group();
+scene.add(datasetGroup);
 
 const camera = new THREE.PerspectiveCamera(
   45,
@@ -249,6 +253,7 @@ function resetCameraView() {
   }
   camera.up.set(0.0, 0.0, 1.0);
   controls.target.set(0.0, 0.0, 0.0);
+  updateCameraClipping();
   controls.update();
 }
 
@@ -1085,6 +1090,31 @@ function refreshCameraParamControllers() {
   for (const controller of cameraParamControllers) controller.updateDisplay();
 }
 
+function datasetLengthScale() {
+  const radius = Number(metadata?.r_outer);
+  return Number.isFinite(radius) && radius > 0 ? radius : 1;
+}
+
+function updateDisplayScale() {
+  const scale = 1 / datasetLengthScale();
+  if (datasetGroup.scale.x !== scale) datasetGroup.scale.setScalar(scale);
+}
+
+function updateCameraClipping() {
+  const near = 0.001;
+  const far = Math.max(100, camera.position.length() + 2);
+  if (camera.near === near && camera.far === far) return;
+  camera.near = near;
+  camera.far = far;
+  camera.updateProjectionMatrix();
+}
+
+function renderScene() {
+  updateDisplayScale();
+  updateCameraClipping();
+  renderer.render(scene, camera);
+}
+
 function syncCameraParamsFromCamera(updateControllers = false) {
   const offset = camera.position.clone().sub(controls.target);
   const distance = Math.max(offset.length(), 1.0e-6);
@@ -1116,6 +1146,7 @@ function applyCameraViewFromParams() {
   );
   camera.up.set(0.0, 0.0, 1.0);
   camera.fov = clamp(Number(params.cameraFovDeg), 5.0, 120.0);
+  updateCameraClipping();
   camera.updateProjectionMatrix();
   controls.update();
 }
@@ -1769,7 +1800,7 @@ async function updateEarthSurface(options = {}) {
         disposeObject(earthMesh);
         earthMesh = replacement;
         earthMesh.visible = true;
-        scene.add(earthMesh);
+        datasetGroup.add(earthMesh);
       }
 
       if (attribution) attribution.style.display = "none";
@@ -1802,7 +1833,7 @@ async function updateEarthSurface(options = {}) {
         earthMesh = replacement;
         earthMesh.userData.viewerTopology = { kind: "earth-texture", radius, body, longitudeDeg };
         earthMesh.visible = true;
-        scene.add(earthMesh);
+        datasetGroup.add(earthMesh);
       }
 
       hideColourbarForSlot("earth");
@@ -2464,7 +2495,7 @@ function disposeMeshResources(mesh) {
       mesh.material.dispose?.();
     }
   }
-  scene.remove(mesh);
+  datasetGroup.remove(mesh);
 }
 
 function disposeFieldLineGroupResources(group) {
@@ -2481,7 +2512,7 @@ function disposeFieldLineGroupResources(group) {
     }
   });
   for (const material of materials) material.dispose?.();
-  scene.remove(group);
+  datasetGroup.remove(group);
 }
 
 function isActiveIsosurfaceEntry(entry) {
@@ -2579,7 +2610,7 @@ function enforceCacheMemoryLimit(protectedEntry = null) {
 function detachActiveIsosurfaces() {
   for (const mesh of [isoPositiveMesh, isoNegativeMesh]) {
     if (!mesh) continue;
-    scene.remove(mesh);
+    datasetGroup.remove(mesh);
     mesh.material.dispose();
   }
   isoPositiveMesh = null;
@@ -2589,7 +2620,7 @@ function detachActiveIsosurfaces() {
 
 function detachActiveFieldLineGroups() {
   for (const key of Object.keys(fieldLineGroups)) {
-    if (fieldLineGroups[key]) scene.remove(fieldLineGroups[key]);
+    if (fieldLineGroups[key]) datasetGroup.remove(fieldLineGroups[key]);
     fieldLineGroups[key] = null;
   }
 }
@@ -5963,20 +5994,20 @@ async function rebuildGapFillers() {
 
   equatorFillerMesh = makeHorizontalGapFillerMesh(0.0, params.sliceGapFillerOpacity);
   equatorFillerMesh.visible = params.showEquator;
-  scene.add(equatorFillerMesh);
+  datasetGroup.add(equatorFillerMesh);
 
   const z2 = clamp(Number(params.equator2Z), -1.0, 1.0) * metadata.r_outer;
   equator2FillerMesh = makeHorizontalGapFillerMesh(z2, params.sliceGapFillerOpacity);
   equator2FillerMesh.visible = params.showEquator2;
-  scene.add(equator2FillerMesh);
+  datasetGroup.add(equator2FillerMesh);
 
   meridianFillerMesh = makeMeridionalGapFillerMesh(params.meridianPhiDeg, params.sliceGapFillerOpacity);
   meridianFillerMesh.visible = params.showMeridian;
-  scene.add(meridianFillerMesh);
+  datasetGroup.add(meridianFillerMesh);
 
   meridian2FillerMesh = makeMeridionalGapFillerMesh(params.meridian2PhiDeg, params.sliceGapFillerOpacity);
   meridian2FillerMesh.visible = params.showMeridian2;
-  scene.add(meridian2FillerMesh);
+  datasetGroup.add(meridian2FillerMesh);
 }
 
 function horizontalSliceRange(field, z, slot) {
@@ -6295,7 +6326,7 @@ function disposeObject(obj) {
   }
   materials.forEach((material) => material.dispose?.());
 
-  scene.remove(obj);
+  datasetGroup.remove(obj);
 }
 
 function disposeFieldLineGroups() {
@@ -6309,7 +6340,7 @@ function disposeFieldLineGroups() {
   // Defensive cleanup: remove any old line group that might have been left in
   // the scene by an earlier version or a reload. This fixes the case where
   // lines remain visible after the GUI toggle is switched off.
-  scene.traverse((obj) => {
+  datasetGroup.traverse((obj) => {
     if (obj.userData?.isMagneticFieldLineGroup && !groupsToDispose.includes(obj)) {
       groupsToDispose.push(obj);
     }
@@ -6328,7 +6359,7 @@ function disposeFieldLineGroups() {
       }
     });
     for (const mat of materials) mat.dispose?.();
-    scene.remove(group);
+    datasetGroup.remove(group);
   }
 }
 
@@ -6375,7 +6406,7 @@ async function rebuildCMB(options = {}) {
     disposeObject(cmbMesh);
     cmbMesh = replacement;
     cmbMesh.visible = params.showCMB;
-    scene.add(cmbMesh);
+    datasetGroup.add(cmbMesh);
     await updateEarthSurface();
   }
   if (!renderRequestIsCurrent(request)) return;
@@ -6405,7 +6436,7 @@ async function rebuildICB(options = {}) {
     disposeObject(icbMesh);
     icbMesh = replacement;
     icbMesh.visible = params.showICB;
-    scene.add(icbMesh);
+    datasetGroup.add(icbMesh);
   }
   setStatusSummary(`ICB:${params.icbField}`);
 }
@@ -6446,7 +6477,7 @@ async function rebuildRadialSurface(options = {}) {
     disposeObject(radialSurfaceMesh);
     radialSurfaceMesh = replacement;
     radialSurfaceMesh.visible = params.showRadialSurface;
-    scene.add(radialSurfaceMesh);
+    datasetGroup.add(radialSurfaceMesh);
   }
 
   const rOuter = Math.max(Math.abs(Number(metadata.r_outer)) || 1.0, 1.0e-30);
@@ -6473,7 +6504,7 @@ async function rebuildEquator(options = {}) {
     disposeObject(equatorMesh);
     equatorMesh = replacement;
     equatorMesh.visible = params.showEquator;
-    scene.add(equatorMesh);
+    datasetGroup.add(equatorMesh);
     await rebuildGapFillers();
   }
   if (!renderRequestIsCurrent(request)) return;
@@ -6499,7 +6530,7 @@ async function rebuildEquator2(options = {}) {
     disposeObject(equator2Mesh);
     equator2Mesh = replacement;
     equator2Mesh.visible = params.showEquator2;
-    scene.add(equator2Mesh);
+    datasetGroup.add(equator2Mesh);
     await rebuildGapFillers();
   }
   if (!renderRequestIsCurrent(request)) return;
@@ -6507,8 +6538,10 @@ async function rebuildEquator2(options = {}) {
 }
 
 async function rebuildMeridian(options = {}) {
-  const request = beginRenderRequest("meridian");
+  // Synchronize linked halves before capturing the request signature. Doing
+  // this afterwards makes a field/colour change invalidate its own rebuild.
   syncLinkedMeridianSide("meridian");
+  const request = beginRenderRequest("meridian");
   const independent = meridianSidesAreIndependent("meridian");
   const loaded = await loadForRender(request, async () => {
     const rightField = await loadField(params.meridianField);
@@ -6532,15 +6565,15 @@ async function rebuildMeridian(options = {}) {
   disposeObject(meridianMesh);
   meridianMesh = replacement;
   meridianMesh.visible = params.showMeridian;
-  scene.add(meridianMesh);
+  datasetGroup.add(meridianMesh);
   await rebuildGapFillers();
   if (!renderRequestIsCurrent(request)) return;
   setStatusSummary(`Meridian:${meridianFieldSummary("meridian")}`);
 }
 
 async function rebuildMeridian2(options = {}) {
-  const request = beginRenderRequest("meridian2");
   syncLinkedMeridianSide("meridian2");
+  const request = beginRenderRequest("meridian2");
   const independent = meridianSidesAreIndependent("meridian2");
   const loaded = await loadForRender(request, async () => {
     const rightField = await loadField(params.meridian2Field);
@@ -6564,7 +6597,7 @@ async function rebuildMeridian2(options = {}) {
   disposeObject(meridian2Mesh);
   meridian2Mesh = replacement;
   meridian2Mesh.visible = params.showMeridian2;
-  scene.add(meridian2Mesh);
+  datasetGroup.add(meridian2Mesh);
   await rebuildGapFillers();
   if (!renderRequestIsCurrent(request)) return;
   setStatusSummary(`Meridian2:${meridianFieldSummary("meridian2")}`);
@@ -6595,11 +6628,11 @@ async function rebuildIsosurfaces() {
 
     if (isoPositiveMesh) {
       isoPositiveMesh.visible = params.showIsosurfaces && params.showIsoPositive;
-      scene.add(isoPositiveMesh);
+      datasetGroup.add(isoPositiveMesh);
     }
     if (isoNegativeMesh) {
       isoNegativeMesh.visible = params.showIsosurfaces && params.showIsoNegative;
-      scene.add(isoNegativeMesh);
+      datasetGroup.add(isoNegativeMesh);
     }
     refreshIsosurfaceLegend();
 
@@ -6949,7 +6982,7 @@ async function loadFieldLines() {
       if (!group) continue;
       group.visible = params.showFieldLines;
       fieldLineGroups[mode] = group;
-      scene.add(group);
+      datasetGroup.add(group);
     }
 
     if (params.lineColourMode === "strength" && Array.isArray(entry.strengthRange)) {
@@ -7188,6 +7221,7 @@ function collectViewState() {
   const snapshot = {
     version: 2,
     scope: "view-only",
+    cameraLengthUnit: "r_outer",
     scalarNamingVersion: Number(metadata?.scalar_naming_version) >= 2 ? 2 : 1,
     params: {},
   };
@@ -7252,6 +7286,15 @@ function applyViewStateParams(snapshot) {
     throw new Error("View state must contain a parameter object.");
   }
   let snap = snapshot?.params ? snapshot : { params: snapshot || {} };
+  // Older full view codes stored camera lengths in the dataset's native units.
+  // New codes and plain partial parameter updates use the displayed r / r_o.
+  if (snapshot.params && snap.cameraLengthUnit !== "r_outer") {
+    const migrated = { ...snap.params };
+    for (const key of ["cameraDistance", "cameraTargetX", "cameraTargetY", "cameraTargetZ"]) {
+      if (typeof migrated[key] === "number") migrated[key] /= datasetLengthScale();
+    }
+    snap = { ...snap, cameraLengthUnit: "r_outer", params: migrated };
+  }
   if (Number(snap.scalarNamingVersion || 1) < 2 && Number(metadata?.scalar_naming_version) >= 2) {
     const migrated = { ...snap.params };
     for (const [key, value] of Object.entries(migrated)) {
@@ -7304,6 +7347,7 @@ function applyViewStateParams(snapshot) {
 }
 
 function refreshViewPresentation() {
+  updateDisplayScale();
   updateLighting();
   updateBackgroundColor();
   applyCameraViewFromParams();
@@ -7749,12 +7793,12 @@ function buildPointOfViewGui() {
     .name("Two fingers");
   povGui.add(params, "resetCamera").name("Reset / fit view");
 
-  cameraParamControllers.push(povGui.add(params, "cameraDistance", 0.2, 20.0, 0.01).name("Distance").onChange(applyCameraViewFromParams));
+  cameraParamControllers.push(povGui.add(params, "cameraDistance", 0.2, 20.0, 0.01).name("Distance / r_o").onChange(applyCameraViewFromParams));
   cameraParamControllers.push(povGui.add(params, "cameraAzimuthDeg", -180, 180, 1).name("Azimuth phi").onChange(applyCameraViewFromParams));
   cameraParamControllers.push(povGui.add(params, "cameraElevationDeg", -89, 89, 1).name("Elevation theta").onChange(applyCameraViewFromParams));
-  cameraParamControllers.push(povGui.add(params, "cameraTargetX", -2.0, 2.0, 0.01).name("Target x").onChange(applyCameraViewFromParams));
-  cameraParamControllers.push(povGui.add(params, "cameraTargetY", -2.0, 2.0, 0.01).name("Target y").onChange(applyCameraViewFromParams));
-  cameraParamControllers.push(povGui.add(params, "cameraTargetZ", -2.0, 2.0, 0.01).name("Target z").onChange(applyCameraViewFromParams));
+  cameraParamControllers.push(povGui.add(params, "cameraTargetX", -2.0, 2.0, 0.01).name("Target x / r_o").onChange(applyCameraViewFromParams));
+  cameraParamControllers.push(povGui.add(params, "cameraTargetY", -2.0, 2.0, 0.01).name("Target y / r_o").onChange(applyCameraViewFromParams));
+  cameraParamControllers.push(povGui.add(params, "cameraTargetZ", -2.0, 2.0, 0.01).name("Target z / r_o").onChange(applyCameraViewFromParams));
   cameraParamControllers.push(povGui.add(params, "cameraFovDeg", 10, 90, 1).name("FOV").onChange(applyCameraViewFromParams));
   povGui.add(params, "captureCameraView").name("Use current mouse view");
   povGui.add(params, "applyCameraView").name("Apply view");
@@ -8323,7 +8367,7 @@ function makeCompositeExportCanvas(widthPx = null) {
     ? params.backgroundColor
     : "#050505";
   scene.background = new THREE.Color(exportBackground);
-  renderer.render(scene, camera);
+  renderScene();
 
   const canvas = document.createElement("canvas");
   canvas.width = renderer.domElement.width;
@@ -8342,7 +8386,7 @@ function makeCompositeExportCanvas(widthPx = null) {
     camera.aspect = prevAspect;
     camera.updateProjectionMatrix();
   }
-  renderer.render(scene, camera);
+  renderScene();
 
   return canvas;
 }
@@ -8538,7 +8582,7 @@ async function renderSequencePngFrames() {
       });
       setDeferredSequenceObjectVisibility(!params.sequencePngRefreshHeavy);
       if (params.sequencePngBackgroundExport) {
-        renderer.render(scene, camera);
+        renderScene();
       } else {
         await waitForRenderedFrame();
       }
@@ -9164,7 +9208,7 @@ async function renderBackgroundVideoOffline(options) {
       }
 
       applyVideoCameraAtFraction(frac);
-      renderer.render(scene, camera);
+      renderScene();
 
       const frame = new VideoFrame(renderer.domElement, {
         timestamp: frameNumber * frameDurationUs,
@@ -9272,10 +9316,10 @@ async function updateVideoSequenceFrame(targetIndex) {
     });
 
     // Ensure the fully updated scene reaches the canvas before recording resumes.
-    renderer.render(scene, camera);
+    renderScene();
     updateAxesOverlay();
     await new Promise((resolve) => requestAnimationFrame(resolve));
-    renderer.render(scene, camera);
+    renderScene();
 
     videoState.sequenceCurrentFrame = target;
   } catch (err) {
@@ -9401,7 +9445,7 @@ async function startFullRotationRecording() {
   }
 
   resizeRendererForVideoIfNeeded();
-  renderer.render(scene, camera);
+  renderScene();
 
   const mimeType = getSupportedVideoMimeType();
   const stream = renderer.domElement.captureStream(Math.max(1, Math.round(params.videoFps)));
@@ -9690,7 +9734,7 @@ function animate(now = performance.now()) {
     } else if (!videoState.active) {
       controls.update();
     }
-    renderer.render(scene, camera);
+    renderScene();
     updateAxesOverlay();
   } catch (err) {
     console.error("Render loop error", err);

@@ -127,6 +127,8 @@ function viewer() {
       return group;
     },
   });
+  ctx.datasetGroup = ctx.scene;
+  ctx.datasetGroup.scale = new RealTHREE.Vector3(1, 1, 1);
   for (const name of ["cmbMesh", "icbMesh", "radialSurfaceMesh", "equatorMesh", "equator2Mesh", "meridianMesh", "meridian2Mesh", "earthMesh", "isoPositiveMesh", "isoNegativeMesh", "equatorFillerMesh", "equator2FillerMesh", "meridianFillerMesh", "meridian2FillerMesh"]) ctx[name] = null;
   vm.runInContext(constant("TUBE_MEMORY_LIMITS"), ctx);
   vm.runInContext(constant("params", "\n};") + "\nglobalThis.params = params;", ctx);
@@ -135,6 +137,7 @@ function viewer() {
   }
   Object.assign(ctx.params, { showIsosurfaces: true, showIsoNegative: false });
   for (const name of [
+    "datasetLengthScale", "updateDisplayScale", "updateCameraClipping", "renderScene",
     "fieldDisplayDomain", "refreshIsosurfaceLegend", "clamp", "formatBytes", "roundedCacheNumber", "captureRenderContext", "renderContextIsCurrent",
     "withCapturedRenderContext", "renderSignature", "beginRenderRequest", "renderRequestIsCurrent",
     "invalidateRenderRequests", "loadForRender", "pinHeavyCacheEntry", "isEffectivelyOpaque", "applyOpacityAndDepth",
@@ -281,6 +284,68 @@ test("meridian halves are linked by default and preserve explicit independent le
   assert.deepEqual(Array.from(ctx.applyViewStateParams({ backgroundColor: "#112233" })), []);
   assert.equal(ctx.params.meridianIndependentSides, true,
     "an unrelated partial view must not relink an existing split meridian");
+});
+
+function meridianViewer() {
+  const ctx = viewer();
+  ctx.params.showMeridian = ctx.params.showMeridian2 = true;
+  ctx.meridianRange = ctx.meridianHalfRange = () => [-1, 1];
+  ctx.makeSplitMeridionalSliceGroup = (right, left, phi, settings) => {
+    const mesh = new Mesh(new Geometry(right.name, left.name), new Material());
+    mesh.userData.settings = settings;
+    return mesh;
+  };
+  for (const name of ["rebuildMeridian", "rebuildMeridian2"]) vm.runInContext(definition(name), ctx);
+  return ctx;
+}
+
+test("both visible meridians refresh fields, colour maps, and linked/independent halves on the first change", async () => {
+  for (const [slot, rebuild] of [["meridian", "rebuildMeridian"], ["meridian2", "rebuildMeridian2"]]) {
+    const ctx = meridianViewer(), meshKey = `${slot}Mesh`;
+    await ctx[rebuild]();
+    const initial = ctx[meshKey];
+    ctx.params[`${slot}Field`] = "Br";
+    await ctx[rebuild]();
+    assert.notEqual(ctx[meshKey], initial, "A field change replaces the displayed cut immediately");
+    assert.equal(initial.geometry.disposed, true);
+    assert.equal(ctx[meshKey].geometry.field, "Br");
+    assert.equal(ctx[meshKey].geometry.value, "Br");
+    ctx.params[`${slot}Colormap`] = "viridis";
+    await ctx[rebuild]();
+    assert.equal(ctx[meshKey].userData.settings.right.colormap, "viridis");
+    assert.equal(ctx[meshKey].userData.settings.left.colormap, "viridis");
+    ctx.params[`${slot}IndependentSides`] = true;
+    ctx.params[`${slot}LeftField`] = "C";
+    await ctx[rebuild]();
+    assert.equal(ctx[meshKey].geometry.field, "Br");
+    assert.equal(ctx[meshKey].geometry.value, "C");
+    ctx.params[`${slot}Field`] = "ur";
+    await ctx[rebuild]();
+    assert.equal(ctx[meshKey].geometry.field, "ur");
+    assert.equal(ctx[meshKey].geometry.value, "C");
+    ctx.params[`${slot}IndependentSides`] = false;
+    await ctx[rebuild]();
+    assert.equal(ctx[meshKey].geometry.value, "ur", "Relinking halves updates the left field immediately");
+    assert.equal(ctx[meshKey].visible, true);
+    assert.ok(ctx.scene.objects.has(ctx[meshKey]));
+  }
+});
+
+test("late field reads cannot replace a newer meridian selection", async () => {
+  for (const [slot, rebuild] of [["meridian", "rebuildMeridian"], ["meridian2", "rebuildMeridian2"]]) {
+    const ctx = meridianViewer(), oldRead = deferred();
+    ctx.loadField = name => name === "Br" ? oldRead.promise : Promise.resolve({name});
+    ctx.params[`${slot}Field`] = "Br";
+    const oldRequest = ctx[rebuild]();
+    ctx.params[`${slot}Field`] = "ur";
+    await ctx[rebuild]();
+    const current = ctx[`${slot}Mesh`];
+    assert.equal(current.geometry.field, "ur");
+    oldRead.resolve({name:"Br"});
+    await oldRequest;
+    assert.equal(ctx[`${slot}Mesh`], current);
+    assert.equal(current.geometry.disposed, false);
+  }
 });
 
 test("front and rear choose opposite CMB sectors between two meridians", () => {
@@ -1582,6 +1647,103 @@ test("dataset view is applied before the first render, without changing its data
   assert.equal(ctx.params.isoField, "ur");
   assert.match(status, /view.DTV2 applied.*unavailable fields skipped: missing/);
   assert.equal(ctx.datasetLoadInProgress, false);
+});
+
+function cameraViewer() {
+  const ctx = viewer();
+  ctx.datasetGroup = new RealTHREE.Group();
+  Object.assign(ctx.THREE, { Vector3: RealTHREE.Vector3, MathUtils: RealTHREE.MathUtils });
+  ctx.camera = new RealTHREE.PerspectiveCamera(45, 1, 0.001, 100);
+  ctx.controls = { target: new RealTHREE.Vector3(), update() {
+    ctx.camera.lookAt(this.target);
+    ctx.camera.updateMatrixWorld(true);
+  } };
+  ctx.applyDefaultFields = () => {};
+  for (const name of ["syncCameraParamsFromCamera", "applyCameraViewFromParams", "resetCameraView"]) {
+    vm.runInContext(definition(name), ctx);
+  }
+  return ctx;
+}
+
+test("viewer normalizes solar, benchmark, and small native shells without changing their data", () => {
+  const ctx = cameraViewer();
+  // Changing units must not alter coordinates, field amplitudes, or view-code units.
+  for (const radius of [65860209000, 1.53846153846, 1e-6, 1]) {
+    ctx.metadata.r_outer = radius;
+    const metadataBefore = JSON.stringify(ctx.metadata), coordsBefore = JSON.stringify(ctx.coords);
+    ctx.applyDefaultDatasetView();
+    ctx.updateDisplayScale();
+    ctx.datasetGroup.updateMatrixWorld(true);
+    ctx.applyCameraViewFromParams();
+    assert.ok(Math.abs(ctx.camera.position.length() - 3.29) < 1e-12);
+    const frustum = new RealTHREE.Frustum().setFromProjectionMatrix(
+      new RealTHREE.Matrix4().multiplyMatrices(ctx.camera.projectionMatrix, ctx.camera.matrixWorldInverse));
+    for (const point of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
+      const displayed = new RealTHREE.Vector3(...point).multiplyScalar(radius)
+        .applyMatrix4(ctx.datasetGroup.matrixWorld);
+      assert.ok(Math.abs(displayed.length() - 1) < 1e-12);
+      assert.ok(frustum.containsPoint(displayed),
+        `The shell at radius ${radius} must be visible through the camera frustum`);
+    }
+    assert.ok(ctx.camera.near < ctx.camera.position.length() - 1);
+    assert.ok(ctx.camera.far > ctx.camera.position.length() + 1);
+    assert.equal(JSON.stringify(ctx.metadata), metadataBefore);
+    assert.equal(JSON.stringify(ctx.coords), coordsBefore);
+  }
+  assert.equal(ctx.camera.near, 0.001, "Switching back restores unit-scale clipping");
+  assert.equal(ctx.camera.far, 100);
+});
+
+test("legacy camera positions migrate once and new presets use outer-radius units", () => {
+  const ctx = cameraViewer(), radius = 65860209000;
+  ctx.metadata.r_outer = radius;
+  ctx.applyViewStateParams({version:2,params:{cameraDistance:7 * radius,
+    cameraTargetX:0.2 * radius,cameraTargetY:-0.1 * radius,cameraTargetZ:0.3 * radius}});
+  assert.equal(ctx.params.cameraDistance, 7);
+  assert.equal(ctx.params.cameraTargetX, 0.2);
+  ctx.applyCameraViewFromParams();
+  const position = ctx.camera.position.clone(), target = ctx.controls.target.clone();
+  const code = ctx.decodeViewState(ctx.encodeViewState(ctx.collectViewState()));
+  assert.equal(code.cameraLengthUnit, "r_outer");
+  ctx.metadata.r_outer = 1.5;
+  ctx.applyDefaultDatasetView();
+  ctx.applyViewStateParams(code);
+  ctx.applyCameraViewFromParams();
+  assert.ok(ctx.camera.position.distanceTo(position) < 1e-12);
+  assert.ok(ctx.controls.target.distanceTo(target) < 1e-12);
+  ctx.resetCameraView();
+  assert.ok(Math.abs(ctx.camera.position.length() - Math.hypot(3, 1.35)) < 1e-12);
+  assert.equal(ctx.controls.target.length(), 0);
+  ctx.camera.position.multiplyScalar(1000);
+  ctx.updateCameraClipping();
+  assert.ok(ctx.camera.far > ctx.camera.position.length() + 1);
+});
+
+test("all render paths scale native geometry together while preserving buffers and lighting", () => {
+  const ctx = cameraViewer(), radius = 65860209000;
+  ctx.scene = new RealTHREE.Scene();
+  ctx.scene.add(ctx.datasetGroup);
+  const light = new RealTHREE.DirectionalLight();
+  light.position.set(5, 0, 0);ctx.scene.add(light);
+  const surface = new RealTHREE.Mesh(new RealTHREE.SphereGeometry(radius, 8, 8), new RealTHREE.MeshBasicMaterial());
+  const line = new RealTHREE.Line(new RealTHREE.BufferGeometry().setFromPoints([
+    new RealTHREE.Vector3(radius, 0, 0), new RealTHREE.Vector3(3 * radius, 0, 0)]));
+  ctx.datasetGroup.add(surface, line);
+  const original = line.geometry.attributes.position.array.slice();
+  let renders = 0;
+  ctx.renderer = {render(scene, camera) {
+    assert.equal(scene, ctx.scene);assert.equal(camera, ctx.camera);
+    scene.updateMatrixWorld(true);renders++;
+    const end = new RealTHREE.Vector3().fromBufferAttribute(line.geometry.attributes.position, 1);
+    assert.ok(Math.abs(line.localToWorld(end).length() - 3) < 1e-6);
+    assert.equal(light.getWorldPosition(new RealTHREE.Vector3()).x, 5);
+  }};
+  ctx.metadata.r_outer = radius;
+  ctx.renderScene();
+  assert.equal(renders, 1);
+  assert.deepEqual(line.geometry.attributes.position.array, original);
+  assert.equal((source.match(/renderer\.render\(scene, camera\)/g) || []).length, 1,
+    "Interactive and export rendering must share the normalization setup");
 });
 
 test("reloading after deleting a Figshare or Zenodo view resets the rendered appearance and camera", async () => {

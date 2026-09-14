@@ -108,6 +108,14 @@ and use `--no-earth-br` for this solar case. No native same-time Spherical_3D
 reference is supplied in this archive; this is not a claim of validation against
 such a reference.
 
+The solar radius remains in native length units (outer radius about `6.59e10`).
+The updated viewer displays all geometry at `r / r_o`, with the outer radius
+equal to 1, while preserving the native coordinates and field values. Older
+viewers with a fixed far plane of 100 show a blank scene even
+when this bundle validates. Updating the viewer fixes existing converted
+bundles without reconversion; if a saved view still places the camera inside the shell, use
+**Point of view → Reset / fit view**.
+
 Reference density must be present in `equation_coefficients`. If it is absent,
 `--constant-density 1` is available **only when a unit reference density is
 physically correct for the simulation**. It is never assumed silently. The

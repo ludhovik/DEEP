@@ -195,6 +195,13 @@ The **Point of view** panel stores distance, azimuth, elevation, target, and
 field of view. **Use current mouse view** copies the current interactive camera
 into those controls.
 
+The viewer displays radii as **r / r_o**, with the outer simulation radius at
+**1**. One display transform scales surfaces, slices, maps and field lines
+together. Dataset coordinates, field values and converter output keep their
+original units; existing bundles do not need reconversion. Camera distance and
+targets also use r_o units. New view codes record that convention, while older
+codes with native camera positions are converted when loaded.
+
 ### Surfaces and slices
 
 Every CMB, ICB, radial, equatorial, and meridional display has:
