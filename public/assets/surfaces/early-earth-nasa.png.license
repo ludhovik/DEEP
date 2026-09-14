@@ -1,0 +1,32 @@
+EARLY EARTH, NASA LAVA-WORLD ANALOGUE -- early-earth-nasa.png -- 2048 x 1024
+Credit: NASA Visualization Technology Applications and Development (VTAD).
+Texture reprojection and choice of early-Earth analogy: DEEPscope.
+Official source: https://science.nasa.gov/resource/55-cancri-e-3d-model/
+Model released 1 May 2019; download published 20 September 2023.
+Download: https://assets.science.nasa.gov/content/dam/science/astro/exo-explore/2023/09/55_Cancri_e_1_24364.glb
+Downloaded GLB SHA-256: e3f3381c4440adc1df37ee26bd54ea885969616412efa43ed461971fb8d2a8c0
+Selected embedded base-colour image: image 1, LHS3844b_assembled.jpg (stored as PNG).
+That is the internal image name in NASA's published 55 Cancri e GLB, not a
+reidentification of the source model by DEEPscope.
+Processing: tools/bake_nasa_globe_texture.py intersects radial directions with
+the 3072 published mesh triangles and interpolates their original UV coordinates.
+The 2048 x 1536 cube atlas is sampled bilinearly into a 2:1 longitude/latitude
+map; glTF +Y becomes north, model +X is the map centre. All 2,097,152 samples
+intersect the source mesh. The output has matching seam pixels and uniform
+pole rows. No terrain generation, recolouring or generative AI is used.
+Only base colour is retained; emission and metallic shading are not baked in.
+This is NASA artwork of an exoplanet reused as a VISUAL ANALOGUE for a molten
+Earth episode. It is NOT an Earth reconstruction made by NASA, a dated Hadean
+map, or a claim about actual early-Earth geography or temperature. The UI label
+and live credit explicitly identify the analogue and its original planet.
+Reproduce with NumPy, SciPy and Pillow:
+python3 tools/bake_nasa_globe_texture.py --source /path/to/55_Cancri_e_1_24364.glb --out public/assets/surfaces/early-earth-nasa.png
+Reuse: NASA Images and Media Usage Guidelines permit educational and
+informational use of NASA media, including textures and polygon data, with
+source acknowledgement and without implying NASA endorsement. The source
+pages identify NASA/VTAD or the NASA mission credit below and do not mark these
+particular assets as third-party copyright-protected material. These assets are
+included under NASA's media terms, not under DEEPscope's code licence or a
+Creative Commons licence. Retain the source and credit when redistributing.
+Terms: https://www.nasa.gov/nasa-brand-center/images-and-media/
+Source and reuse notices checked 14 September 2026.

@@ -1,0 +1,25 @@
+ASTEROID, BENNU -- asteroid-bennu.jpg -- 2400 x 1200
+Credit: NASA/Goddard/University of Arizona.
+Official mission source: https://osiris-rex.lpl.arizona.edu/bennu_global_mosaic/
+NASA visualization context: https://svs.gsfc.nasa.gov/5069/
+Download: https://osiris-rex.lpl.arizona.edu/wp-content/uploads/2020/03/Bennu_Global_Mosaic.png
+Downloaded PNG SHA-256: 648e2469f71e533a7f963bd32d83027c86024158f58a482465dbbd183d37e0bf
+OSIRIS-REx OCAMS/PolyCam images acquired 7 March to 19 April 2019.
+Citation: Bennett, C. A., et al. (2020), A high-resolution global Basemap of
+(101955) Bennu, Icarus. Publication linked from the official mission source.
+Processing: the mission's 2400 x 1200 presentation PNG was encoded as RGB JPEG
+(Pillow, quality 95, subsampling 0), with no crop, resize or colour adjustment.
+No generative AI is used. This is a reduced global mosaic of spacecraft images,
+not generic asteroid artwork. The source mosaic retains shadows and polar
+lighting differences. The viewer maps it onto its existing sphere; it does not
+reproduce Bennu's irregular shape or turn the selected simulation into a Bennu
+model. The saved-view identifier 'planetesimal' is retained for compatibility.
+Reuse: NASA Images and Media Usage Guidelines permit educational and
+informational use of NASA media, including textures and polygon data, with
+source acknowledgement and without implying NASA endorsement. The source
+pages identify NASA/VTAD or the NASA mission credit below and do not mark these
+particular assets as third-party copyright-protected material. These assets are
+included under NASA's media terms, not under DEEPscope's code licence or a
+Creative Commons licence. Retain the source and credit when redistributing.
+Terms: https://www.nasa.gov/nasa-brand-center/images-and-media/
+Source and reuse notices checked 14 September 2026.

@@ -1,0 +1,24 @@
+SUPER-EARTH, PROXIMA B -- super-earth-proxima-b.jpg -- 2048 x 1024
+Credit: NASA Visualization Technology Applications and Development (VTAD).
+Official source: https://science.nasa.gov/resource/proxima-b-3d-model/
+Model released 1 May 2019; download published 20 September 2023.
+Download: https://assets.science.nasa.gov/content/dam/science/astro/exo-explore/2023/09/Proxima_b_1_13776.glb
+Downloaded GLB SHA-256: d534dc69c165754da0cd49b69425e77565e79d5a53c3c4b3bbc582b77518ae7a
+Selected embedded base-colour image: image 0, exo_PROXIMA_CEN_B.jpg (stored as PNG).
+Processing: extracted the original 2048 x 1024 equirectangular PNG from the GLB
+image buffer view and encoded it as RGB JPEG (Pillow, quality 95, subsampling 0).
+No resizing, cropping, terrain generation or colour adjustment. The separate
+metallic/roughness image is unused. No generative AI is used.
+This is an artist's concept, not a photograph or an observed surface map.
+Land, water and clouds are speculative; the image does not establish habitability.
+The source identifies Proxima b as a super-Earth. Selecting it does not set a
+planetary mass or radius; Image radius / outer remains the user's setting.
+Reuse: NASA Images and Media Usage Guidelines permit educational and
+informational use of NASA media, including textures and polygon data, with
+source acknowledgement and without implying NASA endorsement. The source
+pages identify NASA/VTAD or the NASA mission credit below and do not mark these
+particular assets as third-party copyright-protected material. These assets are
+included under NASA's media terms, not under DEEPscope's code licence or a
+Creative Commons licence. Retain the source and credit when redistributing.
+Terms: https://www.nasa.gov/nasa-brand-center/images-and-media/
+Source and reuse notices checked 14 September 2026.

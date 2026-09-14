@@ -117,58 +117,86 @@ There is no inferred vegetation, relief, climate or magnetic-field alignment.
 To reproduce after unpacking the archive (requires pygplates, matplotlib, Pillow):
 python3 tools/make_rodinia_texture.py --model-dir /path/to/Li_etal_2008_RodiniaModel --out public/assets/surfaces/rodinia-1000ma.png
 
-EARLY EARTH, ARTISTIC LAVA SURFACE -- early-earth.png -- 2048 x 1024
-Credit: Created using Lava004 from ambientCG.com (Lennart Demes), licensed under
-Creative Commons CC0 1.0 Universal. Spherical adaptation: DEEPscope.
-Source: https://ambientcg.com/view?id=Lava004
-Original asset released 12 December 2019; source lists its technique as procedural.
-Download: https://ambientcg.com/get?file=Lava004_1K-JPG.zip
-Selected file: Lava004_1K-JPG_Color.jpg (1024 x 1024).
-Creator licence statement: https://docs.ambientcg.com/license/
-Licence: https://creativecommons.org/publicdomain/zero/1.0/
-Both source material and DEEPscope's adapted image are provided under CC0 1.0.
-Processing: tools/wrap_surface_texture.py samples the downloaded colour material
-on three perpendicular planes, blends by the eighth power of the absolute sphere
-normal, and writes a 2:1 equirectangular PNG. It uses bilinear interpolation and
-matching seam/pole samples. No generative AI is used in the bundled adaptation.
-This is a decorative lava interpretation for an early molten-Earth episode;
-ambientCG did not create a dated map of Earth. No ancient geography, magma
-temperature, topography or age is inferred from its colour or pattern. It does
-not represent the entire Hadean eon. Normal and emission maps are not applied.
-To reproduce after unpacking the archive (requires NumPy and Pillow):
-python3 tools/wrap_surface_texture.py --source /path/to/Lava004_1K-JPG_Color.jpg --out public/assets/surfaces/early-earth.png
+EARLY EARTH, NASA LAVA-WORLD ANALOGUE -- early-earth-nasa.png -- 2048 x 1024
+Credit: NASA Visualization Technology Applications and Development (VTAD).
+Texture reprojection and choice of early-Earth analogy: DEEPscope.
+Official source: https://science.nasa.gov/resource/55-cancri-e-3d-model/
+Model released 1 May 2019; download published 20 September 2023.
+Download: https://assets.science.nasa.gov/content/dam/science/astro/exo-explore/2023/09/55_Cancri_e_1_24364.glb
+Downloaded GLB SHA-256: e3f3381c4440adc1df37ee26bd54ea885969616412efa43ed461971fb8d2a8c0
+Selected embedded base-colour image: image 1, LHS3844b_assembled.jpg (stored as PNG).
+That is the internal image name in NASA's published 55 Cancri e GLB, not a
+reidentification of the source model by DEEPscope.
+Processing: tools/bake_nasa_globe_texture.py intersects radial directions with
+the 3072 published mesh triangles and interpolates their original UV coordinates.
+The 2048 x 1536 cube atlas is sampled bilinearly into a 2:1 longitude/latitude
+map; glTF +Y becomes north, model +X is the map centre. All 2,097,152 samples
+intersect the source mesh. The output has matching seam pixels and uniform
+pole rows. No terrain generation, recolouring or generative AI is used.
+Only base colour is retained; emission and metallic shading are not baked in.
+This is NASA artwork of an exoplanet reused as a VISUAL ANALOGUE for a molten
+Earth episode. It is NOT an Earth reconstruction made by NASA, a dated Hadean
+map, or a claim about actual early-Earth geography or temperature. The UI label
+and live credit explicitly identify the analogue and its original planet.
+Reproduce with NumPy, SciPy and Pillow:
+python3 tools/bake_nasa_globe_texture.py --source /path/to/55_Cancri_e_1_24364.glb --out public/assets/surfaces/early-earth-nasa.png
+Reuse: NASA Images and Media Usage Guidelines permit educational and
+informational use of NASA media, including textures and polygon data, with
+source acknowledgement and without implying NASA endorsement. The source
+pages identify NASA/VTAD or the NASA mission credit below and do not mark these
+particular assets as third-party copyright-protected material. These assets are
+included under NASA's media terms, not under DEEPscope's code licence or a
+Creative Commons licence. Retain the source and credit when redistributing.
+Terms: https://www.nasa.gov/nasa-brand-center/images-and-media/
+Source and reuse notices checked 14 September 2026.
 
-SUPER-EARTH EXOPLANET, ARTWORK -- super-earth.jpg -- 4096 x 2048
-Credit: cubicApocalypse (2025), distributed by Celestia.
-SPDX-FileCopyrightText: 2025 cubicApocalypse
-SPDX-License-Identifier: CC-BY-4.0
-Licence: https://creativecommons.org/licenses/by/4.0/
-Source and preserved per-file licence:
-https://github.com/CelestiaProject/CelestiaContent/blob/62de0d22bae6428d06a900fd3e045fa8d2b969ad/textures/hires/rocky.jpg.license
-Download:
-https://raw.githubusercontent.com/CelestiaProject/CelestiaContent/62de0d22bae6428d06a900fd3e045fa8d2b969ad/textures/hires/rocky.jpg
-The JPEG is unchanged; DEEPscope renames rocky.jpg to super-earth.jpg and uses
-it as a hypothetical rocky super-Earth illustration. Celestia's README identifies
-it as an exoplanet texture. It is not an observed surface, a named planet, or a
-claim that every super-Earth is rocky or Earth-like. Size is controlled separately
-by the viewer's Image radius / outer setting; the selection does not set a mass.
-Context on this planet class: https://science.nasa.gov/exoplanets/super-earth/
+SUPER-EARTH, PROXIMA B -- super-earth-proxima-b.jpg -- 2048 x 1024
+Credit: NASA Visualization Technology Applications and Development (VTAD).
+Official source: https://science.nasa.gov/resource/proxima-b-3d-model/
+Model released 1 May 2019; download published 20 September 2023.
+Download: https://assets.science.nasa.gov/content/dam/science/astro/exo-explore/2023/09/Proxima_b_1_13776.glb
+Downloaded GLB SHA-256: d534dc69c165754da0cd49b69425e77565e79d5a53c3c4b3bbc582b77518ae7a
+Selected embedded base-colour image: image 0, exo_PROXIMA_CEN_B.jpg (stored as PNG).
+Processing: extracted the original 2048 x 1024 equirectangular PNG from the GLB
+image buffer view and encoded it as RGB JPEG (Pillow, quality 95, subsampling 0).
+No resizing, cropping, terrain generation or colour adjustment. The separate
+metallic/roughness image is unused. No generative AI is used.
+This is an artist's concept, not a photograph or an observed surface map.
+Land, water and clouds are speculative; the image does not establish habitability.
+The source identifies Proxima b as a super-Earth. Selecting it does not set a
+planetary mass or radius; Image radius / outer remains the user's setting.
+Reuse: NASA Images and Media Usage Guidelines permit educational and
+informational use of NASA media, including textures and polygon data, with
+source acknowledgement and without implying NASA endorsement. The source
+pages identify NASA/VTAD or the NASA mission credit below and do not mark these
+particular assets as third-party copyright-protected material. These assets are
+included under NASA's media terms, not under DEEPscope's code licence or a
+Creative Commons licence. Retain the source and credit when redistributing.
+Terms: https://www.nasa.gov/nasa-brand-center/images-and-media/
+Source and reuse notices checked 14 September 2026.
 
-ASTEROID / PLANETESIMAL, ARTWORK -- asteroid.jpg -- 4096 x 2048
-Credit: cubicApocalypse (2023), distributed by Celestia.
-SPDX-FileCopyrightText: 2023 cubicApocalypse
-SPDX-License-Identifier: CC-BY-4.0
-Licence: https://creativecommons.org/licenses/by/4.0/
-Source and preserved per-file licence:
-https://github.com/CelestiaProject/CelestiaContent/blob/62de0d22bae6428d06a900fd3e045fa8d2b969ad/textures/hires/asteroid.jpg.license
-Download:
-https://raw.githubusercontent.com/CelestiaProject/CelestiaContent/62de0d22bae6428d06a900fd3e045fa8d2b969ad/textures/hires/asteroid.jpg
-The JPEG is bundled unchanged. Generic asteroid artwork is used to illustrate
-a rocky planetesimal on the viewer's spherical surface. It does not reconstruct
-a named asteroid, its irregular shape, a formation age or surface composition.
-
-Celestia's shared creator and texture provenance statement:
-https://github.com/CelestiaProject/CelestiaContent/blob/62de0d22bae6428d06a900fd3e045fa8d2b969ad/README
-All four new assets and their reuse notices were checked on 14 September 2026.
-For CC BY 4.0 assets, retain the credits, source and licence link, and identify
-any further modifications when sharing the images or figures containing them.
+ASTEROID, BENNU -- asteroid-bennu.jpg -- 2400 x 1200
+Credit: NASA/Goddard/University of Arizona.
+Official mission source: https://osiris-rex.lpl.arizona.edu/bennu_global_mosaic/
+NASA visualization context: https://svs.gsfc.nasa.gov/5069/
+Download: https://osiris-rex.lpl.arizona.edu/wp-content/uploads/2020/03/Bennu_Global_Mosaic.png
+Downloaded PNG SHA-256: 648e2469f71e533a7f963bd32d83027c86024158f58a482465dbbd183d37e0bf
+OSIRIS-REx OCAMS/PolyCam images acquired 7 March to 19 April 2019.
+Citation: Bennett, C. A., et al. (2020), A high-resolution global Basemap of
+(101955) Bennu, Icarus. Publication linked from the official mission source.
+Processing: the mission's 2400 x 1200 presentation PNG was encoded as RGB JPEG
+(Pillow, quality 95, subsampling 0), with no crop, resize or colour adjustment.
+No generative AI is used. This is a reduced global mosaic of spacecraft images,
+not generic asteroid artwork. The source mosaic retains shadows and polar
+lighting differences. The viewer maps it onto its existing sphere; it does not
+reproduce Bennu's irregular shape or turn the selected simulation into a Bennu
+model. The saved-view identifier 'planetesimal' is retained for compatibility.
+Reuse: NASA Images and Media Usage Guidelines permit educational and
+informational use of NASA media, including textures and polygon data, with
+source acknowledgement and without implying NASA endorsement. The source
+pages identify NASA/VTAD or the NASA mission credit below and do not mark these
+particular assets as third-party copyright-protected material. These assets are
+included under NASA's media terms, not under DEEPscope's code licence or a
+Creative Commons licence. Retain the source and credit when redistributing.
+Terms: https://www.nasa.gov/nasa-brand-center/images-and-media/
+Source and reuse notices checked 14 September 2026.

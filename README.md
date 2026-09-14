@@ -30,7 +30,7 @@ with Vite. Local datasets are read in the browser and are not uploaded.
 - magnetic slices and isosurfaces inside a resolved inner core;
 - internal and exterior magnetic field lines, including tubes with diameter proportional to magnetic energy;
 - Sun, Earth, Mars, Ganymede, Jupiter, Saturn, Mercury, Venus, Enceladus and Moon images,
-  plus Rodinia at 1 billion years ago and early-Earth, super-Earth and planetesimal artwork, or
+  plus Rodinia at 1 billion years ago, NASA lava-world and Proxima b artwork, and the Bennu mosaic, or
   an available extrapolated radial magnetic field;
 - two compatible datasets on the same grid;
 - time sequences with playback, preloading, and bounded memory caching;
@@ -225,8 +225,9 @@ eight-quarter mask. In **Between meridional planes** mode, **CMB side** switches
 between the complementary front and rear sectors. Open **Sun / planet / moon surface**, enable **Show**, choose
 **Display → Surface image**, then select **Image body**: Sun, Earth, Mars, Ganymede,
 Jupiter, Saturn, Mercury, Venus (radar surface), Enceladus, Moon, Earth — Rodinia
-(1 billion years ago), Early Earth, Super-Earth exoplanet or Asteroid / planetesimal.
-The last three are labelled as artwork. **Texture longitude**, **Image
+(1 billion years ago), Early Earth (NASA lava-world analogue), Super-Earth —
+Proxima b (NASA artwork), or Asteroid — Bennu (NASA/OSIRIS-REx).
+**Texture longitude**, **Image
 radius / outer**, and **Opacity** adjust its placement and appearance. Images
 use the same closed sphere, polar caps and meridian clipping as the Earth image.
 
@@ -248,9 +249,12 @@ the Sun uses an illustrative solar texture. These are static visual references.
 Rodinia shows tectonic blocks reconstructed at 1000 Ma from Li et al. (2008),
 with the map centred on 120° E in the model's reference frame. Its outlines are
 continental blocks, not reconstructed coastlines, topography or vegetation.
-Early Earth uses published lava artwork adapted to a sphere. The rocky
-super-Earth and asteroid / planetesimal use published Celestia textures; they
-depict hypothetical surfaces. Selecting one does not change the sphere's shape
+Early Earth uses the lava-world texture from NASA/VTAD's 55 Cancri e model,
+reprojected using its published mesh and UV coordinates. This is a visual
+analogue for a molten-Earth episode, not a NASA reconstruction of early Earth.
+The super-Earth uses NASA/VTAD's Proxima b artwork; its surface and clouds are
+speculative. Bennu uses the OSIRIS-REx mission's global PolyCam image mosaic,
+credited to NASA/Goddard/University of Arizona. Selecting one does not change the sphere's shape
 or set a planetary radius. Artist credits, source links, licences and processing
 details are bundled with every image.
 Some maps use enhanced colours or
