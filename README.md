@@ -29,7 +29,8 @@ with Vite. Local datasets are read in the browser and are not uploaded.
 - positive and negative isosurfaces with colour/value legends;
 - magnetic slices and isosurfaces inside a resolved inner core;
 - internal and exterior magnetic field lines, including tubes with diameter proportional to magnetic energy;
-- Sun, Earth, Mars, Ganymede, Jupiter, Saturn, Mercury, Venus, Enceladus and Moon images, or
+- Sun, Earth, Mars, Ganymede, Jupiter, Saturn, Mercury, Venus, Enceladus and Moon images,
+  plus Rodinia at 1 billion years ago and early-Earth, super-Earth and planetesimal artwork, or
   an available extrapolated radial magnetic field;
 - two compatible datasets on the same grid;
 - time sequences with playback, preloading, and bounded memory caching;
@@ -223,7 +224,9 @@ The CMB can be clipped by one or two meridional planes or by an explicit
 eight-quarter mask. In **Between meridional planes** mode, **CMB side** switches
 between the complementary front and rear sectors. Open **Sun / planet / moon surface**, enable **Show**, choose
 **Display → Surface image**, then select **Image body**: Sun, Earth, Mars, Ganymede,
-Jupiter, Saturn, Mercury, Venus (radar surface), Enceladus or Moon. **Texture longitude**, **Image
+Jupiter, Saturn, Mercury, Venus (radar surface), Enceladus, Moon, Earth — Rodinia
+(1 billion years ago), Early Earth, Super-Earth exoplanet or Asteroid / planetesimal.
+The last three are labelled as artwork. **Texture longitude**, **Image
 radius / outer**, and **Opacity** adjust its placement and appearance. Images
 use the same closed sphere, polar caps and meridian clipping as the Earth image.
 
@@ -242,6 +245,14 @@ follow the displayed image; a failed load leaves the previous image in place.
 
 Venus uses a radar-derived surface image. Jupiter and Saturn show cloud patterns;
 the Sun uses an illustrative solar texture. These are static visual references.
+Rodinia shows tectonic blocks reconstructed at 1000 Ma from Li et al. (2008),
+with the map centred on 120° E in the model's reference frame. Its outlines are
+continental blocks, not reconstructed coastlines, topography or vegetation.
+Early Earth uses published lava artwork adapted to a sphere. The rocky
+super-Earth and asteroid / planetesimal use published Celestia textures; they
+depict hypothetical surfaces. Selecting one does not change the sphere's shape
+or set a planetary radius. Artist credits, source links, licences and processing
+details are bundled with every image.
 Some maps use enhanced colours or
 filled coverage gaps and are intended for illustration. Source mosaics can
 retain lighting differences or limited polar detail even though the sphere

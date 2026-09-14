@@ -6,8 +6,8 @@ Their use does not imply endorsement by the source organisations. Image licences
 below apply separately from the repository's software licence. Include these
 credits when redistributing the images or figures containing them.
 
-All nine JPEGs and the Earth PNG are bundled without further image edits by
-DEEPscope. They are global 2:1 equirectangular maps, with north at the top.
+All viewer textures are 2:1 equirectangular maps, with north at the top.
+Downloaded images are unchanged unless processing is explicitly described below.
 The viewer uses +z north and places the map centre along +x at zero Texture
 longitude. Positive Texture longitude shifts the imagery toward +y without
 rotating the simulation, clipping planes or underlying fields. Map processing,
@@ -88,3 +88,87 @@ NASA imagery guidance: https://www.nasa.gov/nasa-brand-center/images-and-media/
 The LROC colour map uses LOLA greyscale albedo data in the polar regions beyond
 the colour coverage. The source is intended for visualisation. Zero longitude
 is at the horizontal centre; it is not a live image of the Moon's illumination.
+
+RODINIA AT 1000 Ma -- rodinia-1000ma.png -- 2048 x 1024
+Credit: DEEPscope rendering, after Z. X. Li and coauthors (2008); digital model
+distributed by EarthByte. Source data and this rendering: CC BY 4.0.
+Citation: Li, Z. X., et al. (2008). Assembly, configuration, and break-up history
+of Rodinia: A synthesis. Precambrian Research 160, 179-210.
+https://doi.org/10.1016/j.precamres.2007.04.021
+Model download:
+https://www.earthbyte.org/webdav/ftp/Data_Collections/Li_etal_2008_RodiniaModel.zip
+Downloaded archive SHA-256:
+e659371df79acfd7e599d0a358be0b154705b84d92388c042e6382ef78a3f4f6
+Licence notice is included as License.txt inside the downloaded archive, also at:
+https://www.earthbyte.org/webdav/ftp/Data_Collections/License.txt
+Licence: https://creativecommons.org/licenses/by/4.0/
+The journal paper retains its publisher copyright and is not bundled here.
+Processing: tools/make_rodinia_texture.py reconstructs
+RodiniaBlocks_WithPlateIDColumnAndIDs.shp with
+RodiniaModel_CompleteRotationFile.rot using pyGPlates 1.0 at exactly 1000 Ma,
+anchor plate 0; 38 reconstructed geometries. Great-circle edges are tessellated
+at 0.2 degrees and wrapped at the map edges. Flat colours and fine block outlines
+are added by DEEPscope. The map spans 60 W to 300 E, centred on 120 E in the model
+frame, with north up. At zero viewer Texture longitude, +x is this map centre.
+This is one published tectonic reconstruction, not a photograph or a unique
+solution for Rodinia. Outlines represent continental blocks, not dated shorelines;
+the blue background is unrepresented area, not a reconstructed bathymetry.
+There is no inferred vegetation, relief, climate or magnetic-field alignment.
+To reproduce after unpacking the archive (requires pygplates, matplotlib, Pillow):
+python3 tools/make_rodinia_texture.py --model-dir /path/to/Li_etal_2008_RodiniaModel --out public/assets/surfaces/rodinia-1000ma.png
+
+EARLY EARTH, ARTISTIC LAVA SURFACE -- early-earth.png -- 2048 x 1024
+Credit: Created using Lava004 from ambientCG.com (Lennart Demes), licensed under
+Creative Commons CC0 1.0 Universal. Spherical adaptation: DEEPscope.
+Source: https://ambientcg.com/view?id=Lava004
+Original asset released 12 December 2019; source lists its technique as procedural.
+Download: https://ambientcg.com/get?file=Lava004_1K-JPG.zip
+Selected file: Lava004_1K-JPG_Color.jpg (1024 x 1024).
+Creator licence statement: https://docs.ambientcg.com/license/
+Licence: https://creativecommons.org/publicdomain/zero/1.0/
+Both source material and DEEPscope's adapted image are provided under CC0 1.0.
+Processing: tools/wrap_surface_texture.py samples the downloaded colour material
+on three perpendicular planes, blends by the eighth power of the absolute sphere
+normal, and writes a 2:1 equirectangular PNG. It uses bilinear interpolation and
+matching seam/pole samples. No generative AI is used in the bundled adaptation.
+This is a decorative lava interpretation for an early molten-Earth episode;
+ambientCG did not create a dated map of Earth. No ancient geography, magma
+temperature, topography or age is inferred from its colour or pattern. It does
+not represent the entire Hadean eon. Normal and emission maps are not applied.
+To reproduce after unpacking the archive (requires NumPy and Pillow):
+python3 tools/wrap_surface_texture.py --source /path/to/Lava004_1K-JPG_Color.jpg --out public/assets/surfaces/early-earth.png
+
+SUPER-EARTH EXOPLANET, ARTWORK -- super-earth.jpg -- 4096 x 2048
+Credit: cubicApocalypse (2025), distributed by Celestia.
+SPDX-FileCopyrightText: 2025 cubicApocalypse
+SPDX-License-Identifier: CC-BY-4.0
+Licence: https://creativecommons.org/licenses/by/4.0/
+Source and preserved per-file licence:
+https://github.com/CelestiaProject/CelestiaContent/blob/62de0d22bae6428d06a900fd3e045fa8d2b969ad/textures/hires/rocky.jpg.license
+Download:
+https://raw.githubusercontent.com/CelestiaProject/CelestiaContent/62de0d22bae6428d06a900fd3e045fa8d2b969ad/textures/hires/rocky.jpg
+The JPEG is unchanged; DEEPscope renames rocky.jpg to super-earth.jpg and uses
+it as a hypothetical rocky super-Earth illustration. Celestia's README identifies
+it as an exoplanet texture. It is not an observed surface, a named planet, or a
+claim that every super-Earth is rocky or Earth-like. Size is controlled separately
+by the viewer's Image radius / outer setting; the selection does not set a mass.
+Context on this planet class: https://science.nasa.gov/exoplanets/super-earth/
+
+ASTEROID / PLANETESIMAL, ARTWORK -- asteroid.jpg -- 4096 x 2048
+Credit: cubicApocalypse (2023), distributed by Celestia.
+SPDX-FileCopyrightText: 2023 cubicApocalypse
+SPDX-License-Identifier: CC-BY-4.0
+Licence: https://creativecommons.org/licenses/by/4.0/
+Source and preserved per-file licence:
+https://github.com/CelestiaProject/CelestiaContent/blob/62de0d22bae6428d06a900fd3e045fa8d2b969ad/textures/hires/asteroid.jpg.license
+Download:
+https://raw.githubusercontent.com/CelestiaProject/CelestiaContent/62de0d22bae6428d06a900fd3e045fa8d2b969ad/textures/hires/asteroid.jpg
+The JPEG is bundled unchanged. Generic asteroid artwork is used to illustrate
+a rocky planetesimal on the viewer's spherical surface. It does not reconstruct
+a named asteroid, its irregular shape, a formation age or surface composition.
+
+Celestia's shared creator and texture provenance statement:
+https://github.com/CelestiaProject/CelestiaContent/blob/62de0d22bae6428d06a900fd3e045fa8d2b969ad/README
+All four new assets and their reuse notices were checked on 14 September 2026.
+For CC BY 4.0 assets, retain the credits, source and licence link, and identify
+any further modifications when sharing the images or figures containing them.
