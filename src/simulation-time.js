@@ -1,6 +1,7 @@
 import * as THREE from "three";
+import { overlayLayout, OVERLAY_POSITIONS } from "./overlay-floater.js";
 
-export const TIME_BOX_POSITIONS = ["bottom-left", "bottom-right", "top-left", "top-right"];
+export const TIME_BOX_POSITIONS = OVERLAY_POSITIONS;
 
 export function simulationTimeLabel(metadata, frame = null, precision = 7) {
   if (!metadata) return "";
@@ -14,14 +15,11 @@ export function simulationTimeLabel(metadata, frame = null, precision = 7) {
   return `t = ${Number(time.toPrecision(digits)).toString()} (${units})`;
 }
 
-export function timeBoxLayout(width, height, textureWidth, textureHeight, position, size = 18) {
+export function timeBoxLayout(width, height, textureWidth, textureHeight, position, size = 18, x = .5, y = .5) {
   // Relative to the image, so high-resolution exports keep the same layout.
   const scale = Math.min(width / 1200, height / 700) * size / 36;
   const w = textureWidth * scale, h = textureHeight * scale;
-  const margin = Math.min(width, height) * 0.02;
-  return { width: w, height: h,
-    x: position.endsWith("right") ? width - margin - w / 2 : margin + w / 2,
-    y: position.startsWith("top") ? height - margin - h / 2 : margin + h / 2 };
+  return overlayLayout(width, height, w, h, position, x, y);
 }
 
 // Draw directly into the same WebGL canvas as the data, so PNG/PDF, realtime
@@ -40,7 +38,7 @@ export function createSimulationTimeOverlay({ makeCanvas = () => document.create
   scene.add(sprite);
   let lastText = null;
   return {
-    render(renderer, text, position = "bottom-left", size = 18) {
+    render(renderer, text, position = "bottom-left", size = 18, x = .5, y = .5) {
       if (!text) return;
       if (text !== lastText) {
         ctx.font = "36px sans-serif";
@@ -66,7 +64,7 @@ export function createSimulationTimeOverlay({ makeCanvas = () => document.create
         lastText = text;
       }
       const width = renderer.domElement.width, height = renderer.domElement.height;
-      const layout = timeBoxLayout(width, height, canvas.width, canvas.height, position, size);
+      const layout = timeBoxLayout(width, height, canvas.width, canvas.height, position, size, x, y);
       camera.right = width; camera.top = height; camera.updateProjectionMatrix();
       sprite.position.set(layout.x, layout.y, 0);
       sprite.scale.set(layout.width, layout.height, 1);
@@ -77,6 +75,7 @@ export function createSimulationTimeOverlay({ makeCanvas = () => document.create
       } finally {
         renderer.autoClear = autoClear;
       }
+      return layout;
     },
     dispose() { material.map.dispose(); material.dispose(); },
   };

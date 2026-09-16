@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { overlayLayout } from "./overlay-floater.js";
 
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 const TAU = 2 * Math.PI;
@@ -126,32 +127,39 @@ export function paintMollweide(canvas, { values, theta, phi, centre, title, rang
 }
 
 export function createMollweideOverlay() {
-  const canvas = document.createElement("canvas");
+  let canvas = null;
   const scene = new THREE.Scene();
   const camera = new THREE.OrthographicCamera(0, 1, 1, 0, -1, 1);
   const material = new THREE.SpriteMaterial({ depthTest: false, depthWrite: false, toneMapped: false });
   const sprite = new THREE.Sprite(material); scene.add(sprite);
   return {
-    update(options) {
-      paintMollweide(canvas, options);
+    prepare(options) {
+      const prepared = document.createElement("canvas");
+      paintMollweide(prepared, options);
+      return prepared;
+    },
+    show(prepared) {
+      if (canvas === prepared && material.map) return;
+      canvas = prepared;
       material.map?.dispose();
       material.map = new THREE.CanvasTexture(canvas);
       material.map.colorSpace = THREE.SRGBColorSpace;
       material.map.minFilter = THREE.LinearFilter; material.map.generateMipmaps = false;
       material.needsUpdate = true;
     },
-    render(renderer, position, fraction) {
+    clear() { material.map?.dispose(); material.map = null; canvas = null; material.needsUpdate = true; },
+    render(renderer, position, fraction, x = .5, y = .5) {
       if (!material.map) return;
       const width = renderer.domElement.width, height = renderer.domElement.height;
-      const w = Math.min(width * fraction, height * .8 * canvas.width / canvas.height);
-      const h = w * canvas.height / canvas.width, margin = Math.min(width, height) * .02;
-      sprite.scale.set(w, h, 1);
-      sprite.position.set(position.endsWith("right") ? width - margin - w / 2 : margin + w / 2,
-        position.startsWith("top") ? height - margin - h / 2 : margin + height * .07 + h / 2, 0);
+      const w = width * fraction;
+      const layout = overlayLayout(width, height, w, w * canvas.height / canvas.width, position, x, y);
+      sprite.scale.set(layout.width, layout.height, 1);
+      sprite.position.set(layout.x, layout.y, 0);
       camera.right = width; camera.top = height; camera.updateProjectionMatrix();
       const previous = renderer.autoClear;
       try { renderer.autoClear = false; renderer.render(scene, camera); }
       finally { renderer.autoClear = previous; }
+      return layout;
     },
     dispose() { material.map?.dispose(); material.dispose(); },
   };

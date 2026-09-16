@@ -556,3 +556,27 @@ canvas {
   border-radius: 3px;
   flex-shrink: 0;
 }
+.overlay-floater {
+  position: fixed;
+  z-index: 10;
+  box-sizing: border-box;
+  cursor: move;
+  touch-action: none;
+  user-select: none;
+  outline: none;
+}
+.overlay-floater[hidden] { display: none; }
+.overlay-floater:hover, .overlay-floater:focus-visible, .overlay-floater.is-dragging {
+  outline: 2px solid #569bea;
+}
+.overlay-floater-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 24px;
+  height: 24px;
+  cursor: nwse-resize;
+  background: linear-gradient(135deg, transparent 50%, #3974b9 51%, #3974b9 60%, transparent 61%, transparent 70%, #3974b9 71%, #3974b9 80%, transparent 81%);
+  opacity: .45;
+}
+.overlay-floater:hover .overlay-floater-resize, .overlay-floater:focus-visible .overlay-floater-resize { opacity: 1; }

@@ -5,6 +5,7 @@ import { createMobileLayout } from "./mobile-layout.js";
 import * as THREE from "three";
 import { createSimulationTimeOverlay, simulationTimeLabel, TIME_BOX_POSITIONS } from "./simulation-time.js";
 import { createMollweideOverlay, sampleRadialSurface, surfaceRange as mollweideRange } from "./mollweide.js";
+import { createOverlayFloater, OVERLAY_POSITION_OPTIONS } from "./overlay-floater.js";
 import { LongitudeAverageCache, longitudeDisplayField,
   volumeDisplayValue, longitudeFieldLabel } from "./longitude-average.js";
 import { fieldRadialDomain } from "./volume-domain.js";
@@ -204,6 +205,17 @@ document.body.appendChild(renderer.domElement);
 const simulationTimeOverlay = createSimulationTimeOverlay();
 const mollweideOverlay = createMollweideOverlay();
 let mollweideRequest = null;
+const mollweideImageCache = new Map();
+const mollweideBuildPromises = new Map();
+let activeMollweideEntry = null;
+const timeFloater = createOverlayFloater({ label: "Simulation time", getSize: () => params.simulationTimeSize,
+  minimum: 6, maximum: 96, zIndex: 11, onChange: ({ position, x, y, size }) => {
+    Object.assign(params, { simulationTimePosition: position, simulationTimeX: x, simulationTimeY: y, simulationTimeSize: size });
+  } });
+const mapFloater = createOverlayFloater({ label: "Mollweide map", getSize: () => params.mollweideWidth,
+  minimum: .1, maximum: .9, onChange: ({ position, x, y, size }) => {
+    Object.assign(params, { mollweidePosition: position, mollweideX: x, mollweideY: y, mollweideWidth: size });
+  } });
 
 const axesScene = new THREE.Scene();
 const axesCamera = new THREE.PerspectiveCamera(50, 1, 0.01, 10.0);
@@ -519,6 +531,8 @@ const params = {
   sequenceFrame: 0,
   showSimulationTime: true,
   simulationTimePosition: "bottom-left",
+  simulationTimeX: .5,
+  simulationTimeY: .5,
   simulationTimePrecision: 7,
   simulationTimeSize: 18,
   showMollweide: false,
@@ -526,6 +540,8 @@ const params = {
   mollweideRadius: 1,
   mollweideLongitude: 0,
   mollweidePosition: "bottom-left",
+  mollweideX: .5,
+  mollweideY: .5,
   mollweideWidth: 0.36,
   mollweideScale: "symmetric",
   mollweideMin: -1,
@@ -770,6 +786,7 @@ function renderSignature(slot) {
     meridian2: "showMeridian2", earth: "showEarthSurface", mollweide: "showMollweide" }[slot];
   return JSON.stringify(Object.entries(params).filter(([key, value]) => {
     if (typeof value === "function" || key.endsWith("Opacity")) return false;
+    if (slot === "mollweide" && ["mollweidePosition", "mollweideWidth", "mollweideX", "mollweideY"].includes(key)) return false;
     const own = key.startsWith(prefix) && !key.startsWith(`${prefix}2`);
     const clip = ["cmb", "earth"].includes(slot) && (key.startsWith("quarter")
       || key.startsWith("cmbClip") || key === "cmbRearSide"
@@ -1143,14 +1160,23 @@ function renderScene() {
   updateDisplayScale();
   updateCameraClipping();
   renderer.render(scene, camera);
+  let mapLayout = null, timeLayout = null;
   if (params.showMollweide && mollweideRequest && renderRequestIsCurrent(mollweideRequest)) {
-    mollweideOverlay.render(renderer, params.mollweidePosition, params.mollweideWidth);
+    mapLayout = mollweideOverlay.render(renderer, params.mollweidePosition, params.mollweideWidth,
+      params.mollweideX, params.mollweideY);
   }
   if (params.showSimulationTime) {
     const frame = sequenceIndex?.frames?.[Math.round(params.sequenceFrame)];
-    simulationTimeOverlay.render(renderer, simulationTimeLabel(metadata, frame, params.simulationTimePrecision),
-      params.simulationTimePosition, params.simulationTimeSize);
+    timeLayout = simulationTimeOverlay.render(renderer, simulationTimeLabel(metadata, frame, params.simulationTimePrecision),
+      params.simulationTimePosition, params.simulationTimeSize, params.simulationTimeX, params.simulationTimeY);
   }
+  syncOverlayFloaters(mapLayout, timeLayout);
+}
+
+function syncOverlayFloaters(mapLayout, timeLayout) {
+  const locked = videoState.active || sequencePngExportActive || exportViewportState.hidden;
+  mapFloater.sync(mapLayout, renderer.domElement, locked);
+  timeFloater.sync(timeLayout, renderer.domElement, locked);
 }
 
 function syncCameraParamsFromCamera(updateControllers = false) {
@@ -2592,6 +2618,10 @@ function enforceCacheMemoryLimit(protectedEntry = null) {
 
   while (totalCacheBytes() > limitBytes) {
     const candidates = [];
+    for (const [key, entry] of mollweideImageCache) {
+      if (entry !== activeMollweideEntry && !(protectedEntry?.type === "mollweide" && protectedEntry.key === key))
+        candidates.push({ type: "mollweide", key, entry, last: entry.last || 0, bytes: entry.bytes });
+    }
 
     for (const [key, info] of dataCacheMeta.entries()) {
       if (!(protectedEntry?.type === "scalar" && protectedEntry.key === key)) {
@@ -2629,7 +2659,10 @@ function enforceCacheMemoryLimit(protectedEntry = null) {
     candidates.sort((a, b) => a.last - b.last);
     const victim = candidates[0];
 
-    if (victim.type === "scalar") {
+    if (victim.type === "mollweide") {
+      mollweideImageCache.delete(victim.key);
+      heavyObjectCacheBytes = Math.max(0, heavyObjectCacheBytes - victim.bytes);
+    } else if (victim.type === "scalar") {
       dataCache.delete(victim.key);
       dataCacheMeta.delete(victim.key);
       dataCacheBytes = Math.max(0, dataCacheBytes - victim.bytes);
@@ -2665,6 +2698,8 @@ function detachActiveFieldLineGroups() {
 
 function disposeHeavyPlaybackCaches() {
   heavyCacheGeneration++;
+  mollweideBuildPromises.clear(); mollweideImageCache.clear();
+  activeMollweideEntry = null; mollweideRequest = null; mollweideOverlay.clear();
   isosurfaceBuildPromises.clear();
   fieldLineBuildPromises.clear();
   detachActiveIsosurfaces();
@@ -2923,6 +2958,7 @@ async function ensureFieldLineObjectCacheEntry(context = captureRenderContext())
 }
 
 async function preloadHeavyObjectsForFrame(basePath, frameMetadata) {
+  const preloadMollweide = Boolean(params.showMollweide);
   const preloadIsosurfaces = Boolean(
     params.showIsosurfaces && !params.sequenceDeferIsosurfaces
   );
@@ -2930,17 +2966,19 @@ async function preloadHeavyObjectsForFrame(basePath, frameMetadata) {
     params.showFieldLines && !params.sequenceDeferFieldLines
   );
 
-  if (!preloadIsosurfaces && !preloadFieldLines) {
-    return { isosurfaces: false, fieldLines: false };
+  if (!preloadIsosurfaces && !preloadFieldLines && !preloadMollweide) {
+    return { isosurfaces: false, fieldLines: false, mollweide: false };
   }
 
   const frameCoords = await loadCoordinatesForBase(basePath, frameMetadata);
   const context = captureRenderContext(basePath, frameMetadata, frameCoords);
   if (preloadIsosurfaces) await ensureIsosurfaceObjectCacheEntry(context);
   if (preloadFieldLines) await ensureFieldLineObjectCacheEntry(context);
+  if (preloadMollweide) await ensureMollweideCacheEntry(context);
   return {
     isosurfaces: preloadIsosurfaces,
     fieldLines: preloadFieldLines,
+    mollweide: preloadMollweide,
   };
 }
 
@@ -3103,6 +3141,11 @@ function getPreloadFieldRequests(meta) {
   }
 
   if (params.showCMB) addCmb(params.cmbField);
+  if (params.showMollweide && !isSecondaryFieldName(params.mollweideField)) {
+    const surface = meta.surface_fields?.[params.mollweideField];
+    if (surface?.file) requests.set(surface.file, surfaceLength);
+    else addVolume(params.mollweideField);
+  }
   if (params.showEarthSurface && params.earthDisplayMode === "magnetic") addEarth(params.earthField);
   if (params.showICB) addVolume(params.icbField);
   if (params.showRadialSurface) addVolume(params.radialField);
@@ -3149,6 +3192,7 @@ async function preloadSequenceFrames(options = {}) {
   let loadedFiles = 0;
   let preparedIsosurfaces = 0;
   let preparedFieldLines = 0;
+  let preparedMaps = 0;
 
   for (let k = 0; k < maxFrames; k++) {
     if (preloadEpoch !== renderEpoch) return;
@@ -3170,12 +3214,14 @@ async function preloadSequenceFrames(options = {}) {
     if (preloadEpoch !== renderEpoch) return;
     if (prepared.isosurfaces) preparedIsosurfaces++;
     if (prepared.fieldLines) preparedFieldLines++;
+    if (prepared.mollweide) preparedMaps++;
 
     refreshSequenceControllers();
     setStatus(
       `Preloaded ${k + 1}/${maxFrames} selected frames, ${loadedFiles} arrays`
       + `${preparedIsosurfaces ? `, ${preparedIsosurfaces} isosurfaces` : ""}`
       + `${preparedFieldLines ? `, ${preparedFieldLines} field-line sets` : ""}`
+      + `${preparedMaps ? `, ${preparedMaps} Mollweide maps` : ""}`
       + `; cache=${formatBytes(totalCacheBytes())}.`
     );
 
@@ -3190,6 +3236,7 @@ async function preloadSequenceFrames(options = {}) {
     `Preload complete: ${maxFrames} selected frames`
     + `${preparedIsosurfaces ? `, ${preparedIsosurfaces} isosurfaces` : ""}`
     + `${preparedFieldLines ? `, ${preparedFieldLines} field-line sets` : ""}`
+    + `${preparedMaps ? `, ${preparedMaps} Mollweide maps` : ""}`
     + `; combined cache=${formatBytes(totalCacheBytes())}.`
   );
 }
@@ -6712,33 +6759,68 @@ function getMollweideFieldNames() {
 async function rebuildMollweide() {
   const request = beginRenderRequest("mollweide");
   mollweideRequest = null;
-  if (!params.showMollweide || !metadata) return;
-  const settings = request.context.params;
-  const ref = resolveFieldSource(settings.mollweideField);
+  if (!params.showMollweide || !metadata) {
+    activeMollweideEntry = null; mollweideOverlay.clear(); return;
+  }
+  const entry = await loadForRender(request, () => ensureMollweideCacheEntry(request.context));
+  if (!renderRequestIsCurrent(request)) return;
+  activeMollweideEntry = entry;
+  mollweideOverlay.show(entry.canvas);
+  mollweideRequest = request;
+  enforceCacheMemoryLimit();
+}
+
+async function ensureMollweideCacheEntry(context) {
+  const settings = context.params;
+  const { ref, stops, signature } = withCapturedRenderContext(context, () => ({
+    ref: resolveFieldSource(settings.mollweideField), stops: getColourStops(settings.mollweideColormap),
+    signature: renderSignature("mollweide"),
+  }));
+  const key = JSON.stringify([ref.basePath, ref.rawName, ref.meta.fields?.[ref.rawName],
+    ref.meta.surface_fields?.[ref.rawName], ref.meta.field_domains?.[ref.rawName],
+    ref.meta.r_inner, ref.meta.r_outer, ref.coords, signature, stops]);
+  let entry = mollweideImageCache.get(key);
+  if (entry) { entry.last = ++cacheAccessCounter; return entry; }
+  let pending = mollweideBuildPromises.get(key);
+  if (!pending) {
+    const generation = heavyCacheGeneration;
+    pending = (async () => {
+      const canvas = await buildMollweideImage(context, ref, stops, generation);
+      if (generation !== heavyCacheGeneration) throw new DOMException("Map preload cancelled", "AbortError");
+      const built = { canvas, bytes: canvas.width * canvas.height * 4, last: ++cacheAccessCounter };
+      mollweideImageCache.set(key, built); heavyObjectCacheBytes += built.bytes;
+      enforceCacheMemoryLimit({ type: "mollweide", key });
+      return built;
+    })();
+    mollweideBuildPromises.set(key, pending);
+  }
+  try { return await pending; }
+  finally { if (mollweideBuildPromises.get(key) === pending) mollweideBuildPromises.delete(key); }
+}
+
+async function buildMollweideImage(context, ref, stops, generation) {
+  const settings = context.params;
   const info = ref.meta.surface_fields?.[ref.rawName];
   let values, radiusLabel;
   if (info) {
-    values = await loadForRender(request, () => loadFloat32ForBase(ref.basePath, info.file, ref.meta.ntheta * ref.meta.nphi));
+    values = await loadFloat32ForBase(ref.basePath, info.file, ref.meta.ntheta * ref.meta.nphi);
     radiusLabel = `${info.surface || "stored"} surface`;
   } else {
-    const volume = await loadForRender(request, () => loadField(settings.mollweideField));
-    if (!renderRequestIsCurrent(request)) return;
+    const volume = await withCapturedRenderContext(context, () => loadField(settings.mollweideField));
     const domain = ref.meta.field_domains?.[ref.rawName] || {};
     const sample = sampleRadialSurface(volume, ref.coords, settings.mollweideRadius * ref.meta.r_outer,
       domain.r_min ?? ref.meta.r_inner, domain.r_max ?? ref.meta.r_outer);
     values = sample.surface;
     radiusLabel = `r/ro = ${Number((sample.radius / ref.meta.r_outer).toPrecision(5))}${sample.clamped ? " (clamped to field domain)" : ""}`;
   }
-  if (!renderRequestIsCurrent(request)) return;
+  if (generation !== heavyCacheGeneration) throw new DOMException("Map preload cancelled", "AbortError");
   const range = mollweideRange(values, settings.mollweideScale, settings.mollweideMin, settings.mollweideMax);
-  const stops = getColourStops(settings.mollweideColormap);
-  mollweideOverlay.update({ values, theta: ref.coords.theta, phi: ref.coords.phi,
+  return mollweideOverlay.prepare({ values, theta: ref.coords.theta, phi: ref.coords.phi,
     centre: settings.mollweideLongitude * Math.PI / 180,
     title: `${settings.mollweideField} · ${radiusLabel}`, range,
     graticule: settings.mollweideGraticule,
     colour: value => interpolateStops(clamp((value - range[0]) / (range[1] - range[0]), 0, 1), stops),
   });
-  mollweideRequest = request;
 }
 
 async function rebuildAllMeshes(options = {}) {
@@ -7377,8 +7459,8 @@ const VIEW_STATE_NUMBER_LIMITS = {
   lineTubeAutoMaxShapeError: [0.000001, 0.05],
   lineTubeAutoMaxEnergyErrorPercent: [0.01, 20],
   lineTubeShapeError: [0.000001, 0.05], lineTubeEnergyErrorPercent: [0.01, 20],
-  simulationTimePrecision: [2, 12], simulationTimeSize: [12, 36],
-  mollweideRadius: [0, 1], mollweideLongitude: [-180, 180], mollweideWidth: [.2, .7],
+  simulationTimePrecision: [2, 12], simulationTimeSize: [6, 96], simulationTimeX: [0, 1], simulationTimeY: [0, 1],
+  mollweideRadius: [0, 1], mollweideLongitude: [-180, 180], mollweideWidth: [.1, .9], mollweideX: [0, 1], mollweideY: [0, 1],
 };
 
 function getAvailableColormapNames() {
@@ -8071,14 +8153,14 @@ function buildGui() {
   mapFolder.add(params, "mollweideMax").name("Manual maximum").onFinishChange(refreshMap);
   mapFolder.add(params, "mollweideColormap", colourMapNames).name("Colour map").onChange(refreshMap);
   mapFolder.add(params, "mollweideGraticule").name("Graticule").onChange(refreshMap);
-  mapFolder.add(params, "mollweidePosition", TIME_BOX_POSITIONS).name("Position").onChange(refreshMap);
-  mapFolder.add(params, "mollweideWidth", .2, .7, .01).name("Width / viewport").onChange(refreshMap);
+  mapFolder.add(params, "mollweidePosition", OVERLAY_POSITION_OPTIONS).name("Position").listen();
+  mapFolder.add(params, "mollweideWidth", .1, .9, .01).name("Width / viewport").listen();
   closeGuiFolder(mapFolder);
   const timeFolder = sequenceFolder.addFolder("Simulation time box");
   timeFolder.add(params, "showSimulationTime").name("Show in view and exports");
-  timeFolder.add(params, "simulationTimePosition", TIME_BOX_POSITIONS).name("Position");
+  timeFolder.add(params, "simulationTimePosition", OVERLAY_POSITION_OPTIONS).name("Position").listen();
   timeFolder.add(params, "simulationTimePrecision", 2, 12, 1).name("Significant digits");
-  timeFolder.add(params, "simulationTimeSize", 12, 36, 1).name("Text size");
+  timeFolder.add(params, "simulationTimeSize", 6, 96, 1).name("Text size").listen();
   sequenceFolder.add(params, "reloadSequence").name("Reload sequence.json");
   const sequenceLength = Math.max(1, sequenceIndex?.frames?.length || 1);
   normaliseSequencePlaybackRange();

@@ -671,13 +671,31 @@ radius, identified in the map title; padded solid regions are excluded.
 The [Mollweide projection](https://proj.org/en/stable/operations/projections/moll.html)
 uses north at the top and longitude increasing to the right. Controls include
 central longitude, graticule, colour map, symmetric/automatic/manual colour
-limits, panel corner and width. Automatic limits use the selected radial slice;
+limits, panel location and width. Automatic limits use the selected radial slice;
 manual limits provide a fixed scale across sequence frames. The title and colour
 bar are included in the box. Position and size also carry into exports.
 
 The map follows sequence playback and is included in PNG, PDF, PNG-sequence and
 both video export modes when enabled. Settings are saved with the view. This
 uses existing converted data; no reconversion is needed.
+
+**Drag either the time box or the Mollweide box to move it.** Drag its bottom-right
+corner handle to resize it proportionally. The map keeps its projection shape;
+text scales without stretching. Their location menus offer a 3×3 arrangement:
+top/middle/bottom combined with left/centre/right, plus **Dragged position**.
+Dragging switches to that custom position. With a box focused, arrow keys move
+it and Shift+arrow keys resize it. Position and size are saved in view codes and
+stay proportional in PNG/PDF/video exports. Grab outlines and handles are not
+exported; dragging is disabled while recording or exporting a sequence.
+
+Enable the map and choose its field/depth/colours **before preloading a sequence**.
+**Preload N frames**, **Preload selected range** and video preloading load the
+map's source volume or stored surface and prepare its Mollweide image for each
+frame. Playback reuses the prepared images, including after moving or resizing
+the box. Changing field, depth, central longitude, graticule or colours creates
+new images; preload again to prepare those settings for upcoming frames.
+Map images share the sequence cache budget and its least-recently-used eviction;
+evicted images are regenerated when needed. **Clear cache** clears them too.
 
 ### Image and video export
 
@@ -695,7 +713,7 @@ position.
 
 **Sequence playback → Simulation time box** controls a time label in the
 viewport and in PNG, PDF, PNG sequences, and both video export modes. It is
-enabled by default; choose its corner, text size and significant digits there.
+enabled by default; choose its location, text size and significant digits there.
 These settings are included in saved views. Time follows the current simulation
 frame, independently of video FPS or playback speed.
 

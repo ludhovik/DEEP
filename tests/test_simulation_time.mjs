@@ -66,6 +66,7 @@ test("shared renderScene uses the current frame time and honours visibility", ()
   const events = [];
   const context = vm.createContext({
     updateDisplayScale() {}, updateCameraClipping() {},
+    syncOverlayFloaters() {},
     renderer: { render() { events.push("scene"); } }, scene: {}, camera: {},
     params: { showSimulationTime: true, sequenceFrame: 0, simulationTimePrecision: 7,
       simulationTimePosition: "bottom-left", simulationTimeSize: 18 },

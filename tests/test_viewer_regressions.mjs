@@ -63,8 +63,10 @@ class Mesh {
 function viewer() {
   const ctx = vm.createContext({
     simulationTimeLabel, TIME_BOX_POSITIONS, simulationTimeOverlay: { render() {} },
+    syncOverlayFloaters() {},
     sampleRadialSurface, mollweideRange: surfaceRange, mollweideRequest: null,
-    mollweideOverlay: { update() {}, render() {} },
+    mollweideOverlay: { prepare: options => ({ width: 688, height: 456, options }), show() {}, clear() {}, render() {} },
+    mollweideImageCache: new Map(), mollweideBuildPromises: new Map(), activeMollweideEntry: null,
     LongitudeAverageCache, longitudeDisplayField, volumeDisplayValue, longitudeFieldLabel,
     longitudeAverageCache: new LongitudeAverageCache(), meridianFieldControllers: [],
     fieldRadialDomain, isosurfaceLegendEntries, updateIsosurfaceLegend, isoLegendEl: null,
@@ -152,7 +154,7 @@ function viewer() {
     "invalidateRenderRequests", "loadForRender", "pinHeavyCacheEntry", "isEffectivelyOpaque", "applyOpacityAndDepth",
     "normaliseDatasetLabel", "secondaryPrefix", "isSecondaryFieldName", "rawSecondaryFieldName", "prefixedSecondaryFieldName",
     "resolveFieldSource", "getPrimaryVolumeFieldNames", "getSecondaryVolumeFieldNames", "getVolumeFieldNames",
-    "getMollweideFieldNames", "rebuildMollweide",
+    "getMollweideFieldNames", "rebuildMollweide", "ensureMollweideCacheEntry", "buildMollweideImage",
     "normaliseScalarFieldMetadata", "canonicalScalarFieldName", "migrateLegacyScalarFieldName",
     "normalizePhi", "isAngleInCCWSector", "getFourSectorBoundaries", "getSectorIndexForPhi", "shouldKeepSurfaceCellForClip",
     "meridianSidesAreIndependent", "syncLinkedMeridianSide", "meridianFieldSummary", "meridianDisplayLabel",
@@ -190,7 +192,7 @@ function mapViewer() {
   ctx.params.mollweideField = "T";
   ctx.getColourStops = () => [];
   ctx.interpolateStops = () => [0,0,0];
-  ctx.mollweideOverlay.update = data => maps.push(data);
+  ctx.mollweideOverlay.show = canvas => maps.push(canvas.options);
   ctx.loadField = async () => Float32Array.from(ctx.coords.r.flatMap(r => Array(12).fill(r)));
   return { ctx, maps };
 }
@@ -238,7 +240,8 @@ test("Mollweide settings and surface selections survive saved views", () => {
   ctx.metadata.surface_fields = { map: { file: "map.f32", surface: "earth" } };
   const settings = { showMollweide: true, mollweideField: "map", mollweideRadius: .62,
     mollweideLongitude: -80, mollweideScale: "manual", mollweideMin: -3, mollweideMax: 8,
-    mollweideWidth: .42, mollweidePosition: "top-right", mollweideGraticule: false };
+    mollweideWidth: .42, mollweidePosition: "custom", mollweideX: .27, mollweideY: .63, mollweideGraticule: false,
+    simulationTimePosition: "custom", simulationTimeX: .31, simulationTimeY: .81, simulationTimeSize: 43 };
   Object.assign(ctx.params, settings);
   const saved = ctx.decodeViewState(ctx.encodeViewState(ctx.collectViewState()));
   ctx.applyDefaultDatasetView(); ctx.applyViewStateParams(saved);
@@ -260,6 +263,86 @@ test("sequence mesh refresh awaits the visible Mollweide map", async () => {
   await ctx.rebuildAllMeshes();
   assert.equal(maps.length, 2); assert.equal(maps[1].values[0], 7);
   assert.equal(ctx.renderRequestIsCurrent(ctx.mollweideRequest), true);
+});
+
+test("sequence preloading prepares volume and surface maps and playback reuses them", async () => {
+  for (const surface of [false, true]) {
+    const { ctx, maps } = mapViewer();
+    for (const key of ["showCMB", "showICB", "showRadialSurface", "showEquator", "showEquator2",
+      "showMeridian", "showMeridian2", "showEarthSurface", "showIsosurfaces", "showFieldLines"]) ctx.params[key] = false;
+    if (surface) {
+      ctx.metadata.surface_fields = { map: { surface: "cmb", file: "surface.f32" } };
+      ctx.params.mollweideField = "map";
+    }
+    const firstMeta = { ...ctx.metadata }, secondMeta = { ...ctx.metadata };
+    const metadataByPath = { "demo/frames/0": firstMeta, "demo/frames/1": secondMeta };
+    const originalMetadata = ctx.metadata;
+    ctx.sequenceIndex = { frames: [{ path: "frames/0" }, { path: "frames/1" }] };
+    ctx.sequenceFrameBasePathForRoot = (root, frame) => `${root}/${frame.path}`;
+    ctx.loadMetadataForBase = async base => metadataByPath[base];
+    ctx.loadCoordinatesForBase = async () => ctx.coords;
+    ctx.refreshSequenceControllers = () => {};
+    ctx.document = { hidden: true }; ctx.videoState = { offline: true };
+    const arrays = new Map(); let reads = 0, paints = 0;
+    ctx.loadFloat32ForBase = async (base, file, count) => {
+      const key = `${base}/${file}`;
+      if (!arrays.has(key)) { reads++; arrays.set(key, new Float32Array(count).fill(base.endsWith("1") ? 7 : 3)); }
+      return arrays.get(key);
+    };
+    ctx.loadField = name => ctx.loadFloat32ForBase(ctx.dataBasePath, ctx.metadata.fields[name], 36);
+    ctx.mollweideOverlay.prepare = options => { paints++; return { width: 688, height: 456, options }; };
+    for (const name of ["normaliseSequencePlaybackRange", "sequenceFrameInPlaybackRange", "sequenceFrameAtRangeOffset",
+      "sequencePreloadFrameCount", "getPreloadFieldRequests", "preloadSequenceFrames"])
+      vm.runInContext(definition(name), ctx);
+    await ctx.preloadSequenceFrames({ frameCount: 2 });
+    assert.equal(reads, 2); assert.equal(paints, 2); assert.equal(maps.length, 0);
+    assert.equal(ctx.metadata, originalMetadata); assert.equal(ctx.dataBasePath, "demo");
+    assert.equal(ctx.mollweideImageCache.size, 2);
+    ctx.dataBasePath = "demo/frames/1"; ctx.metadata = secondMeta;
+    await ctx.rebuildMollweide();
+    assert.equal(reads, 2); assert.equal(paints, 2); assert.equal(maps[0].values[0], 7);
+    const request = ctx.mollweideRequest;
+    Object.assign(ctx.params, { mollweidePosition: "custom", mollweideX: .3, mollweideY: .7, mollweideWidth: .51 });
+    assert.equal(ctx.renderRequestIsCurrent(request), true);
+    await ctx.rebuildMollweide();
+    assert.equal(paints, 2, "Moving/resizing must not invalidate the preloaded map");
+    ctx.params.mollweideLongitude = 45;
+    await ctx.rebuildMollweide();
+    assert.equal(reads, 2); assert.equal(paints, 3, "Map content settings must invalidate prepared images");
+  }
+});
+
+test("map preloads share the cache budget and cache clearing cancels pending preparation", async () => {
+  const { ctx } = mapViewer();
+  const bytes = 688 * 456 * 4;
+  ctx.cacheLimitBytes = () => bytes * 2;
+  for (let i = 0; i < 4; i++) {
+    const context = ctx.captureRenderContext(`frame${i}`);
+    await ctx.ensureMollweideCacheEntry(context);
+  }
+  assert.equal(ctx.mollweideImageCache.size, 2);
+  assert.equal(ctx.heavyObjectCacheBytes, bytes * 2);
+  const gate = deferred(); ctx.loadField = () => gate.promise;
+  const pending = ctx.ensureMollweideCacheEntry(ctx.captureRenderContext("pending"));
+  ctx.disposeHeavyPlaybackCaches();
+  gate.resolve(new Float32Array(36));
+  await assert.rejects(pending, error => error.name === "AbortError");
+  assert.equal(ctx.mollweideImageCache.size, 0);
+  assert.equal(ctx.mollweideBuildPromises.size, 0);
+  assert.equal(ctx.heavyObjectCacheBytes, 0);
+});
+
+test("all middle presets and dragged overlay coordinates round-trip in saved views", () => {
+  const ctx = cameraViewer();
+  for (const position of TIME_BOX_POSITIONS) {
+    Object.assign(ctx.params, { simulationTimePosition: position, mollweidePosition: position });
+    const saved = ctx.decodeViewState(ctx.encodeViewState(ctx.collectViewState()));
+    ctx.applyDefaultDatasetView(); ctx.applyViewStateParams(saved);
+    assert.equal(ctx.params.simulationTimePosition, position);
+    assert.equal(ctx.params.mollweidePosition, position);
+  }
+  assert.equal(ctx.applySnapshotParam("simulationTimeX", 2), false);
+  assert.equal(ctx.applySnapshotParam("mollweideY", -1), false);
 });
 
 test("duplicate scalar choices disappear for old primary and secondary bundles without mutating their metadata", () => {
