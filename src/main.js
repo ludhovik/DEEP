@@ -3,6 +3,7 @@ import "./mobile-layout.css";
 import { createMobileLayout } from "./mobile-layout.js";
 
 import * as THREE from "three";
+import { createSimulationTimeOverlay, simulationTimeLabel, TIME_BOX_POSITIONS } from "./simulation-time.js";
 import { LongitudeAverageCache, longitudeDisplayField,
   volumeDisplayValue, longitudeFieldLabel } from "./longitude-average.js";
 import { fieldRadialDomain } from "./volume-domain.js";
@@ -199,6 +200,7 @@ const renderer = new THREE.WebGLRenderer({
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 document.body.appendChild(renderer.domElement);
+const simulationTimeOverlay = createSimulationTimeOverlay();
 
 const axesScene = new THREE.Scene();
 const axesCamera = new THREE.PerspectiveCamera(50, 1, 0.01, 10.0);
@@ -512,6 +514,10 @@ const params = {
   clearSecondaryDataset: () => clearSecondaryDataset(),
 
   sequenceFrame: 0,
+  showSimulationTime: true,
+  simulationTimePosition: "bottom-left",
+  simulationTimePrecision: 7,
+  simulationTimeSize: 18,
   sequencePlaybackFirst: 0,
   sequencePlaybackLast: -1,
   sequenceFps: 4,
@@ -1123,6 +1129,11 @@ function renderScene() {
   updateDisplayScale();
   updateCameraClipping();
   renderer.render(scene, camera);
+  if (params.showSimulationTime) {
+    const frame = sequenceIndex?.frames?.[Math.round(params.sequenceFrame)];
+    simulationTimeOverlay.render(renderer, simulationTimeLabel(metadata, frame, params.simulationTimePrecision),
+      params.simulationTimePosition, params.simulationTimeSize);
+  }
 }
 
 function syncCameraParamsFromCamera(updateControllers = false) {
@@ -7308,6 +7319,7 @@ const VIEW_STATE_NUMBER_LIMITS = {
   lineTubeAutoMaxShapeError: [0.000001, 0.05],
   lineTubeAutoMaxEnergyErrorPercent: [0.01, 20],
   lineTubeShapeError: [0.000001, 0.05], lineTubeEnergyErrorPercent: [0.01, 20],
+  simulationTimePrecision: [2, 12], simulationTimeSize: [12, 36],
 };
 
 function getAvailableColormapNames() {
@@ -7384,6 +7396,8 @@ function applySnapshotParam(key, value) {
   if (key === "magneticVolumeDomain" && !["all", "fluid", "inner-core"].includes(value)) return false;
   if (/^phiAvg[1-4]Mode$/.test(key) && !["mean", "fluctuation"].includes(value)) return false;
   if (key === "phiAvgCount" && (!Number.isInteger(value) || value < 0 || value > 4)) return false;
+  if (key === "simulationTimePosition" && !TIME_BOX_POSITIONS.includes(value)) return false;
+  if (key === "simulationTimePrecision" && !Number.isInteger(value)) return false;
   if (["legendPosition", "titlePosition", "exportPanelPosition"].includes(key) && !PANEL_POSITIONS.has(value)) return false;
   params[key] = value;
   return true;
@@ -7976,6 +7990,11 @@ function buildGui() {
   }
 
   const sequenceFolder = gui.addFolder("Sequence playback");
+  const timeFolder = sequenceFolder.addFolder("Simulation time box");
+  timeFolder.add(params, "showSimulationTime").name("Show in view and exports");
+  timeFolder.add(params, "simulationTimePosition", TIME_BOX_POSITIONS).name("Position");
+  timeFolder.add(params, "simulationTimePrecision", 2, 12, 1).name("Significant digits");
+  timeFolder.add(params, "simulationTimeSize", 12, 36, 1).name("Text size");
   sequenceFolder.add(params, "reloadSequence").name("Reload sequence.json");
   const sequenceLength = Math.max(1, sequenceIndex?.frames?.length || 1);
   normaliseSequencePlaybackRange();

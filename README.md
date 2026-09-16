@@ -670,6 +670,21 @@ PNG and PDF use the selected viewer background colour. Hidden or collapsed
 legends are omitted, and visible legends follow their selected or dragged
 position.
 
+**Sequence playback → Simulation time box** controls a time label in the
+viewport and in PNG, PDF, PNG sequences, and both video export modes. It is
+enabled by default; choose its corner, text size and significant digits there.
+These settings are included in saved views. Time follows the current simulation
+frame, independently of video FPS or playback speed.
+
+All six converters already save the source simulation time as `time` in each
+frame's `metadata.json`; sequence converters also include it in `sequence.json`.
+Existing datasets with time metadata need no reconversion. Values retain the
+simulation's native time units, labelled "native units" unless metadata supplies
+`time_units`. Unknown time is displayed as `t = unknown`, never as zero or a
+frame number. In particular, Rayleigh `Spherical_3D` headers do not contain
+physical time: use `--time VALUE` for a single snapshot if known. Rayleigh
+checkpoints carry time; `Spherical_3D` sequences without time data remain unknown.
+
 Video motion modes include a fixed current view, 360° azimuth, combined
 azimuth/elevation motion, and personalized staged motion. A custom specification
 such as:

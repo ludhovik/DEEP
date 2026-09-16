@@ -32,6 +32,7 @@ class SelectionTests(unittest.TestCase):
     def meta(self,out):return json.loads((out/'metadata.json').read_text())
     def compare(self,full,selected,names):
         m=self.meta(selected);self.assertEqual(set(m['fields']),set(names));self.assertEqual(set(m['ranges']),set(names))
+        self.assertEqual(m['time'],self.meta(full)['time'])
         self.assertEqual(m['field_lines'],{});self.assertEqual(m['surface_fields'],{})
         self.assertEqual(set(p.name for p in selected.glob('*.f32')),{m['fields'][n] for n in names})
         for name in names:
@@ -79,6 +80,7 @@ class SelectionTests(unittest.TestCase):
         self.compare(full,out,names)
     def test_each_supported_magic_field_matches_full_and_auxiliaries_are_private(self):
         full=self.root/'full';self.magic_run(full,extra=['--emf','--induction'])
+        self.assertEqual(self.meta(full)['time'],1.25)
         for name in self.meta(full)['fields']:
             with self.subTest(name=name):
                 out=self.root/'one';self.magic_run(out,[name],['--emf','--induction'])
@@ -117,6 +119,7 @@ class SelectionTests(unittest.TestCase):
             leeds.run_leeds_conversion(args)
         self.compare(self.root/'full',self.root/'selected',args.output)
         meta=self.meta(self.root/'selected');self.assertTrue(meta['full_sphere']);self.assertEqual(meta['r_inner'],0.)
+        self.assertEqual(meta['time'],1.)
         self.assertTrue(all(v['pol_regular_coefficients'] and v['tor_regular_coefficients'] for v in calls))
 
     def test_unavailable_field_preserves_previous_bundle(self):
@@ -175,6 +178,7 @@ class SelectionTests(unittest.TestCase):
             mod=importlib.import_module(module);full=self.root/f'full{index}';out=self.root/f'out{index}'
             common=[*source,'--skip-field-lines','--no-earth-br','--no-parameter-prompt']
             with contextlib.redirect_stdout(io.StringIO()):mod.main([*common,'--out',str(full)])
+            self.assertAlmostEqual(self.meta(full)['time'],(.75,0.,.1)[index])
             self.assertTrue({'grad_sT','grad_zT','grad_sT_nom0','grad_zT_nom0'} <= set(self.meta(full)['fields']))
             thermal=self.root/f'thermal{index}'
             with contextlib.redirect_stdout(io.StringIO()):mod.main([*common,'--out',str(thermal),'--RaC','0'])
@@ -237,6 +241,7 @@ class SelectionTests(unittest.TestCase):
              mock.patch.object(xs.pyxshells,'ScalarSH',ScalarSH,create=True), \
              mock.patch.object(xs.pyxshells,'load_field',side_effect=load,create=True):
             xs.convert_xshells(args)
+            self.assertEqual(self.meta(full)['time'],1.25)
             self.assertTrue(SCALAR_DIAGNOSTICS <= set(self.meta(full)['fields']))
             args.out=str(out);args.output=sorted(SCALAR_DIAGNOSTICS)
             xs.convert_xshells(args)

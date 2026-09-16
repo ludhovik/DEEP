@@ -16,6 +16,7 @@ import { peakLineStrength, estimateTubeBytes, makeMagneticTubeGeometry, simplify
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { prepareTubeLines, executeGeometryJob, unpackGeometry } from "../src/geometry-jobs.js";
 import { readResponseWithProgress } from "../src/work-progress.js";
+import { simulationTimeLabel, TIME_BOX_POSITIONS } from "../src/simulation-time.js";
 
 const source = fs.readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
 function definition(name) {
@@ -60,6 +61,7 @@ class Mesh {
 
 function viewer() {
   const ctx = vm.createContext({
+    simulationTimeLabel, TIME_BOX_POSITIONS, simulationTimeOverlay: { render() {} },
     LongitudeAverageCache, longitudeDisplayField, volumeDisplayValue, longitudeFieldLabel,
     longitudeAverageCache: new LongitudeAverageCache(), meridianFieldControllers: [],
     fieldRadialDomain, isosurfaceLegendEntries, updateIsosurfaceLegend, isoLegendEl: null,
@@ -1831,6 +1833,24 @@ test("legacy camera positions migrate once and new presets use outer-radius unit
   ctx.camera.position.multiplyScalar(1000);
   ctx.updateCameraClipping();
   assert.ok(ctx.camera.far > ctx.camera.position.length() + 1);
+});
+
+test("simulation time settings survive saved views and reject invalid values", () => {
+  const ctx = cameraViewer();
+  ctx.params.showSimulationTime = false;
+  ctx.params.simulationTimePosition = "top-right";
+  ctx.params.simulationTimePrecision = 9;
+  ctx.params.simulationTimeSize = 24;
+  const saved = ctx.decodeViewState(ctx.encodeViewState(ctx.collectViewState()));
+  ctx.applyDefaultDatasetView();
+  ctx.applyViewStateParams(saved);
+  assert.equal(ctx.params.showSimulationTime, false);
+  assert.equal(ctx.params.simulationTimePosition, "top-right");
+  assert.equal(ctx.params.simulationTimePrecision, 9);
+  assert.equal(ctx.params.simulationTimeSize, 24);
+  assert.equal(ctx.applySnapshotParam("simulationTimePosition", "outside"), false);
+  assert.equal(ctx.applySnapshotParam("simulationTimePrecision", 2.5), false);
+  assert.equal(ctx.applySnapshotParam("simulationTimeSize", -1), false);
 });
 
 test("all render paths scale native geometry together while preserving buffers and lighting", () => {
