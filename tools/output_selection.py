@@ -1,6 +1,10 @@
 """Strict volume selection and dependency-driven diagnostics for all converters."""
 from __future__ import annotations
 import numpy as np
+try:
+    from scalar_diagnostics import SCALAR_DIAGNOSTICS, ADVECTION, iter_scalar_diagnostics
+except ImportError:
+    from tools.scalar_diagnostics import SCALAR_DIAGNOSTICS, ADVECTION, iter_scalar_diagnostics
 
 VELOCITY = {'ur','ut','up','us','uz','Uabs','helicity',
             *(f'{v}_{mode}' for v in ('ur','ut','up') for mode in ('nom0','phiavg')),
@@ -10,8 +14,8 @@ EMF = {'EMFr','EMFt','EMFp','EMFabs','EMFr_fluct','EMFt_fluct','EMFp_fluct'}
 INDUCTION = {'Ir','It','Ip','Iz','Iabs'}
 SCALARS = {'T','C','Phase','P','T_nom0','C_nom0','T_phiavg','C_phiavg'}
 GRADIENTS = {f'grad_{axis}{scalar}{suffix}' for axis in ('r','theta','phi','s','z') for scalar in ('T','C') for suffix in ('','_nom0')}
-FIELDS = VELOCITY | MAGNETIC | EMF | INDUCTION | SCALARS | GRADIENTS | {'N2','N2_nom0'}
-COMPOSITION = {'C','C_nom0','C_phiavg'} | {
+FIELDS = VELOCITY | MAGNETIC | EMF | INDUCTION | SCALARS | GRADIENTS | SCALAR_DIAGNOSTICS | {'N2','N2_nom0'}
+COMPOSITION = {'C','C_nom0','C_phiavg','dthetaC_phiavg','advC'} | {
     name for name in GRADIENTS if name.startswith('grad_') and
     (name.endswith('C') or name.endswith('C_nom0'))
 }
@@ -60,8 +64,8 @@ class OutputSelection:
         if set(self.names)&EMF and not args.emf: raise ValueError('Selected EMF fields require --emf.')
         if set(self.names)&INDUCTION and not args.induction: raise ValueError('Selected induction fields require --induction.')
         if getattr(args,'inner_core_only',False): raise ValueError('--output cannot be combined with --inner-core-only; use normal --incremental conversion.')
-        if getattr(args,'no_gradients',False) and set(self.names)&(GRADIENTS|{'N2','N2_nom0'}):
-            raise ValueError('--output gradient/N2 fields conflict with --no-gradients.')
+        if getattr(args,'no_gradients',False) and set(self.names)&(GRADIENTS|SCALAR_DIAGNOSTICS|{'N2','N2_nom0'}):
+            raise ValueError('--output gradient, mean-derivative, advection and N2 fields conflict with --no-gradients.')
         if getattr(args,'no_m0_fields',False) and any(v.endswith(('_nom0','_phiavg')) for v in self.names):
             raise ValueError('--output mean/fluctuation fields conflict with --no-m0-fields.')
 
@@ -70,12 +74,12 @@ class OutputSelection:
         if self.composition_disabled and name == 'C':return False
         if self.names is None:return True
         names=set(self.names)
-        if name in ('ur','ut','up','utor'):return bool(names&(VELOCITY|EMF|INDUCTION))
+        if name in ('ur','ut','up','utor'):return bool(names&(VELOCITY|EMF|INDUCTION|ADVECTION|{'dzup_phiavg'}))
         if name in ('Br','Bt','Bp','Btor'):return bool(names&(MAGNETIC|EMF|INDUCTION))
         if name=='T':
-            return bool(names&{'T','T_nom0','T_phiavg','N2','N2_nom0'}) or any(v.startswith('grad_') and (v.endswith('T') or v.endswith('T_nom0')) for v in names)
+            return bool(names&{'T','T_nom0','T_phiavg','dthetaT_phiavg','advT','N2','N2_nom0'}) or any(v.startswith('grad_') and (v.endswith('T') or v.endswith('T_nom0')) for v in names)
         if name=='C':
-            return bool(names&{'C','C_nom0','C_phiavg','N2','N2_nom0'}) or any(v.startswith('grad_') and (v.endswith('C') or v.endswith('C_nom0')) for v in names)
+            return bool(names&{'C','C_nom0','C_phiavg','dthetaC_phiavg','advC','N2','N2_nom0'}) or any(v.startswith('grad_') and (v.endswith('C') or v.endswith('C_nom0')) for v in names)
         return name in names
 
 
@@ -111,6 +115,11 @@ def selected_native_fields(selection,raw,radii,theta,phi,parameters,args,*,n2_fa
         return 'C'
     for name in selection.names:
         if name in raw or name in ('ur','ut','up','Br','Bt','Bp','T','C','Phase','P'):a,r=base(name)
+        elif name in SCALAR_DIAGNOSTICS:
+            _, a, r, source = next(iter_scalar_diagnostics([name], raw, radii, theta, phi,
+                                                          grad, operations['remap']))
+            result[name] = (np.asarray(a, dtype=np.float32), r, source)
+            continue
         elif name.endswith(('_nom0','_phiavg')) and name in (VELOCITY|MAGNETIC|SCALARS):
             base_name=name.rsplit('_',1)[0]
             a,r=base(base_name);a=op('mean' if name.endswith('_phiavg') else 'nom0',a)

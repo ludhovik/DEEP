@@ -64,6 +64,11 @@ except ImportError:
 import numpy as np
 
 try:
+    from scalar_diagnostics import default_diagnostic_names, iter_scalar_diagnostics, scalar_diagnostic_metadata
+except ImportError:
+    from tools.scalar_diagnostics import default_diagnostic_names, iter_scalar_diagnostics, scalar_diagnostic_metadata
+
+try:
     from field_line_progress import TraceProgress
 except ImportError:
     from tools.field_line_progress import TraceProgress
@@ -2577,7 +2582,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--no-gradients",
         action="store_true",
-        help="Skip exporting 3-D scalar gradient fields. N2 and helicity are still computed.",
+        help="Skip scalar gradients, mean derivatives and scalar advection. N2 and helicity are still computed.",
     )
 
     p.add_argument("--sequence-first", type=int, default=None, help="First state number to convert in a multi-frame sequence.")
@@ -3477,6 +3482,24 @@ def convert_state(args: argparse.Namespace) -> None:
             fields["grad_sC_nom0"] = grad_sComp_fluct
             fields["grad_zC_nom0"] = grad_zComp_fluct
 
+    diagnostic_raw = {key: fields[key][fluid_start:] for key in ('ur', 'ut', 'up', 'T', 'C') if key in fields}
+    diagnostic_radii = {key: r[fluid_start:] for key in diagnostic_raw}
+    diagnostic_domains = {}
+    def diagnostic_gradient(scalar):
+        return tuple(fields[f'grad_{axis}{scalar}'][fluid_start:] for axis in ('r', 'theta', 'phi'))
+    def diagnostic_remap(values, source_r, target_r):
+        # Leeds fluid velocity and scalars share a grid; never interpolate over
+        # the zero-padded solid interval to construct a derivative.
+        if not np.array_equal(source_r, target_r):
+            raise ValueError('Unexpected mismatched Leeds fluid grids for scalar advection.')
+        return values
+    for name, value, radius, source in iter_scalar_diagnostics(
+            default_diagnostic_names(diagnostic_raw, args), diagnostic_raw, diagnostic_radii, theta, phi,
+            diagnostic_gradient, diagnostic_remap):
+        fields[name] = embed_fluid_radial_field(value, len(r), fluid_start)
+        diagnostic_domains[name] = {'source': source, 'r_min': float(radius[0]),
+                                    'r_max': float(radius[-1]), 'outside_native_domain': 'zero'}
+
     # Downsample after all derived quantities are computed.
     dr = max(1, int(args.downsample_r))
     dt = max(1, int(args.downsample_theta))
@@ -3928,6 +3951,8 @@ def convert_state(args: argparse.Namespace) -> None:
         "field_lines": field_lines_meta,
     }
 
+    metadata['scalar_diagnostics'] = scalar_diagnostic_metadata(field_files)
+    metadata['field_domains'].update(diagnostic_domains)
     with open(outdir / "metadata.json", "w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2, allow_nan=False)
 

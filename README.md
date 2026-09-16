@@ -1138,8 +1138,52 @@ projection are linear and their coefficients do not depend on longitude, this
 is mathematically equivalent to removing `m=0` before taking the gradient (up
 to floating-point roundoff). A regression test checks both routes directly.
 
-The stored thermal variable is named `C` consistently across converters;
-`T` remains a compatibility alias where it already existed.
+### Mean derivatives and scalar advection
+
+All six converters (Leeds, XSHELLS, MagIC, Rayleigh, QuICC/EPM and Calypso)
+include these additional fields in a normal export when their source fields
+are available:
+
+| Field | Definition |
+| --- | --- |
+| `dthetaT_phiavg` | ∂⟨T⟩φ/∂θ |
+| `dthetaC_phiavg` | ∂⟨C⟩φ/∂θ |
+| `dzup_phiavg` | ∂⟨uφ⟩φ/∂z at fixed cylindrical radius s |
+| `advT` | u · ∇T |
+| `advC` | u · ∇C |
+
+Here θ is **colatitude in radians**, so the first two fields have no `1/r`
+factor. Longitude is the only averaged direction; the three mean derivatives
+are repeated along longitude in the volume. With `s = r sin(θ)` and
+`z = r cos(θ)`, the axial derivative is
+`cos(θ) ∂r⟨uφ⟩φ − sin(θ)/r ∂θ⟨uφ⟩φ`.
+Advection uses the **positive** sign and the complete instantaneous fields:
+`ur ∂r f + uθ/r ∂θ f + uφ/(r sin(θ)) ∂φ f`.
+It is not the advection of the longitude-averaged scalar.
+
+Calculations use native physical grids before viewer downsampling, in native
+code units. `T` is the exported thermal scalar (temperature, entropy or
+codensity, depending on the source); `C` is composition. No additional
+background profile is added. Advection is restricted to the common scalar and
+velocity radial domain. Derivatives do not cross zero-padded solid regions.
+At a full-sphere centre, the mean derivatives vanish; advection uses a finite
+Cartesian gradient estimated from the scalar's radial derivative. Definitions
+and conventions are also recorded in `metadata.json` under `scalar_diagnostics`.
+
+Rerun the existing conversion command, optionally with `--incremental`, to add
+these fields to an existing dataset. To export **only** these five fields:
+
+```text
+--output dthetaT_phiavg dthetaC_phiavg dzup_phiavg advT advC
+```
+
+Leave out the two composition fields when no composition is available;
+`--RaC 0` disables them. `--no-gradients` suppresses all five fields.
+Where supported, `--no-m0-fields` suppresses the three mean derivatives while
+retaining advection. Explicit selections that conflict with these flags fail
+with an error. The new volumes are available in the viewer's variable lists.
+
+### Selection dependencies and incremental updates
 
 Induction calculates its required EMF internally; you need not export EMF or
 add `--emf` just to select induction. Field availability depends on the input;

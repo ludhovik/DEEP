@@ -20,6 +20,7 @@ from tools.output_selection import OutputSelection,FIELDS,cylindrical_gradient,s
 from tools import convert_magic_to_viewer as magic
 from tools.conversion_cache import run_conversion
 from tools.viewer_bundle import validate_bundle
+from tools.scalar_diagnostics import SCALAR_DIAGNOSTICS
 from test_quicc_converter import fixture as quicc_fixture
 from test_calypso_converter import make_run as calypso_fixture
 from test_rayleigh_converter import fixture as rayleigh_fixture
@@ -112,7 +113,7 @@ class SelectionTests(unittest.TestCase):
              mock.patch.object(leeds,'read_state_radial_representations',return_value=reps), \
              mock.patch.object(leeds,'read_netcdf_attributes',return_value={}):
             leeds.run_leeds_conversion(args)
-            args.out=str(self.root/'selected');args.output=['ur','Br','T','vort_r','grad_rT']
+            args.out=str(self.root/'selected');args.output=['ur','Br','T','vort_r','grad_rT',*sorted(SCALAR_DIAGNOSTICS)]
             leeds.run_leeds_conversion(args)
         self.compare(self.root/'full',self.root/'selected',args.output)
         meta=self.meta(self.root/'selected');self.assertTrue(meta['full_sphere']);self.assertEqual(meta['r_inner'],0.)
@@ -136,7 +137,7 @@ class SelectionTests(unittest.TestCase):
         self.assertTrue(selection.composition_disabled)
         self.assertFalse(selection.needs('C'))
         self.assertTrue(selection.needs('T'))
-        for name in ('C','C_nom0','C_phiavg','grad_rC','grad_zC_nom0'):
+        for name in ('C','C_nom0','C_phiavg','grad_rC','grad_zC_nom0','advC','dthetaC_phiavg'):
             args=magic.build_arg_parser().parse_args(['--RaC','0','--output',name])
             with self.subTest(name=name),self.assertRaisesRegex(ValueError,'--RaC 0 disables composition'):
                 OutputSelection(args)
@@ -152,7 +153,7 @@ class SelectionTests(unittest.TestCase):
         self.assertIn('Composition disabled',log)
         self.assertTrue(metadata['composition_disabled_by_RaC_zero'])
         self.assertIn('T',metadata['fields'])
-        self.assertFalse(any(name in {'C','C_nom0','C_phiavg'} or
+        self.assertFalse(any(name in {'C','C_nom0','C_phiavg','advC','dthetaC_phiavg'} or
                              (name.startswith('grad_') and (name.endswith('C') or name.endswith('C_nom0')))
                              for name in metadata['fields']))
         self.assertFalse((out/'C_volume.f32').exists())
@@ -195,6 +196,51 @@ class SelectionTests(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 mod.main([*common,'--out',str(out),'--output',*gradient_names])
             self.compare(full,out,gradient_names)
+            diagnostics=sorted(SCALAR_DIAGNOSTICS & set(self.meta(full)['fields']))
+            self.assertTrue({'dthetaT_phiavg','dzup_phiavg','advT'} <= set(diagnostics))
+            with contextlib.redirect_stdout(io.StringIO()):
+                mod.main([*common,'--out',str(out),'--output',*diagnostics])
+            self.compare(full,out,diagnostics)
+            self.assertEqual(set(self.meta(out)['scalar_diagnostics']['definitions']),set(diagnostics))
+
+    def test_xshells_scalar_diagnostics_match_full_export(self):
+        xs=fixtures.load_module('scalar_xshells_test',fixtures.XSHELLS_PATH)
+        graph=fixtures.ConverterPackageTests.fake_magic_graph()
+        r=graph.radius[::-1].copy();theta=graph.colatitude
+        phi=np.linspace(0,2*np.pi,graph.vr.shape[0],endpoint=False)
+        class Transform:
+            def set_grid(self,*args):return len(theta),len(phi)
+        class PolTor:
+            def __init__(self,arrays):
+                self.arrays=arrays;self.sht=Transform()
+                self.lmax=self.mmax=2;self.mres=1
+                self.grid=types.SimpleNamespace(r=r)
+                self.irs=0;self.ire=len(r)-1;self.time=1.25
+            def theta_array(self):return theta
+            def phi_array(self):return phi
+            def spat_full(self):
+                return np.stack([np.transpose(a[:,:,::-1],(2,1,0)) for a in self.arrays],axis=1)
+        class ScalarSH(PolTor):
+            def spat_full(self):return np.transpose(self.arrays[:,:,::-1],(2,1,0))
+        def load(path,lazy=True):
+            if 'fieldU' in str(path):return PolTor((graph.vr,graph.vtheta,graph.vphi))
+            return ScalarSH(graph.entropy if 'fieldT' in str(path) else graph.xi)
+        sources=[]
+        for name in ('fieldU.test','fieldT.test','fieldC.test'):
+            source=self.root/name;source.touch();sources.append(str(source))
+        full=self.root/'full';out=self.root/'selected'
+        args=xs.build_arg_parser().parse_args(['--velocity',sources[0],'--temperature',sources[1],
+            '--composition',sources[2],'--out',str(full),'--skip-field-lines','--no-earth-br',
+            '--no-parameter-prompt','--Ek','1e-4','--Pr','1','--Sc','1','--RaT','1e6','--RaC','1e6'])
+        with contextlib.redirect_stdout(io.StringIO()), \
+             mock.patch.object(xs.pyxshells,'PolTor',PolTor,create=True), \
+             mock.patch.object(xs.pyxshells,'ScalarSH',ScalarSH,create=True), \
+             mock.patch.object(xs.pyxshells,'load_field',side_effect=load,create=True):
+            xs.convert_xshells(args)
+            self.assertTrue(SCALAR_DIAGNOSTICS <= set(self.meta(full)['fields']))
+            args.out=str(out);args.output=sorted(SCALAR_DIAGNOSTICS)
+            xs.convert_xshells(args)
+        self.compare(full,out,args.output)
     def test_direct_selection_does_not_call_any_diagnostic(self):
         args=magic.build_arg_parser().parse_args(['--output','T'])
         raw={'T':np.ones((3,4,6))};r=np.arange(3)+1

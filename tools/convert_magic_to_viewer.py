@@ -38,6 +38,11 @@ except ImportError:
     from tools.converter_parameters import resolve_graph_parameters
 
 import numpy as np
+
+try:
+    from scalar_diagnostics import default_diagnostic_names, iter_scalar_diagnostics, scalar_diagnostic_metadata
+except ImportError:
+    from tools.scalar_diagnostics import default_diagnostic_names, iter_scalar_diagnostics, scalar_diagnostic_metadata
 from scipy.special import gammaln, lpmv
 
 try:
@@ -681,6 +686,12 @@ def convert_adapted_snapshot(path, outdir, args, adapted, graph_parameters, *,
                     register(f"grad_s{name}_nom0", remove_m0_phi(gs), radius, source)
                     register(f"grad_z{name}_nom0", remove_m0_phi(gz), radius, source)
 
+        diagnostic_radii = {key: adapted.get('field_radii', {}).get(key, r_shell) for key in raw}
+        for name, value, radius, source in iter_scalar_diagnostics(
+                default_diagnostic_names(raw, args), raw, diagnostic_radii, theta, phi,
+                lambda scalar: gradients[scalar], radial_remap_to_master):
+            register(name, value, radius, source)
+
         diagnostics = {
             "emf_requested": bool(args.emf),
             "emf_exported": False,
@@ -989,6 +1000,7 @@ def convert_adapted_snapshot(path, outdir, args, adapted, graph_parameters, *,
         "field_lines": field_lines_meta,
     }
     metadata.update(adapted.get("metadata", {}))
+    metadata['scalar_diagnostics'] = scalar_diagnostic_metadata(field_files)
     metadata["scalar_naming_version"] = 2
     if selection.names is not None:
         metadata["output_selection"] = list(selection.names)
@@ -1026,7 +1038,7 @@ def add_viewer_arguments(p, default_output):
     p.add_argument("--downsample-r", type=int, default=1)
     p.add_argument("--downsample-theta", type=int, default=1)
     p.add_argument("--downsample-phi", type=int, default=1)
-    p.add_argument("--no-gradients", action="store_true")
+    p.add_argument("--no-gradients", action="store_true", help="Skip scalar gradients, mean derivatives and scalar advection.")
     p.add_argument("--no-m0-fields", action="store_true")
     p.add_argument("--no-parameter-prompt", action="store_true", help="Do not prompt for missing native parameters; retain unknown values and report them.")
     p.add_argument("--emf", action="store_true")

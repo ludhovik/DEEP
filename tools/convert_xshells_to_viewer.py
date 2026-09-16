@@ -46,6 +46,11 @@ except ImportError:
 
 import numpy as np
 
+try:
+    from scalar_diagnostics import default_diagnostic_names, iter_scalar_diagnostics, scalar_diagnostic_metadata
+except ImportError:
+    from tools.scalar_diagnostics import default_diagnostic_names, iter_scalar_diagnostics, scalar_diagnostic_metadata
+
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -522,7 +527,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--downsample-r", type=int, default=1)
     p.add_argument("--downsample-theta", type=int, default=1)
     p.add_argument("--downsample-phi", type=int, default=1)
-    p.add_argument("--no-gradients", action="store_true", help="Do not export scalar gradients.")
+    p.add_argument("--no-gradients", action="store_true", help="Skip scalar gradients, mean derivatives and scalar advection.")
     p.add_argument("--no-m0-fields", action="store_true", help="Do not export m=0-removed and phi-average variants.")
     p.add_argument("--no-parameter-prompt", action="store_true")
     p.add_argument("--emf", action="store_true", help="Export the motional EMF u x B. Disabled by default.")
@@ -888,6 +893,15 @@ def convert_xshells(args: argparse.Namespace) -> None:
                 register(f"grad_phi{name}_nom0", remove_m0_phi(gp), rr, source_key)
                 register(f"grad_s{name}_nom0", remove_m0_phi(gs), rr, source_key)
                 register(f"grad_z{name}_nom0", remove_m0_phi(gz), rr, source_key)
+
+    diagnostic_raw = {key: values[0] for key, values in scalar_native.items()}
+    if velocity is not None:
+        diagnostic_raw.update(ur=Ur, ut=Ut, up=Up)
+    diagnostic_radii = {key: native_fields[key][1] for key in diagnostic_raw}
+    for name, value, radius, source in iter_scalar_diagnostics(
+            default_diagnostic_names(diagnostic_raw, args), diagnostic_raw, diagnostic_radii, theta, phi,
+            lambda scalar: gradients[scalar][:3], radial_remap_to_master):
+        register(name, value, radius, source)
 
     optional_diagnostics = {
         "emf_requested": bool(args.emf),
@@ -1397,6 +1411,7 @@ def convert_xshells(args: argparse.Namespace) -> None:
         "profiles": "profiles.json",
         "field_lines": field_lines_meta,
     }
+    metadata['scalar_diagnostics'] = scalar_diagnostic_metadata(field_files)
     with open(outdir / "metadata.json", "w", encoding="utf-8") as stream:
         json.dump(metadata, stream, indent=2, allow_nan=False)
     try:
