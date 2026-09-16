@@ -4,6 +4,7 @@ import { createMobileLayout } from "./mobile-layout.js";
 
 import * as THREE from "three";
 import { createSimulationTimeOverlay, simulationTimeLabel, TIME_BOX_POSITIONS } from "./simulation-time.js";
+import { createMollweideOverlay, sampleRadialSurface, surfaceRange as mollweideRange } from "./mollweide.js";
 import { LongitudeAverageCache, longitudeDisplayField,
   volumeDisplayValue, longitudeFieldLabel } from "./longitude-average.js";
 import { fieldRadialDomain } from "./volume-domain.js";
@@ -201,6 +202,8 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 document.body.appendChild(renderer.domElement);
 const simulationTimeOverlay = createSimulationTimeOverlay();
+const mollweideOverlay = createMollweideOverlay();
+let mollweideRequest = null;
 
 const axesScene = new THREE.Scene();
 const axesCamera = new THREE.PerspectiveCamera(50, 1, 0.01, 10.0);
@@ -518,6 +521,17 @@ const params = {
   simulationTimePosition: "bottom-left",
   simulationTimePrecision: 7,
   simulationTimeSize: 18,
+  showMollweide: false,
+  mollweideField: "Br",
+  mollweideRadius: 1,
+  mollweideLongitude: 0,
+  mollweidePosition: "bottom-left",
+  mollweideWidth: 0.36,
+  mollweideScale: "symmetric",
+  mollweideMin: -1,
+  mollweideMax: 1,
+  mollweideColormap: "blue-white-red",
+  mollweideGraticule: true,
   sequencePlaybackFirst: 0,
   sequencePlaybackLast: -1,
   sequenceFps: 4,
@@ -753,7 +767,7 @@ function renderSignature(slot) {
   const prefix = slot === "earth" ? "earth" : slot;
   const visibility = { cmb: "showCMB", icb: "showICB", radial: "showRadialSurface",
     equator: "showEquator", equator2: "showEquator2", meridian: "showMeridian",
-    meridian2: "showMeridian2", earth: "showEarthSurface" }[slot];
+    meridian2: "showMeridian2", earth: "showEarthSurface", mollweide: "showMollweide" }[slot];
   return JSON.stringify(Object.entries(params).filter(([key, value]) => {
     if (typeof value === "function" || key.endsWith("Opacity")) return false;
     const own = key.startsWith(prefix) && !key.startsWith(`${prefix}2`);
@@ -1129,6 +1143,9 @@ function renderScene() {
   updateDisplayScale();
   updateCameraClipping();
   renderer.render(scene, camera);
+  if (params.showMollweide && mollweideRequest && renderRequestIsCurrent(mollweideRequest)) {
+    mollweideOverlay.render(renderer, params.mollweidePosition, params.mollweideWidth);
+  }
   if (params.showSimulationTime) {
     const frame = sequenceIndex?.frames?.[Math.round(params.sequenceFrame)];
     simulationTimeOverlay.render(renderer, simulationTimeLabel(metadata, frame, params.simulationTimePrecision),
@@ -6687,11 +6704,50 @@ async function rebuildIsosurfaces() {
   }
 }
 
+function getMollweideFieldNames() {
+  return [...new Set([...getVolumeFieldNames(), ...Object.keys(metadata?.surface_fields || {}),
+    ...Object.keys(secondaryDataset?.metadata?.surface_fields || {}).map(prefixedSecondaryFieldName)])];
+}
+
+async function rebuildMollweide() {
+  const request = beginRenderRequest("mollweide");
+  mollweideRequest = null;
+  if (!params.showMollweide || !metadata) return;
+  const settings = request.context.params;
+  const ref = resolveFieldSource(settings.mollweideField);
+  const info = ref.meta.surface_fields?.[ref.rawName];
+  let values, radiusLabel;
+  if (info) {
+    values = await loadForRender(request, () => loadFloat32ForBase(ref.basePath, info.file, ref.meta.ntheta * ref.meta.nphi));
+    radiusLabel = `${info.surface || "stored"} surface`;
+  } else {
+    const volume = await loadForRender(request, () => loadField(settings.mollweideField));
+    if (!renderRequestIsCurrent(request)) return;
+    const domain = ref.meta.field_domains?.[ref.rawName] || {};
+    const sample = sampleRadialSurface(volume, ref.coords, settings.mollweideRadius * ref.meta.r_outer,
+      domain.r_min ?? ref.meta.r_inner, domain.r_max ?? ref.meta.r_outer);
+    values = sample.surface;
+    radiusLabel = `r/ro = ${Number((sample.radius / ref.meta.r_outer).toPrecision(5))}${sample.clamped ? " (clamped to field domain)" : ""}`;
+  }
+  if (!renderRequestIsCurrent(request)) return;
+  const range = mollweideRange(values, settings.mollweideScale, settings.mollweideMin, settings.mollweideMax);
+  const stops = getColourStops(settings.mollweideColormap);
+  mollweideOverlay.update({ values, theta: ref.coords.theta, phi: ref.coords.phi,
+    centre: settings.mollweideLongitude * Math.PI / 180,
+    title: `${settings.mollweideField} · ${radiusLabel}`, range,
+    graticule: settings.mollweideGraticule,
+    colour: value => interpolateStops(clamp((value - range[0]) / (range[1] - range[0]), 0, 1), stops),
+  });
+  mollweideRequest = request;
+}
+
 async function rebuildAllMeshes(options = {}) {
   const context = captureRenderContext();
   const visibleOnly = options.visibleOnly !== false;
   const reuseGeometry = Boolean(options.reuseGeometry);
   const includeHeavy = options.includeHeavy !== false;
+  if (params.showMollweide) await rebuildMollweide();
+  if (!renderContextIsCurrent(context)) return;
   setStatus(reuseGeometry ? "Updating visible fields..." : "Loading selected fields...");
 
   if (!visibleOnly || params.showCMB) await rebuildCMB({ reuseGeometry });
@@ -7203,6 +7259,7 @@ function applyDefaultFields() {
   params.meridian2LeftField = params.meridian2Field;
   for (let i = 1; i <= 4; i++) params[`phiAvg${i}Field`] = chooseField(i % 2 ? ["T", "C", "Comp", "ur"] : ["Br", "Bp", "ur"], fields);
   params.isoField = chooseField([params.isoField, "ur", "T", "C", "Comp", "Br", "Uabs"], fields);
+  params.mollweideField = chooseField(["Br", "T", "C", "ur"], getMollweideFieldNames());
 }
 
 function addDisplayControls(gui, slot, label, fieldParam, showParam, opacityParam, rebuildFn, availableFields) {
@@ -7309,6 +7366,7 @@ const DEFAULT_VIEW_PARAMS = Object.freeze(Object.fromEntries(
 const VIEW_STATE_SCALE_KEYS = new Set([
   "cmbScale", "icbScale", "radialScale", "earthScale", "equatorScale", "equator2Scale",
   "meridianScale", "meridianLeftScale", "meridian2Scale", "meridian2LeftScale", "lineScale",
+  "mollweideScale",
 ]);
 const VIEW_STATE_NUMBER_LIMITS = {
   earthRadiusScale: [1, Infinity], isoResolution: [8, 96], lineStride: [1, 1000],
@@ -7320,6 +7378,7 @@ const VIEW_STATE_NUMBER_LIMITS = {
   lineTubeAutoMaxEnergyErrorPercent: [0.01, 20],
   lineTubeShapeError: [0.000001, 0.05], lineTubeEnergyErrorPercent: [0.01, 20],
   simulationTimePrecision: [2, 12], simulationTimeSize: [12, 36],
+  mollweideRadius: [0, 1], mollweideLongitude: [-180, 180], mollweideWidth: [.2, .7],
 };
 
 function getAvailableColormapNames() {
@@ -7365,6 +7424,7 @@ function decodeViewState(code) {
 }
 
 function validFieldForState(key, value) {
+  if (key === "mollweideField") return getMollweideFieldNames().includes(value);
   if (/^phiAvg[1-4]Field$/.test(key)) return getVolumeFieldNames().includes(value);
   if (/^meridian(?:2)?(?:Left)?Field$/.test(key)) return Object.values(getMeridianFieldOptions()).includes(value);
   if (!["cmbField", "earthField", "icbField", "radialField", "equatorField", "equator2Field", "isoField"].includes(key)) return true;
@@ -7397,6 +7457,7 @@ function applySnapshotParam(key, value) {
   if (/^phiAvg[1-4]Mode$/.test(key) && !["mean", "fluctuation"].includes(value)) return false;
   if (key === "phiAvgCount" && (!Number.isInteger(value) || value < 0 || value > 4)) return false;
   if (key === "simulationTimePosition" && !TIME_BOX_POSITIONS.includes(value)) return false;
+  if (key === "mollweidePosition" && !TIME_BOX_POSITIONS.includes(value)) return false;
   if (key === "simulationTimePrecision" && !Number.isInteger(value)) return false;
   if (["legendPosition", "titlePosition", "exportPanelPosition"].includes(key) && !PANEL_POSITIONS.has(value)) return false;
   params[key] = value;
@@ -7641,6 +7702,7 @@ async function saveViewStateCode() {
 }
 
 const DATASET_FIELD_PARAM_KEYS = [
+  "mollweideField",
   "cmbField",
   "earthField",
   "icbField",
@@ -7990,6 +8052,28 @@ function buildGui() {
   }
 
   const sequenceFolder = gui.addFolder("Sequence playback");
+  const mapFolder = gui.addFolder("Mollweide map");
+  const refreshMap = debouncedViewerTask("Mollweide map", rebuildMollweide);
+  mapFolder.add(params, "showMollweide").name("Show map and export").onChange(refreshMap);
+  mapFolder.add(params, "mollweideField", getMollweideFieldNames()).name("Field").onChange(() => {
+    syncMapRadius(); refreshMap();
+  });
+  const mapRadius = mapFolder.add(params, "mollweideRadius", 0, 1, .001).name("Volume radius r/ro").onChange(refreshMap);
+  const syncMapRadius = () => {
+    const ref = resolveFieldSource(params.mollweideField);
+    mapRadius.disable(Boolean(ref.meta.surface_fields?.[ref.rawName]));
+  };
+  syncMapRadius();
+  mapRadius.domElement.title = "Volume fields: interpolate at this radius. Stored surface maps use their fixed surface.";
+  mapFolder.add(params, "mollweideLongitude", -180, 180, 1).name("Central longitude °").onChange(refreshMap);
+  mapFolder.add(params, "mollweideScale", ["symmetric", "minmax", "manual"]).name("Colour scale").onChange(refreshMap);
+  mapFolder.add(params, "mollweideMin").name("Manual minimum").onFinishChange(refreshMap);
+  mapFolder.add(params, "mollweideMax").name("Manual maximum").onFinishChange(refreshMap);
+  mapFolder.add(params, "mollweideColormap", colourMapNames).name("Colour map").onChange(refreshMap);
+  mapFolder.add(params, "mollweideGraticule").name("Graticule").onChange(refreshMap);
+  mapFolder.add(params, "mollweidePosition", TIME_BOX_POSITIONS).name("Position").onChange(refreshMap);
+  mapFolder.add(params, "mollweideWidth", .2, .7, .01).name("Width / viewport").onChange(refreshMap);
+  closeGuiFolder(mapFolder);
   const timeFolder = sequenceFolder.addFolder("Simulation time box");
   timeFolder.add(params, "showSimulationTime").name("Show in view and exports");
   timeFolder.add(params, "simulationTimePosition", TIME_BOX_POSITIONS).name("Position");

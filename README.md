@@ -658,6 +658,29 @@ radius scale without loading a dataset or changing the selected frame.
 
 ## Export
 
+### Mollweide map box
+
+Open **Mollweide map → Show map and export** to display a global map alongside
+the 3D view. Select any exported volume or stored surface field from the primary
+or secondary dataset. Volume fields use **Volume radius r/ro**, with linear
+interpolation between radial samples and periodic angular interpolation. Stored
+surface fields use their own fixed surface, regardless of the radius slider.
+Requests outside a volume field's native domain clamp to the nearest valid
+radius, identified in the map title; padded solid regions are excluded.
+
+The [Mollweide projection](https://proj.org/en/stable/operations/projections/moll.html)
+uses north at the top and longitude increasing to the right. Controls include
+central longitude, graticule, colour map, symmetric/automatic/manual colour
+limits, panel corner and width. Automatic limits use the selected radial slice;
+manual limits provide a fixed scale across sequence frames. The title and colour
+bar are included in the box. Position and size also carry into exports.
+
+The map follows sequence playback and is included in PNG, PDF, PNG-sequence and
+both video export modes when enabled. Settings are saved with the view. This
+uses existing converted data; no reconversion is needed.
+
+### Image and video export
+
 The export panel and **Export** folder provide:
 
 - PNG with visible colour-bar legends;

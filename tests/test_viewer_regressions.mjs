@@ -17,6 +17,7 @@ import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { prepareTubeLines, executeGeometryJob, unpackGeometry } from "../src/geometry-jobs.js";
 import { readResponseWithProgress } from "../src/work-progress.js";
 import { simulationTimeLabel, TIME_BOX_POSITIONS } from "../src/simulation-time.js";
+import { sampleRadialSurface, surfaceRange } from "../src/mollweide.js";
 
 const source = fs.readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
 function definition(name) {
@@ -62,6 +63,8 @@ class Mesh {
 function viewer() {
   const ctx = vm.createContext({
     simulationTimeLabel, TIME_BOX_POSITIONS, simulationTimeOverlay: { render() {} },
+    sampleRadialSurface, mollweideRange: surfaceRange, mollweideRequest: null,
+    mollweideOverlay: { update() {}, render() {} },
     LongitudeAverageCache, longitudeDisplayField, volumeDisplayValue, longitudeFieldLabel,
     longitudeAverageCache: new LongitudeAverageCache(), meridianFieldControllers: [],
     fieldRadialDomain, isosurfaceLegendEntries, updateIsosurfaceLegend, isoLegendEl: null,
@@ -149,6 +152,7 @@ function viewer() {
     "invalidateRenderRequests", "loadForRender", "pinHeavyCacheEntry", "isEffectivelyOpaque", "applyOpacityAndDepth",
     "normaliseDatasetLabel", "secondaryPrefix", "isSecondaryFieldName", "rawSecondaryFieldName", "prefixedSecondaryFieldName",
     "resolveFieldSource", "getPrimaryVolumeFieldNames", "getSecondaryVolumeFieldNames", "getVolumeFieldNames",
+    "getMollweideFieldNames", "rebuildMollweide",
     "normaliseScalarFieldMetadata", "canonicalScalarFieldName", "migrateLegacyScalarFieldName",
     "normalizePhi", "isAngleInCCWSector", "getFourSectorBoundaries", "getSectorIndexForPhi", "shouldKeepSurfaceCellForClip",
     "meridianSidesAreIndependent", "syncLinkedMeridianSide", "meridianFieldSummary", "meridianDisplayLabel",
@@ -179,6 +183,84 @@ function viewer() {
 function presetCode(ctx, values = {}) {
   return ctx.encodeViewState({ version: 2, scope: "view-only", params: values });
 }
+
+function mapViewer() {
+  const ctx = viewer(), maps = [];
+  ctx.params.showMollweide = true;
+  ctx.params.mollweideField = "T";
+  ctx.getColourStops = () => [];
+  ctx.interpolateStops = () => [0,0,0];
+  ctx.mollweideOverlay.update = data => maps.push(data);
+  ctx.loadField = async () => Float32Array.from(ctx.coords.r.flatMap(r => Array(12).fill(r)));
+  return { ctx, maps };
+}
+
+test("Mollweide volume radius and stored surfaces update directly with independent scales", async () => {
+  const { ctx, maps } = mapViewer();
+  ctx.params.mollweideRadius = .5;
+  await ctx.rebuildMollweide();
+  assert.ok(maps[0].values.every(value => Math.abs(value - .5) < 1e-6));
+  assert.match(maps[0].title, /r\/ro = 0.5/);
+  ctx.params.mollweideRadius = .8;
+  await ctx.rebuildMollweide();
+  assert.ok(maps[1].values.every(value => Math.abs(value - .8) < 1e-6));
+  ctx.metadata.surface_fields = { map: { file: "map.f32", surface: "cmb" } };
+  ctx.params.mollweideField = "map"; ctx.params.mollweideScale = "minmax";
+  ctx.loadFloat32ForBase = async (base, file, count) => {
+    assert.equal(file, "map.f32"); assert.equal(count, 12);
+    return Float32Array.from({ length: count }, (_, i) => i);
+  };
+  await ctx.rebuildMollweide();
+  assert.match(maps[2].title, /cmb surface/);
+  assert.deepEqual(Array.from(maps[2].range), [0,11]);
+  assert.ok(ctx.getMollweideFieldNames().includes("map"));
+  assert.equal(ctx.validFieldForState("mollweideField", "map"), true);
+});
+
+test("late Mollweide reads cannot overwrite another field, hidden map or switched dataset", async () => {
+  const { ctx, maps } = mapViewer();
+  const old = deferred();
+  ctx.loadField = name => name === "T" ? old.promise : Promise.resolve(new Float32Array(36).fill(2));
+  const pending = ctx.rebuildMollweide();
+  ctx.params.mollweideField = "Br";
+  await ctx.rebuildMollweide();
+  old.resolve(new Float32Array(36).fill(1)); await pending;
+  assert.equal(maps.length, 1); assert.match(maps[0].title, /^Br/);
+  const request = ctx.mollweideRequest;
+  ctx.params.showMollweide = false;
+  assert.equal(ctx.renderRequestIsCurrent(request), false);
+  ctx.params.showMollweide = true; ctx.invalidateRenderRequests();
+  assert.equal(ctx.renderRequestIsCurrent(request), false);
+});
+
+test("Mollweide settings and surface selections survive saved views", () => {
+  const ctx = cameraViewer();
+  ctx.metadata.surface_fields = { map: { file: "map.f32", surface: "earth" } };
+  const settings = { showMollweide: true, mollweideField: "map", mollweideRadius: .62,
+    mollweideLongitude: -80, mollweideScale: "manual", mollweideMin: -3, mollweideMax: 8,
+    mollweideWidth: .42, mollweidePosition: "top-right", mollweideGraticule: false };
+  Object.assign(ctx.params, settings);
+  const saved = ctx.decodeViewState(ctx.encodeViewState(ctx.collectViewState()));
+  ctx.applyDefaultDatasetView(); ctx.applyViewStateParams(saved);
+  for (const [key, value] of Object.entries(settings)) assert.equal(ctx.params[key], value, key);
+  assert.equal(ctx.applySnapshotParam("mollweideRadius", -1), false);
+  assert.equal(ctx.applySnapshotParam("mollweideField", "missing"), false);
+});
+
+test("sequence mesh refresh awaits the visible Mollweide map", async () => {
+  const { ctx, maps } = mapViewer();
+  for (const key of ["showCMB", "showICB", "showRadialSurface", "showEquator", "showEquator2",
+    "showMeridian", "showMeridian2", "showEarthSurface", "showIsosurfaces"]) ctx.params[key] = false;
+  ctx.updateVisibility = () => {};
+  vm.runInContext(definition("rebuildAllMeshes"), ctx);
+  await ctx.rebuildAllMeshes();
+  assert.equal(maps.length, 1);
+  ctx.invalidateRenderRequests(); ctx.dataBasePath = "next-frame";
+  ctx.loadField = async () => new Float32Array(36).fill(7);
+  await ctx.rebuildAllMeshes();
+  assert.equal(maps.length, 2); assert.equal(maps[1].values[0], 7);
+  assert.equal(ctx.renderRequestIsCurrent(ctx.mollweideRequest), true);
+});
 
 test("duplicate scalar choices disappear for old primary and secondary bundles without mutating their metadata", () => {
   const ctx = viewer();
