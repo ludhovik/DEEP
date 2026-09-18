@@ -1605,3 +1605,16 @@ Mantle boundaries are labelled Surface/CMB in the viewer.
 See [ASPECT_CONVERTER.md](ASPECT_CONVERTER.md) for installation, a small tested
 3-D plume initial-condition example, the published ASPECT/CitcomS convection
 dataset, download/extraction commands, sequences and numerical limitations.
+
+### StagYY 3-D mantle convection
+
+Convert legacy binary **Yin–Yang mantle volumes** using
+`tools/convert_stagyy_to_viewer.py`. Both spherical patches are included, with
+temperature, viscosity, pressure, velocity, anomalies, longitude averages,
+mean derivatives and advection. Native radii and saved simulation times are
+preserved. Multiple snapshots produce a viewer sequence.
+
+See [STAGYY_CONVERTER.md](STAGYY_CONVERTER.md) for the verified CC0 Langemeyer
+et al. (2021) **3-D initial-condition snapshot**, the checksum-verifying
+downloader, installation, conversion commands and supported formats. This
+example contains mantle interior fields; it is not a surface-only dataset.

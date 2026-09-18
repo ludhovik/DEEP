@@ -1,0 +1,4 @@
+# StagPy's legacy parser API is pinned; Python >= 3.10.
+stagpy==0.23.0
+numpy>=2.2,<3
+scipy>=1.15,<2

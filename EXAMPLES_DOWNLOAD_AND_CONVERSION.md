@@ -406,6 +406,17 @@ tests including the downloaded benchmark, and archive/CLI checks described
 above. The four MagIC conversions were not rerun in this session.
 
 
+## StagYY 3-D mantle convection
+
+[STAGYY_CONVERTER.md](STAGYY_CONVERTER.md) provides download and conversion
+commands for the CC0 Langemeyer, Lowman & Tackley (2021) dataset: a genuine
+128 × 384 × 64 × 2-patch mantle initial-condition snapshot with temperature,
+viscosity, velocity and pressure. Download the individual binaries with
+`tools/download_stagyy_example.py` (checksums verified; no unzip), then use
+`tools/convert_stagyy_to_viewer.py`. The default output has 27 volume fields
+at 64 × 128 × 256, with saved simulation time and native radii. This is not a
+published final-state sequence or an imposed plate reconstruction.
+
 ## ASPECT mantle convection
 
 [ASPECT_CONVERTER.md](ASPECT_CONVERTER.md) contains full commands for two examples:
