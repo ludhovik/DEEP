@@ -3701,7 +3701,7 @@ async function loadSecondaryDatasetFromParams() {
       );
     }
 
-    await loadFloat32ForBase(basePath, fields[0][1], meta2.nr * meta2.ntheta * meta2.nphi);
+    await loadFloat32ForBase(basePath, fields[0][1], (meta2.surface_only ? 1 : meta2.nr) * meta2.ntheta * meta2.nphi);
     if (!renderRequestIsCurrent(request)) return false;
     secondaryDataset = {
       rootPath: root,
@@ -6555,6 +6555,7 @@ async function rebuildCMB(options = {}) {
 }
 
 async function rebuildICB(options = {}) {
+  if (metadata.surface_only && getVolumeFieldNames().length === 0) return;
   const request = beginRenderRequest("icb");
   if (!metadata.has_inner_core) {
     disposeObject(icbMesh);
@@ -6584,6 +6585,7 @@ async function rebuildICB(options = {}) {
 
 
 async function rebuildRadialSurface(options = {}) {
+  if (metadata.surface_only && getVolumeFieldNames().length === 0) return;
   const request = beginRenderRequest("radial");
   const reuseGeometry = Boolean(options.reuseGeometry);
   const field = await loadForRender(request, () => loadField(params.radialField));
@@ -6630,6 +6632,7 @@ async function rebuildRadialSurface(options = {}) {
 }
 
 async function rebuildEquator(options = {}) {
+  if (metadata.surface_only && getVolumeFieldNames().length === 0) return;
   const request = beginRenderRequest("equator");
   const reuseGeometry = Boolean(options.reuseGeometry);
   const field = await loadForRender(request, () => loadField(params.equatorField));
@@ -6653,6 +6656,7 @@ async function rebuildEquator(options = {}) {
 }
 
 async function rebuildEquator2(options = {}) {
+  if (metadata.surface_only && getVolumeFieldNames().length === 0) return;
   const request = beginRenderRequest("equator2");
   const reuseGeometry = Boolean(options.reuseGeometry);
   const field = await loadForRender(request, () => loadField(params.equator2Field));
@@ -6679,6 +6683,7 @@ async function rebuildEquator2(options = {}) {
 }
 
 async function rebuildMeridian(options = {}) {
+  if (metadata.surface_only && getVolumeFieldNames().length === 0) return;
   // Synchronize linked halves before capturing the request signature. Doing
   // this afterwards makes a field/colour change invalidate its own rebuild.
   syncLinkedMeridianSide("meridian");
@@ -6713,6 +6718,7 @@ async function rebuildMeridian(options = {}) {
 }
 
 async function rebuildMeridian2(options = {}) {
+  if (metadata.surface_only && getVolumeFieldNames().length === 0) return;
   syncLinkedMeridianSide("meridian2");
   const request = beginRenderRequest("meridian2");
   const independent = meridianSidesAreIndependent("meridian2");
@@ -6745,6 +6751,7 @@ async function rebuildMeridian2(options = {}) {
 }
 
 async function rebuildIsosurfaces() {
+  if (metadata.surface_only && getVolumeFieldNames().length === 0) return;
   const request = beginRenderRequest("isosurface");
 
   if (!params.showIsosurfaces) {
@@ -6859,6 +6866,13 @@ async function buildMollweideImage(context, ref, stops, generation) {
 }
 
 async function rebuildAllMeshes(options = {}) {
+  if (metadata.surface_only && getVolumeFieldNames().length === 0) {
+    // A saved volume-view preset must not revive meshes from the previous data.
+    params.showICB = params.showRadialSurface = false;
+    params.showEquator = params.showEquator2 = false;
+    params.showMeridian = params.showMeridian2 = false;
+    params.showIsosurfaces = params.showFieldLines = false;
+  }
   const context = captureRenderContext();
   const visibleOnly = options.visibleOnly !== false;
   const reuseGeometry = Boolean(options.reuseGeometry);
@@ -7359,7 +7373,21 @@ function getEarthFieldNames() {
 
 function applyDefaultFields() {
   const fields = getVolumeFieldNames();
-  if (fields.length === 0) throw new Error("metadata.fields is empty.");
+  if (fields.length === 0) {
+    const surfaces = getCmbFieldNames();
+    if (surfaces.length === 0) throw new Error("Dataset has no displayable fields.");
+    params.cmbField = surfaces[0];
+    params.mollweideField = surfaces[0];
+    params.showCMB = true;
+    params.showMollweide = true;
+    params.cmbScale = params.mollweideScale = "minmax";
+    params.showICB = params.showRadialSurface = false;
+    params.showEquator = params.showEquator2 = false;
+    params.showMeridian = params.showMeridian2 = false;
+    params.showIsosurfaces = params.showFieldLines = false;
+    params.showEarthSurface = false;
+    return;
+  }
 
   params.cmbField = chooseField(["Br", "Br_CMB_lmax13", "Br_CMB_lmax10", "T", "C", "Comp", "ur", "Uabs"], getCmbFieldNames());
   const earthFields = getEarthFieldNames();
@@ -7867,8 +7895,18 @@ function validateDatasetMetadata(meta, label) {
   const fields = Object.entries(meta.fields || {}).filter(
     ([name, filename]) => Boolean(name) && typeof filename === "string" && filename.trim()
   );
+  if (meta.surface_only === true && fields.length > 0) {
+    throw new Error(`${label} mixes surface-only geometry with volume fields.`);
+  }
   if (fields.length === 0) {
-    throw new Error(`${label} contains no usable volume fields.`);
+    const surfaces = Object.entries(meta.surface_fields || {}).filter(
+      ([name, info]) => Boolean(name) && info?.surface === "cmb"
+        && typeof info.file === "string" && info.file.trim()
+    );
+    if (meta.surface_only !== true || surfaces.length === 0) {
+      throw new Error(`${label} contains no usable volume fields.`);
+    }
+    return surfaces.map(([name, info]) => [name, info.file]);
   }
   return fields;
 }
@@ -7994,7 +8032,7 @@ async function loadDatasetFromParams() {
     await loadFloat32ForBase(
       candidateBasePath,
       firstFieldFile,
-      Number(candidateMetadata.nr) * Number(candidateMetadata.ntheta) * Number(candidateMetadata.nphi)
+      (candidateMetadata.surface_only ? 1 : Number(candidateMetadata.nr)) * Number(candidateMetadata.ntheta) * Number(candidateMetadata.nphi)
     );
     const datasetView = await loadDatasetViewState(requestedRoot, candidateBasePath, controller.signal);
 
@@ -8264,7 +8302,7 @@ function buildGui() {
   const eq2Folder = addDisplayControls(gui, "equator2", "Equatorial slice 2", "equator2Field", "showEquator2", "equator2Opacity", rebuildEquator2, volumeFields);
   eq2Folder.add(params, "equator2Z", -0.95, 0.95, 0.01).name("z / r_o")
     .onFinishChange(viewerTaskCallback("Equatorial slice position", rebuildEquator2));
-  addPhiAverageCalculator(gui, volumeFields);
+  const phiAverageFolder = addPhiAverageCalculator(gui, volumeFields);
   const meridianFields = getMeridianFieldOptions();
   const merFolder = addSplitMeridianControls(gui, "meridian", "Meridional slice 1", "showMeridian", rebuildMeridian, meridianFields);
   const rebuildMeridianView = async () => {
@@ -8488,6 +8526,10 @@ function buildGui() {
     stateFolder,
     other,
   ].filter(Boolean).forEach(closeGuiFolder);
+  if (volumeFields.length === 0) {
+    [icbFolder, radialFolder, eqFolder, eq2Folder, merFolder, mer2Folder,
+      phiAverageFolder, isoFolder].filter(Boolean).forEach(folder => folder.hide());
+  }
   gui.close();
 
   buildPointOfViewGui();

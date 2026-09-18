@@ -212,3 +212,9 @@ Conversion is staged and validated before replacing an existing bundle. Failed
 conversions preserve the previous output. `--incremental` fingerprints the input,
 all referenced PVTU pieces, options and converter code, then skips a complete
 unchanged output. It does not currently cache individual VTK interpolation jobs.
+
+## Published CMB heat-flux coefficients
+
+For Dannberg et al. (2024), use the separate surface-only importer and
+[download/conversion instructions](DANNBERG_HEAT_FLUX.md). These coefficient
+archives do not contain mantle volume snapshots.

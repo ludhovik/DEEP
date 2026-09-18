@@ -2942,3 +2942,33 @@ test("mantle boundary labels use Surface and CMB while dynamo labels retain CMB 
   assert.equal(ctx.displayBoundaryName("cmb"), "Surface");
   assert.equal(ctx.displayBoundaryName("icb"), "CMB");
 });
+
+test("surface-only CMB dataset loads a surface, selects map defaults, and preloads no volume", async () => {
+  const ctx = viewer();
+  const { meta } = datasetLoader(ctx, null);
+  meta.fields = {};
+  meta.surface_only = true;
+  meta.surface_fields = { q_CMB: { file: "q_CMB_cmb.f32", surface: "cmb" } };
+  const reads = [];
+  ctx.loadFloat32ForBase = async (base, file, count) => {
+    reads.push({ file, count });
+    assert.equal(count, meta.ntheta * meta.nphi);
+    return new Float32Array(count).fill(0.1);
+  };
+  for (const name of ["chooseField", "applyDefaultFields", "getPrimaryCmbFieldNames",
+    "getSecondaryCmbFieldNames", "getCmbFieldNames", "getPreloadFieldRequests"])
+    vm.runInContext(definition(name), ctx);
+  await ctx.loadDatasetFromParams();
+  assert.equal(ctx.lastDatasetLoadError, "");
+  assert.equal(reads[0].file, "q_CMB_cmb.f32");
+  assert.equal(ctx.params.cmbField, "q_CMB");
+  assert.equal(ctx.params.mollweideField, "q_CMB");
+  assert.equal(ctx.params.showMollweide, true);
+  for (const key of ["showICB", "showRadialSurface", "showEquator", "showMeridian", "showIsosurfaces"])
+    assert.equal(ctx.params[key], false);
+  const requests = ctx.getPreloadFieldRequests(meta);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].filename, "q_CMB_cmb.f32");
+  assert.equal(requests[0].expectedLength, meta.ntheta * meta.nphi);
+  assert.throws(() => ctx.validateDatasetMetadata({ ...meta, surface_only: false }, "bad"), /no usable/);
+});

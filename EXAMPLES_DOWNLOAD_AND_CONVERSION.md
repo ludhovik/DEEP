@@ -421,3 +421,10 @@ above. The four MagIC conversions were not rerun in this session.
 The converter handles VTU/PVTU volumes and PVD time sequences with physical
 radii and available times, including volume fields for the viewer's Mollweide
 map and longitude-average calculator. It requires `requirements-aspect.txt`.
+
+## ASPECT: plate-reconstruction-driven CMB heat-flux history
+
+The Dannberg et al. (2024) dataset provides CMB heat-flux spherical harmonics
+from plate-driven global mantle models. See [DANNBERG_HEAT_FLUX.md](DANNBERG_HEAT_FLUX.md)
+for verified download paths, selective extraction, and surface/sequence
+conversion commands. No mantle volume is inferred from these maps.

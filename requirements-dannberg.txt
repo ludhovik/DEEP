@@ -1,0 +1,4 @@
+numpy
+pyshtools>=4.10
+xarray
+netCDF4

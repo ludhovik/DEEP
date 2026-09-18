@@ -189,8 +189,12 @@ def validate_bundle(root):
     if coordinates["phi"][-1] - coordinates["phi"][0] >= 2 * math.pi - 1e-10:
         raise ValueError("Longitude coordinates duplicate the periodic seam.")
     fields = meta.get("fields")
-    if not isinstance(fields, dict) or not fields:
+    if not isinstance(fields, dict) or (not fields and not (
+        meta.get("surface_only") is True and meta.get("surface_fields")
+    )):
         raise ValueError("No volume fields were exported.")
+    if meta.get("surface_only") and fields:
+        raise ValueError("A surface-only bundle cannot contain volume fields.")
     filenames = list(fields.values())
     if any(not isinstance(filename, str) for filename in filenames):
         raise ValueError("Volume field filenames must be strings.")
