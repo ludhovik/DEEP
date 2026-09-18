@@ -98,7 +98,7 @@ function viewer() {
     renderRequestVersions: new Map(), heavyCachePins: new Map(),
     isosurfaceObjectCache: new Map(), isosurfaceBuildPromises: new Map(),
     fieldLineObjectCache: new Map(), fieldLineBuildPromises: new Map(),
-    dataCache: new Map(), dataCacheMeta: new Map(), jsonCache: new Map(),
+    dataCache: new Map(), dataCacheMeta: new Map(), jsonCache: new Map(), remoteRepositoryIndexCache: new Map(),
     fieldLineDataCache: new Map(), fieldLineDataCacheMeta: new Map(),
     fieldLineGroups: { shell: null, exterior: null },
     scene: { objects: new Set(), add(obj) { this.objects.add(obj); }, remove(obj) { this.objects.delete(obj); } },
@@ -177,7 +177,7 @@ function viewer() {
     "updateEarthSurface", "ensureEarthTexture", "updateSurfaceAttribution",
     "viewStateBlob", "writeDatasetViewFile", "saveViewStateCode", "downloadViewStateCode",
     "parseFolderSourcePath", "fileFromDirectoryHandle", "parseLocalFilesystemPath", "encodeLocalFilesystemPath",
-    "captureDatasetState", "restoreDatasetState", "loadDatasetFromParams",
+    "captureDatasetState", "restoreDatasetState", "refreshRepositoryLookup", "loadDatasetFromParams",
   ]) vm.runInContext(definition(name), ctx);
   return ctx;
 }
@@ -2329,6 +2329,94 @@ function repositoryViewLoader(provider, recordId = "33455986") {
   }
   return { ctx, calls, state, root, apiUrl };
 }
+
+test("repository datasets load at the root or inside folders without losing full paths", async () => {
+  for (const provider of ["figshare", "zenodo"]) {
+    for (const folder of ["", "data_LEDTF001_reversal/", "uploads/run/data/"]) {
+      for (const pathsInNames of [false, true]) {
+        const { ctx, root, apiUrl } = repositoryViewLoader(provider);
+        const payloads = {
+          "metadata.json": { fields: { T: "T.f32" } },
+          "coordinates.json": { r: [0.5, 1] },
+          "sequence.json": { frames: [{ path: "frames/state03484" }, { path: `${folder}frames/state03826` }] },
+          "frames/state03484/metadata.json": { time: 1 },
+          "frames/state03826/metadata.json": { time: 2 },
+          "frames/state03484/T.f32": [1, 2],
+          "frames/state03826/T.f32": [3, 4],
+        };
+        const paths = Object.keys(payloads), calls = [];
+        ctx.fetchWithTimeout = async (url, options) => {
+          calls.push(url);
+          if (url === apiUrl) {
+            if (provider === "figshare") assert.equal(options.cache, "no-store");
+            return Response.json(provider === "figshare" ? {
+              files: paths.map((path, id) => ({ id, name: pathsInNames ? `./${folder}${path}` : path.split("/").at(-1),
+                download_url: `https://files.example/${id}` })),
+              folder_structure: Object.fromEntries(paths.map((path, id) => [id,
+                `${folder}${path}`.split("/").slice(0, -1).join("\\")])),
+            } : {
+              files: paths.map((path, id) => ({ key: `${folder}${path}`, links: { content: `https://files.example/${id}` } })),
+            });
+          }
+          const path = paths[Number(url.split("/").at(-1))];
+          assert.ok(path, `Unexpected file URL ${url}`);
+          return path.endsWith(".f32")
+            ? new Response(new Float32Array(payloads[path])) : Response.json(payloads[path]);
+        };
+        for (const prefix of new Set(["", folder])) {
+          for (const path of paths) {
+            const response = await ctx.fetchDatasetResource(`${root}/${prefix}${path}`);
+            assert.equal(response.status, 200, `${provider}/${prefix}${path}`);
+            const value = path.endsWith(".f32") ? [...new Float32Array(await response.arrayBuffer())] : await response.json();
+            assert.deepEqual(value, payloads[path]);
+          }
+        }
+        assert.equal(calls.filter(url => url === apiUrl).length, 1, "Share one record index across frames and aliases");
+      }
+    }
+  }
+});
+
+test("repository root discovery respects root manifests and independent datasets", () => {
+  const { ctx } = repositoryViewLoader("figshare");
+  const index = entries => new Map(ctx.stripRepositoryDatasetPrefix(entries));
+  const root = index([["metadata.json", "root"], ["other/sequence.json", "nested"]]);
+  assert.equal(root.get("metadata.json"), "root");
+  assert.equal(root.has("sequence.json"), false);
+  const separate = index([["a/metadata.json", "a"], ["b/metadata.json", "b"], ["a/T.f32", "Ta"], ["b/T.f32", "Tb"]]);
+  assert.equal(separate.has("metadata.json"), false);
+  assert.equal(separate.get("a/T.f32"), "Ta");
+  assert.equal(separate.get("b/T.f32"), "Tb");
+  const wrapped = index([["README.txt", "readme"], ["a/b/metadata.json", "meta"], ["a/b/T.f32", "T"]]);
+  assert.equal(wrapped.get("metadata.json"), "meta");
+  assert.equal(wrapped.get("a/b/T.f32"), "T");
+  assert.equal(wrapped.get("T.f32"), "T");
+  assert.equal(wrapped.get("README.txt"), "readme");
+  assert.throws(() => index([["T.f32", "first"], ["T.f32", "second"]]), /conflicting files/);
+});
+
+test("reopening a repository refreshes paths and manifests after a folder move", async () => {
+  const { ctx, root, apiUrl } = repositoryViewLoader("figshare");
+  let folder = "before", requests = 0;
+  ctx.fetchWithTimeout = async url => {
+    if (url !== apiUrl) return new Response(url);
+    requests++;
+    return Response.json({ files: [{ id: 1, name: "metadata.json", download_url: `https://files.example/${folder}` }],
+      folder_structure: { 1: folder } });
+  };
+  assert.equal(await (await ctx.fetchDatasetResource(`${root}/metadata.json`)).text(), "https://files.example/before");
+  for (const file of ["sequence.json", "metadata.json", "before/coordinates.json"]) ctx.jsonCache.set(`${root}/${file}`, {});
+  ctx.jsonCache.set("figshare:99/metadata.json", { unrelated: true });
+  ctx.remoteRepositoryIndexCache.set("figshare:99", "unrelated");
+  folder = "after";
+  ctx.refreshRepositoryLookup(`${root}/after`);
+  assert.equal(ctx.jsonCache.size, 1);
+  assert.equal(ctx.remoteRepositoryIndexCache.get("figshare:99"), "unrelated");
+  assert.equal(await (await ctx.fetchDatasetResource(`${root}/after/metadata.json`)).text(), "https://files.example/after");
+  assert.equal(await (await ctx.fetchDatasetResource(`${root}/metadata.json`)).text(), "https://files.example/after");
+  assert.equal((await ctx.fetchDatasetResource(`${root}/before/metadata.json`)).status, 404);
+  assert.equal(requests, 2);
+});
 
 test("reopening a Figshare or Zenodo view discovers replaced file IDs and keeps ordinary reads cached", async () => {
   for (const provider of ["figshare", "zenodo"]) {

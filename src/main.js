@@ -2024,22 +2024,41 @@ function normaliseRepositoryPath(path) {
   return String(path || "")
     .replace(/\\/g, "/")
     .replace(/^\/+|\/+$/g, "")
+    .replace(/^(?:\.\/)+/, "")
     .replace(/\/+/g, "/");
 }
 
 function stripRepositoryDatasetPrefix(entries) {
-  const marker = entries.find(([entryPath]) => entryPath === "sequence.json")
-    || entries.find(([entryPath]) => entryPath.endsWith("/sequence.json"))
-    || entries.find(([entryPath]) => entryPath === "metadata.json")
-    || entries.find(([entryPath]) => entryPath.endsWith("/metadata.json"));
-  if (!marker) return entries;
-  const slash = marker[0].lastIndexOf("/");
-  if (slash < 0) return entries;
-  const prefix = marker[0].slice(0, slash + 1);
-  return entries.map(([entryPath, url]) => [
-    entryPath.startsWith(prefix) ? entryPath.slice(prefix.length) : entryPath,
-    url,
-  ]);
+  // Preserve full paths. A sequence or user-supplied root may still contain
+  // the uploaded folder name even after automatic dataset-root discovery.
+  const files = new Map();
+  for (const [name, url] of entries) {
+    const path = normaliseRepositoryPath(name);
+    if (!path || !url) continue;
+    if (files.has(path) && files.get(path) !== url)
+      throw new Error(`Repository contains conflicting files at ${path}; folder paths must be preserved on upload.`);
+    files.set(path, url);
+  }
+  if (files.has("sequence.json") || files.has("metadata.json")) return [...files];
+  const roots = [...new Set([...files.keys()]
+    .filter(path => /\/(?:sequence|metadata)\.json$/.test(path))
+    .map(path => path.slice(0, path.lastIndexOf("/"))))];
+  const topRoots = roots.filter(root => !roots.some(other => root !== other && root.startsWith(`${other}/`)));
+  // Never pick an arbitrary dataset or flatten several frames into one.
+  if (topRoots.length !== 1) return [...files];
+  const prefix = `${topRoots[0]}/`;
+  const relative = [...files].filter(([path]) => path.startsWith(prefix))
+    .map(([path, url]) => [path.slice(prefix.length), url]);
+  return [...files, ...relative];
+}
+
+function refreshRepositoryLookup(rootPath) {
+  const match = String(rootPath).match(/^(figshare|zenodo):([^/]+)(?:\/|$)/i);
+  if (!match) return;
+  const key = `${match[1].toLowerCase()}:${match[2]}`;
+  remoteRepositoryIndexCache.delete(key);
+  // Reopening a moved dataset must read its current sequence and metadata.
+  for (const path of jsonCache.keys()) if (path.startsWith(`${key}/`)) jsonCache.delete(path);
 }
 
 const DATASET_FETCH_TIMEOUT_MS = 180000;
@@ -2113,7 +2132,7 @@ async function fetchWithTimeout(resource, options = {}, timeoutMs = DATASET_FETC
 async function buildFigshareIndex(articleId, options = {}) {
   const response = await fetchWithTimeout(
     `https://deep-figshare-proxy.ludhovik-research.workers.dev/figshare/articles/${articleId}`,
-    { signal: options.signal, cache: options.cache }, options.timeoutMs
+    { signal: options.signal, cache: options.cache ?? "no-store" }, options.timeoutMs
   );
   if (!response.ok) {
     releaseDatasetResponse(response);
@@ -2123,7 +2142,10 @@ async function buildFigshareIndex(articleId, options = {}) {
   const folders = record.folder_structure || {};
   const entries = (record.files || []).map((file) => {
     const folder = normaliseRepositoryPath(folders[String(file.id)] || folders[file.id] || "");
-    const entryPath = normaliseRepositoryPath(folder ? `${folder}/${file.name}` : file.name);
+    const name = normaliseRepositoryPath(file.name);
+    // Some uploads include the relative path in the filename as well as in
+    // folder_structure. Do not prepend that directory a second time.
+    const entryPath = folder && !name.startsWith(`${folder}/`) ? `${folder}/${name}` : name;
     return [entryPath, file.download_url];
   });
   return new Map(stripRepositoryDatasetPrefix(entries));
@@ -3649,6 +3671,7 @@ async function loadSecondaryDatasetFromParams() {
     pauseSequence(false);
     request = beginRenderRequest("secondary");
     const root = normaliseDatasetRoot(params.secondaryDatasetPath);
+    refreshRepositoryLookup(root);
     setStatus(`Checking secondary dataset ${root}...`);
     const basePath = await resolveDatasetBasePath(root);
     const meta2 = await loadMetadataForBase(basePath);
@@ -7936,6 +7959,7 @@ async function loadDatasetFromParams() {
     cancelPendingViewerTasks();
     pauseSequence(false);
     setStatus(`Checking dataset ${requestedRoot}...`);
+    refreshRepositoryLookup(requestedRoot);
 
     controller.signal.throwIfAborted();
     const candidateSequence = await fetchSequenceIndexForRoot(requestedRoot, true);

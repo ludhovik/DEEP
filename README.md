@@ -136,6 +136,16 @@ The public record must contain the converted files individually, including
 their folder paths. Uploading only a ZIP file does not expose the files needed
 for random access in the viewer.
 
+Files can be at the record root or inside one dataset folder (including nested
+wrapper folders). The viewer detects that folder and keeps both the full upload
+paths and dataset-relative paths, including separate sequence-frame folders.
+There is no need to move the files or reconvert the data. For example, paste
+`10.6084/m9.figshare.33455986` to discover `data_LEDTF001_reversal` automatically,
+or select it explicitly with `figshare:33455986/data_LEDTF001_reversal`.
+If a record contains several independent datasets, specify the desired folder
+using `figshare:ARTICLE_ID/folder/path`. Reopening a record refreshes its file
+index and JSON manifests so changes to the published folder layout are picked up.
+
 Figshare metadata is read through the small Cloudflare Worker in
 `cloudflare/figshare-proxy.js`; the actual data files are downloaded from
 Figshare. The proxy accepts read-only `GET` and CORS preflight requests,
@@ -158,6 +168,9 @@ zenodo:RECORD_ID
 As with Figshare, the converted files must be present individually in the
 record. Preserve paths such as `frames/state00001/metadata.json` when uploading
 a sequence.
+
+Root and nested-folder detection works as for Figshare; use
+`zenodo:RECORD_ID/folder/path` to select one of several datasets explicitly.
 
 ### Other public web storage
 
