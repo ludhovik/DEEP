@@ -1592,3 +1592,16 @@ local outward/inward direction, or **Starting CMB Br (whole line)** to identify
 the starting footpoint. Both colours are saved in DTV2 and included in legends
 and exports. See [polarity conventions](VORTICITY_POLARITY.md#comparing-line-colours-with-the-cmb)
 when comparing lines with a truncated CMB map.
+
+
+### ASPECT mantle convection
+
+Convert complete 3-D spherical-shell ASPECT `.vtu`/`.pvtu` output or a
+`solution.pvd` sequence using `tools/convert_aspect_to_viewer.py`. It retains
+physical radii, stores simulation time when available, and exports temperature,
+spherical velocity, available scalar fields and scalar-transport diagnostics.
+Mantle boundaries are labelled Surface/CMB in the viewer.
+
+See [ASPECT_CONVERTER.md](ASPECT_CONVERTER.md) for installation, a small tested
+3-D plume initial-condition example, the published ASPECT/CitcomS convection
+dataset, download/extraction commands, sequences and numerical limitations.

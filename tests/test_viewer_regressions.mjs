@@ -148,7 +148,7 @@ function viewer() {
   }
   Object.assign(ctx.params, { showIsosurfaces: true, showIsoNegative: false });
   for (const name of [
-    "datasetLengthScale", "updateDisplayScale", "updateCameraClipping", "renderScene",
+    "displayBoundaryName", "datasetLengthScale", "updateDisplayScale", "updateCameraClipping", "renderScene",
     "fieldDisplayDomain", "refreshIsosurfaceLegend", "clamp", "formatBytes", "roundedCacheNumber", "captureRenderContext", "renderContextIsCurrent",
     "withCapturedRenderContext", "renderSignature", "beginRenderRequest", "renderRequestIsCurrent",
     "invalidateRenderRequests", "loadForRender", "pinHeavyCacheEntry", "isEffectivelyOpaque", "applyOpacityAndDepth",
@@ -2931,4 +2931,14 @@ test("custom polarity colours match DOM and export legends in both modes", () =>
     const canvas={save(){},restore(){},fill(){},stroke(){},fillText(){},fillRect(){exported.push(this.fillStyle)}};
     ctx.drawExportColourbars(canvas,1000,700);assert.deepEqual(exported,["#33aa77","#cc2288"]);
   }
+});
+
+
+test("mantle boundary labels use Surface and CMB while dynamo labels retain CMB and ICB", () => {
+  const ctx = viewer();
+  assert.equal(ctx.displayBoundaryName("cmb"), "CMB");
+  assert.equal(ctx.displayBoundaryName("icb"), "ICB");
+  ctx.metadata.boundary_labels = { outer: "Surface", inner: "CMB" };
+  assert.equal(ctx.displayBoundaryName("cmb"), "Surface");
+  assert.equal(ctx.displayBoundaryName("icb"), "CMB");
 });

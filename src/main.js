@@ -159,6 +159,12 @@ const displayNames = {
   fieldlines: "Field lines",
 };
 
+function displayBoundaryName(slot) {
+  if (slot === "cmb") return metadata?.boundary_labels?.outer || "CMB";
+  if (slot === "icb") return metadata?.boundary_labels?.inner || "ICB";
+  return displayNames[slot];
+}
+
 const colourbars = Object.fromEntries(
   displaySlots.map((slot) => {
     const id = slot.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
@@ -1229,7 +1235,7 @@ function setColourbarForSlot(slot, fieldName, vmin, vmax) {
 
   const mid = 0.5 * (vmin + vmax);
   const cmap = params[`${slot}Colormap`] || "blue-white-red";
-  bar.title.textContent = `${displayNames[slot]}: ${fieldName}`;
+  bar.title.textContent = `${displayBoundaryName(slot)}: ${fieldName}`;
   bar.min.textContent = formatNumber(vmin);
   if (bar.mid) bar.mid.textContent = formatNumber(mid);
   bar.max.textContent = formatNumber(vmax);
@@ -6507,7 +6513,7 @@ function setStatusSummary(lastFieldName = null) {
   const earthText = params.showEarthSurface
     ? `, Surface=${params.earthDisplayMode === "magnetic" ? params.earthField : SURFACE_TEXTURES[params.earthTextureBody]?.label}`
     : "";
-  const fieldText = `CMB=${params.cmbField}, ICB=${params.icbField}, R=${params.radialField}@${Number(params.radialSurfaceRadiusRo).toFixed(3)}ro${earthText}, Eq1=${params.equatorField}, Eq2=${params.equator2Field}, Mer1=${meridianFieldSummary("meridian")}, Mer2=${meridianFieldSummary("meridian2")}`;
+  const fieldText = `${displayBoundaryName("cmb")}=${params.cmbField}, ${displayBoundaryName("icb")}=${params.icbField}, R=${params.radialField}@${Number(params.radialSurfaceRadiusRo).toFixed(3)}ro${earthText}, Eq1=${params.equatorField}, Eq2=${params.equator2Field}, Mer1=${meridianFieldSummary("meridian")}, Mer2=${meridianFieldSummary("meridian2")}`;
   const changed = lastFieldName ? ` | updated=${lastFieldName}` : "";
   const groups = Object.values(fieldLineGroups).filter(Boolean);
   const tubeInfo = params.showFieldLines && params.lineRenderMode === "b2-tubes"
@@ -6545,7 +6551,7 @@ async function rebuildCMB(options = {}) {
     await updateEarthSurface();
   }
   if (!renderRequestIsCurrent(request)) return;
-  setStatusSummary(`CMB:${params.cmbField}`);
+  setStatusSummary(`${displayBoundaryName("cmb")}:${params.cmbField}`);
 }
 
 async function rebuildICB(options = {}) {
@@ -6573,7 +6579,7 @@ async function rebuildICB(options = {}) {
     icbMesh.visible = params.showICB;
     datasetGroup.add(icbMesh);
   }
-  setStatusSummary(`ICB:${params.icbField}`);
+  setStatusSummary(`${displayBoundaryName("icb")}:${params.icbField}`);
 }
 
 
@@ -8243,7 +8249,7 @@ function buildGui() {
   const volumeFields = getVolumeFieldNames();
   const cmbFields = getCmbFieldNames();
 
-  const cmbFolder = addDisplayControls(gui, "cmb", "CMB surface", "cmbField", "showCMB", "cmbOpacity", rebuildCMB, cmbFields);
+  const cmbFolder = addDisplayControls(gui, "cmb", `${displayBoundaryName("cmb")} surface`, "cmbField", "showCMB", "cmbOpacity", rebuildCMB, cmbFields);
   if (metadata.inner_core?.available || (metadata.has_inner_core && metadata.r_inner < metadata.r_icb)) {
     gui.add(params, "magneticVolumeDomain", { "Whole core": "all", "Fluid outer core": "fluid", "Inner core only": "inner-core" })
       .name("Magnetic volume region").onChange(() => runViewerTask("Magnetic region", async () => {
@@ -8251,7 +8257,7 @@ function buildGui() {
         updateVisibility();
       }));
   }
-  const icbFolder = addDisplayControls(gui, "icb", "ICB surface", "icbField", "showICB", "icbOpacity", rebuildICB, volumeFields);
+  const icbFolder = addDisplayControls(gui, "icb", `${displayBoundaryName("icb")} surface`, "icbField", "showICB", "icbOpacity", rebuildICB, volumeFields);
   const radialFolder = addDisplayControls(gui, "radial", "Radial spherical surface", "radialField", "showRadialSurface", "radialOpacity", rebuildRadialSurface, volumeFields);
   radialFolder.add(params, "radialSurfaceRadiusRo", 0.0, 1.0, 0.001).name("Radius r / r_o").onFinishChange(() => rebuildRadialSurface({ reuseGeometry: false }));
   const eqFolder = addDisplayControls(gui, "equator", "Equatorial slice 1", "equatorField", "showEquator", "equatorOpacity", rebuildEquator, volumeFields);
@@ -8282,15 +8288,15 @@ function buildGui() {
   mer2Folder.add(params, "meridian2PhiDeg", 0, 360, 1).name("Longitude phi")
     .onFinishChange(viewerTaskCallback("Meridian 2 position", rebuildMeridian2View));
 
-  merFolder.add(params, "cmbClipWithMeridian").name("Clip CMB with meridians")
+  merFolder.add(params, "cmbClipWithMeridian").name(`Clip ${displayBoundaryName("cmb")} with meridians`)
     .onChange(viewerTaskCallback("CMB clipping", rebuildCmbAndIso));
   merFolder.add(params, "cmbClipMode", {
     None: "none",
     "Rear half": "rear-half",
     "Between meridional planes": "between-meridians-behind",
     "Selected 8 quarters": "selected-eight-quarters"
-  }).name("CMB clip mode").onChange(viewerTaskCallback("CMB clip mode", rebuildCmbAndIso));
-  merFolder.add(params, "cmbRearSide", { Rear: "positive", Front: "negative" }).name("CMB side")
+  }).name(`${displayBoundaryName("cmb")} clip mode`).onChange(viewerTaskCallback("CMB clip mode", rebuildCmbAndIso));
+  merFolder.add(params, "cmbRearSide", { Rear: "positive", Front: "negative" }).name(`${displayBoundaryName("cmb")} side`)
     .onChange(viewerTaskCallback("CMB clip side", rebuildCmbAndIso));
   const quarterFolder = merFolder.addFolder("8-quarter selection");
   const rebuildQuarterMask = debouncedViewerTask("CMB quarter mask", rebuildCMB);
@@ -8625,7 +8631,7 @@ function drawExportColourbars(ctx, width, height) {
     ctx.fillStyle = "rgb(0,0,0)";
     ctx.font = `${Math.round(12 * scale)}px system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif`;
     ctx.textBaseline = "top";
-    ctx.fillText(bar.title?.textContent || displayNames[slot], x + 9 * scale, y + 7 * scale);
+    ctx.fillText(bar.title?.textContent || displayBoundaryName(slot), x + 9 * scale, y + 7 * scale);
 
     const gx = x + 9 * scale;
     const gy = y + 27 * scale;

@@ -404,3 +404,20 @@ PY
 Validation performed here: both real Rayleigh conversions, all 16 Rayleigh
 tests including the downloaded benchmark, and archive/CLI checks described
 above. The four MagIC conversions were not rerun in this session.
+
+
+## ASPECT mantle convection
+
+[ASPECT_CONVERTER.md](ASPECT_CONVERTER.md) contains full commands for two examples:
+
+- A small, tested 3-D World Builder plume initial-condition mesh from the official
+  ASPECT repository (download directly as VTU; not an evolved simulation).
+- Euen et al. (2023), the public 3-D spherical-shell ASPECT/CitcomS convection
+  benchmark, [DOI 10.7294/22803335](https://doi.org/10.7294/22803335). Its separate
+  ASPECT archive is 7.50 GB, with verified download URL and MD5. Internal volume
+  file paths and conversion of this archive remain unverified here because the
+  file download returned HTTP 403.
+
+The converter handles VTU/PVTU volumes and PVD time sequences with physical
+radii and available times, including volume fields for the viewer's Mollweide
+map and longitude-average calculator. It requires `requirements-aspect.txt`.
