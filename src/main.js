@@ -636,6 +636,7 @@ let sequencePngExportActive = false;
 let sequencePngCancelRequested = false;
 let deferredSequenceObjectsHidden = false;
 let datasetLoadInProgress = false;
+let lastDatasetLoadError = "";
 let datasetRequestSignal = null;
 const sequenceControllers = [];
 const panelLayoutControllers = [];
@@ -2125,6 +2126,9 @@ async function fetchWithTimeout(resource, options = {}, timeoutMs = DATASET_FETC
   } catch (err) {
     cleanup();
     if (controller.signal.reason?.name === "TimeoutError") throw controller.signal.reason;
+    if (err?.name === "TypeError") {
+      throw new Error(`Network request failed for ${resource}: ${err.message}. The browser did not expose an HTTP response; check network access and CORS in its console.`);
+    }
     throw err;
   }
 }
@@ -2214,10 +2218,10 @@ async function fetchRemoteRepositoryResource(path, options = {}) {
       }
     }
     if (error?.name === "AbortError" || error?.name === "TimeoutError") throw error;
-    return new Response(error?.message || "Remote dataset lookup failed.", {
+    return Object.assign(new Response(error?.message || "Remote dataset lookup failed.", {
       status: 502,
       statusText: "Remote dataset lookup failed",
-    });
+    }), { deepDatasetError: error?.message || "Remote dataset lookup failed." });
   }
 }
 
@@ -2398,7 +2402,7 @@ async function loadRemoteDatasetFromLauncher() {
     setDatasetLauncherStatus(
       cloudFolder
         ? "This shared cloud folder cannot expose its file list directly to the browser. Use Figshare, Zenodo, a CORS-enabled web folder, or select a local folder."
-        : "Could not load this URL. Check the record, metadata.json, file names, and CORS settings.",
+        : (lastDatasetLoadError || "Could not load this URL; see the warning in the viewer title."),
       true
     );
   }
@@ -3029,7 +3033,7 @@ async function fetchJsonStrict(url, label) {
   const response = await fetchDatasetResource(url);
   if (!response.ok) {
     releaseDatasetResponse(response);
-    throw new Error(`${label} not found at ${url} (HTTP ${response.status}).`);
+    throw Object.assign(new Error(`${label} could not be read at ${url} (HTTP ${response.status}).${response.deepDatasetError ? ` ${response.deepDatasetError}` : ""}`), { status: response.status });
   }
   const raw = await readDatasetResponse(response, "text");
   const trimmed = raw.trim();
@@ -3088,7 +3092,9 @@ async function fetchSequenceIndexForRoot(rootPath, optional = true) {
     }
     return index;
   } catch (err) {
-    if (!optional || err?.name === "AbortError" || err?.name === "TimeoutError") throw err;
+    // Only a missing sequence means this is a single snapshot. Failed
+    // downloads and malformed sequence JSON must retain their real error.
+    if (!optional || err?.status !== 404) throw err;
     return null;
   }
 }
@@ -3765,7 +3771,7 @@ async function loadFloat32ForBase(basePath, filename, expectedLength) {
   const response = await fetchDatasetResource(url);
   if (!response.ok) {
     releaseDatasetResponse(response);
-    throw new Error(`Could not load ${url} (HTTP ${response.status}).`);
+    throw new Error(`Could not load ${url} (HTTP ${response.status}).${response.deepDatasetError ? ` ${response.deepDatasetError}` : ""}`);
   }
 
   const buffer = await readDatasetResponse(response, "arrayBuffer");
@@ -7930,9 +7936,11 @@ function restoreDatasetState(state) {
 
 async function loadDatasetFromParams() {
   if (datasetLoadInProgress) {
-    setStatus("A dataset is already loading. Please wait for it to finish or time out.");
+    lastDatasetLoadError = "A dataset is already loading. Please wait for it to finish or time out.";
+    setStatus(lastDatasetLoadError);
     return false;
   }
+  lastDatasetLoadError = "";
 
   const previousNoticeVersion = viewerStatus.version;
   const requestedRoot = normaliseDatasetRoot(params.datasetPath);
@@ -8065,8 +8073,10 @@ async function loadDatasetFromParams() {
     const reason = err?.name === "TimeoutError"
       ? `a network request exceeded ${Math.round(DATASET_FETCH_TIMEOUT_MS / 1000)} seconds`
       : (err?.message || String(err));
-    if (err?.name === "AbortError") setStatus("Dataset loading cancelled; previous dataset retained.");
-    else setStatus(`Could not load dataset ${requestedRoot}: ${reason}.`, { level: "error" });
+    lastDatasetLoadError = err?.name === "AbortError"
+      ? "Dataset loading cancelled; previous dataset retained."
+      : `Could not load dataset ${requestedRoot}: ${reason}`;
+    setStatus(lastDatasetLoadError, { level: err?.name === "AbortError" ? "info" : "error" });
     return false;
   } finally {
     loadProgress.finish();

@@ -91,7 +91,7 @@ function viewer() {
     dataBasePath: "demo", datasetRootPath: "demo", secondaryDataset: null,
     activeDatasetFolderSource: null, datasetFolderSources: new Map(),
     datasetFolderSourceCounter: 0, datasetFolderSelectionInProgress: false,
-    datasetLoadInProgress: false, sequenceFrameLoading: false, datasetViewSaveInProgress: false,
+    lastDatasetLoadError: "", datasetLoadInProgress: false, sequenceFrameLoading: false, datasetViewSaveInProgress: false,
     datasetRequestSignal: null, sequenceIndex: null,
     renderEpoch: 0, heavyCacheGeneration: 0, cacheAccessCounter: 0,
     heavyObjectCacheBytes: 0, dataCacheBytes: 0, fieldLineDataCacheBytes: 0,
@@ -833,6 +833,41 @@ function datasetLoader(ctx, code) {
   ctx.params.datasetPath = "new-dataset";
   return { meta, grid };
 }
+
+test("the URL launcher shows the exact loading error instead of hiding it", async () => {
+  const ctx = viewer(), messages = [];
+  datasetLoader(ctx, null);
+  Object.assign(ctx, {
+    datasetUrlInputEl: { value: "https://doi.org/10.6084/m9.figshare.33455986" },
+    setDatasetLauncherStatus: (message, error) => messages.push({ message, error }),
+    console: { ...console, error() {} },
+    loadMetadataForBase: async () => { throw new Error("metadata.json HTTP 403 at figshare:33455986/metadata.json"); },
+  });
+  for (const name of ["normaliseExternalDatasetReference", "loadRemoteDatasetFromLauncher"])
+    vm.runInContext(definition(name), ctx);
+  await ctx.loadRemoteDatasetFromLauncher();
+  assert.equal(messages.at(-1).error, true);
+  assert.match(messages.at(-1).message, /metadata.json HTTP 403/);
+  assert.match(messages.at(-1).message, /figshare:33455986/);
+  ctx.loadMetadataForBase = async () => structuredClone(ctx.metadata);
+  await ctx.loadRemoteDatasetFromLauncher();
+  assert.equal(ctx.lastDatasetLoadError, "");
+});
+
+test("optional sequences hide only missing files, not download or JSON errors", async () => {
+  const ctx = viewer();
+  for (const name of ["fetchJsonStrict", "fetchSequenceIndexForRoot", "normaliseSequenceFramePathForRoot"])
+    vm.runInContext(definition(name), ctx);
+  ctx.fetchDatasetResource = async () => new Response("Not found", { status: 404 });
+  assert.equal(await ctx.fetchSequenceIndexForRoot("figshare:33455986", true), null);
+  ctx.fetchDatasetResource = async () => new Response("Forbidden", { status: 403 });
+  await assert.rejects(ctx.fetchSequenceIndexForRoot("figshare:33455986", true), /sequence.json.*HTTP 403/);
+  ctx.fetchDatasetResource = async () => new Response("invalid json");
+  await assert.rejects(ctx.fetchSequenceIndexForRoot("figshare:33455986", true), /not valid JSON/);
+  ctx.fetchDatasetResource = async () => Object.assign(new Response("failure", { status: 502 }),
+    { deepDatasetError: "Network request failed for https://ndownloader.figshare.com/files/68811319" });
+  await assert.rejects(ctx.fetchSequenceIndexForRoot("figshare:33455986", true), /68811319/);
+});
 
 function localDatasetViewer() {
   const ctx = viewer(), selections = [], messages = [];
