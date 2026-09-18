@@ -1618,3 +1618,7 @@ See [STAGYY_CONVERTER.md](STAGYY_CONVERTER.md) for the verified CC0 Langemeyer
 et al. (2021) **3-D initial-condition snapshot**, the checksum-verifying
 downloader, installation, conversion commands and supported formats. This
 example contains mantle interior fields; it is not a surface-only dataset.
+The guide also includes the Mallard et al. (2016) PJB6_YS1 model with ten
+3-D snapshots. Converter version 1.1 excludes redundant Yin–Yang corners
+before interpolation, fixing meridional bands in older StagYY conversions.
+Reconvert existing StagYY datasets with `--force` after updating.

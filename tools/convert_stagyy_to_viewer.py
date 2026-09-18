@@ -15,7 +15,7 @@ from tools.conversion_cache import run_conversion
 from tools.scalar_diagnostics import scalar_diagnostic_metadata
 from tools.viewer_bundle import write_f32
 
-VERSION = '1.0.0'
+VERSION = '1.1.0'
 
 
 def build_arg_parser():
@@ -99,8 +99,11 @@ def convert_snapshot(files, destination, args, coordinates=None):
         source_grid={'type':'Yin–Yang','shape':[int(n) for n in h['nts']]+[int(h['ntb'])],
                      'cmb_radius':float(h['rcmb']),
                      'boundary_radii':(h['rgeom'][:,0][[0,-1]].astype(float)+float(h['rcmb'])).tolist()},
-        interpolation={'method':'trilinear per patch; angular edge-distance overlap weighting; linear extension at most half an angular cell to patch walls',
-                       'vectors':'legacy header samples; trim redundant high-side vp rows; rotate to Cartesian before interpolation and blending',
+        interpolation={'method':'remove redundant Yin–Yang corners; convex-hull angular triangles with barycentric interpolation; linear interpolation in native radius',
+                       'retained_angular_nodes_per_patch':int(sampler.active.sum()),
+                       'discarded_angular_nodes_per_patch':int((~sampler.active).sum()),
+                       'reference':'https://github.com/auguryerc/ReadStagYY/blob/fa7969ade79817fcac255cd9d6a9864eaec25873/WriteStag3D_VTK_YinYang_LB.m',
+                       'vectors':'legacy header samples; trim redundant high-side vp rows; rotate to Cartesian before interpolation on the stitched angular mesh',
                        'viscosity':'linear interpolation of log10(eta); eta reconstructed from interpolated log10_eta',
                        'radial_boundaries':'first/last saved cell centres; no extrapolation to physical walls'},
         field_domains={name:{'r_min':ri,'r_max':ro,'source':'mantle'} for name in fields},

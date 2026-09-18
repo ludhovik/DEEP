@@ -9,7 +9,7 @@ import re
 import sys
 
 import numpy as np
-from scipy.interpolate import RegularGridInterpolator
+from scipy.spatial import ConvexHull, cKDTree
 
 
 def parser_module():
@@ -130,51 +130,80 @@ def spherical_to_cartesian(ut, up, ur, theta, phi):
                      ur*st*sp+ut*ct*sp+up*cp, ur*ct-ut*st),axis=-1)
 
 
-class YinYangSampler:
-    """Trilinear interpolation with smooth overlap weights.
+def active_patch_mask(theta, phi):
+    """Retain StagYY's nonredundant angular nodes (Tackley VTK convention).
 
-    Vectors are rotated to global Cartesian axes before blending patches. Work
-    one radial layer at a time to bound interpolation point memory.
+    The rectangular patches contain redundant corners. Their scalar values
+    need not agree with the active patch and must not enter interpolation.
+    See auguryerc/ReadStagYY, WriteStag3D_VTK_YinYang_LB.m.
+    """
+    t,p = np.meshgrid(theta,phi,indexing='ij')
+    other_theta = np.arccos(np.clip(np.sin(t)*np.sin(p),-1,1))
+    redundant = ((other_theta > np.pi/4) & (p > np.pi/2)) | (
+                 (other_theta < 3*np.pi/4) & (p < -np.pi/2))
+    return ~redundant
+
+
+class YinYangSampler:
+    """Interpolate on a stitched angular mesh, excluding redundant corners.
+
+    The convex hull of the retained unit-sphere nodes defines the same angular
+    triangulation as the reference StagYY VTK exporter. A ray locates its
+    triangle; normalized barycentric weights interpolate angularly. Radius is
+    interpolated separately between saved centres, with no extrapolation.
+    Cartesian vectors use the same weights as scalar fields.
     """
     def __init__(self, header, r, theta, phi):
         self.axes = patch_axes(header)
         self.r, self.theta, self.phi = r,theta,phi
-        th,ph = np.meshgrid(theta,phi,indexing='ij')
-        xyz = spherical_to_cartesian(np.zeros_like(th),np.zeros_like(th),np.ones_like(th),th,ph)
-        self.queries,self.weights = [],[]
-        for local in (xyz,rotate_yang(xyz)):
-            t = np.arccos(np.clip(local[...,2],-1,1))
-            p = np.arctan2(local[...,1],local[...,0])
-            a,b,_ = self.axes
-            # Centres alone leave small gaps where patch corners meet. Allow
-            # at most half a cell to each angular wall, using the local linear
-            # slope there. Radial extrapolation remains strictly forbidden.
-            margin = np.minimum.reduce((t-(a[0]-(a[1]-a[0])/2),
-                                        (a[-1]+(a[-1]-a[-2])/2)-t,
-                                        p-(b[0]-(b[1]-b[0])/2),
-                                        (b[-1]+(b[-1]-b[-2])/2)-p))
-            weight = np.maximum(margin,0.)
-            self.queries.append((t,p))
-            self.weights.append(weight)
-        total = self.weights[0]+self.weights[1]
-        if np.any(total <= 0):
-            raise ValueError('Yin–Yang cell-centre grids do not cover the requested sphere; source grid is too coarse or incomplete.')
-        self.weights = [w/total for w in self.weights]
         if r[0] < self.axes[2][0] or r[-1] > self.axes[2][-1]:
             raise ValueError('Requested radius lies outside the saved cell centres; extrapolation is disabled.')
+        t,p,_ = self.axes
+        self.active = active_patch_mask(t,p)
+        tt,pp = np.meshgrid(t,p,indexing='ij')
+        local = spherical_to_cartesian(np.zeros_like(tt),np.zeros_like(tt),np.ones_like(tt),tt,pp)
+        nodes = np.concatenate((local[self.active],rotate_yang(local[self.active])))
+        facets = ConvexHull(nodes).simplices
+        vertices = nodes[facets]
+        inverse = np.linalg.inv(vertices.transpose(0,2,1))
+        centres = vertices.mean(axis=1)
+        centres /= np.linalg.norm(centres,axis=1)[:,None]
+        tree = cKDTree(centres)
+        th,ph = np.meshgrid(theta,phi,indexing='ij')
+        rays = spherical_to_cartesian(np.zeros_like(th),np.zeros_like(th),np.ones_like(th),th,ph).reshape(-1,3)
+        self.indices = np.empty((len(rays),3),dtype=np.intp)
+        self.weights = np.empty((len(rays),3))
+        pending = np.arange(len(rays))
+        # Normal grids need only the first pass. Larger candidate sets cover
+        # skinny triangles at patch joins without a nearest-node fallback.
+        for count in (8,32,128):
+            if not len(pending):
+                break
+            _,candidates = tree.query(rays[pending],k=min(count,len(facets)))
+            coefficients = np.einsum('nkij,nj->nki',inverse[candidates],rays[pending])
+            inside = np.all(coefficients >= -1e-10,axis=2)
+            found = inside.any(axis=1)
+            rows = np.flatnonzero(found)
+            choice = inside[rows].argmax(axis=1)
+            barycentric = np.maximum(coefficients[rows,choice],0)
+            barycentric /= barycentric.sum(axis=1)[:,None]
+            self.indices[pending[rows]] = facets[candidates[rows,choice]]
+            self.weights[pending[rows]] = barycentric
+            pending = pending[~found]
+        if len(pending):
+            raise ValueError(f'Could not locate {len(pending)} angular points on the stitched Yin–Yang mesh.')
 
     def sample(self, values):
         """values has axes (theta,phi,r,block[,Cartesian component])."""
         tail = values.shape[4:]
-        out = np.zeros((len(self.r),len(self.theta),len(self.phi))+tail)
-        for block,((t,p),weight) in enumerate(zip(self.queries,self.weights)):
-            active = weight > 0
-            interp = RegularGridInterpolator(self.axes,values[:,:,:,block],bounds_error=False,fill_value=None)
-            points = np.column_stack((t[active],p[active],np.zeros(active.sum())))
-            factor = weight[active].reshape((-1,)+(1,)*len(tail))
-            for i,radius in enumerate(self.r):
-                points[:,2] = radius
-                out[i][active] += interp(points)*factor
+        nodes = np.concatenate((values[self.active,:,0],values[self.active,:,1]))
+        out = np.empty((len(self.r),len(self.theta),len(self.phi))+tail)
+        radii = self.axes[2]
+        for i,radius in enumerate(self.r):
+            lo = np.clip(np.searchsorted(radii,radius,side='right')-1,0,len(radii)-2)
+            fraction = (radius-radii[lo])/(radii[lo+1]-radii[lo])
+            plane = (1-fraction)*nodes[:,lo] + fraction*nodes[:,lo+1]
+            out[i] = np.einsum('ni,ni...->n...',self.weights,plane[self.indices]).reshape(out.shape[1:])
         return out
 
     def velocity(self, values):

@@ -417,6 +417,12 @@ viscosity, velocity and pressure. Download the individual binaries with
 at 64 × 128 × 256, with saved simulation time and native radii. This is not a
 published final-state sequence or an imposed plate reconstruction.
 
+The same guide now includes the **Mallard et al. (2016) PJB6_YS1** model:
+[ten full 3-D snapshots, CC BY 4.0](https://doi.org/10.5281/zenodo.20728077),
+with temperature, viscosity, velocity and pressure (1.34 GB archive). Version
+1.1 of the converter fixes meridional bands caused by including redundant
+Yin–Yang corners. Reconvert older outputs with `--force`.
+
 ## ASPECT mantle convection
 
 [ASPECT_CONVERTER.md](ASPECT_CONVERTER.md) contains full commands for two examples:

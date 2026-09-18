@@ -5,6 +5,83 @@ StagYY volumes into DEEP's `r × theta × phi` float32 volumes. Both patches are
 included. The output supports interior cuts, isosurfaces, longitude averages
 and Mollweide maps at any sampled radius. VTK is not required.
 
+## Version 1.1: meridional seam correction
+
+Version 1.0 blended the full rectangular Yin–Yang patches, including redundant
+corner regions which the reference StagYY exporter removes. Those values can
+disagree with the active patch and introduced radial bands at fixed latitudes,
+particularly visible in `T_anomaly`. The binary processor ordering and the
+radial-mean subtraction were not the cause.
+
+Version 1.1 removes those corners using the
+[reference StagYY VTK routine](https://github.com/auguryerc/ReadStagYY/blob/fa7969ade79817fcac255cd9d6a9864eaec25873/WriteStag3D_VTK_YinYang_LB.m),
+triangulates the retained sphere, and interpolates across the stitched mesh.
+This applies to every input field, including Cartesian-rotated velocity;
+diagnostics are then recalculated. No filtering or smoothing of physical
+structures is added. The regression test now deliberately poisons redundant
+corner values and requires identical T, T_anomaly and advection outputs.
+
+**Reconvert existing StagYY outputs after updating.** Add `--force` to your
+previous conversion command, then reopen the regenerated dataset in DEEP.
+The converter version in `metadata.json` must be **1.1.0**.
+
+![Meridional cut before and after the fix, at the same resolution and colour limits](docs/validation/stagyy_meridional_fix.png)
+
+## Another 3-D dataset: Mallard et al. (2016)
+
+[PJB6_YS1 model steps 30–39](https://doi.org/10.5281/zenodo.20728077), deposited
+by Anthony Jourdon (2026), provides ten full 3-D StagYY snapshots associated
+with Mallard, Coltice, Seton, Müller & Tackley (2016),
+[Subduction controls the distribution and fragmentation of Earth's tectonic
+plates](https://doi.org/10.1038/nature17992), *Nature* 535, 140–143.
+**Data license: CC BY 4.0**; credit the data deposit and the paper.
+
+Each frame contains `t`, `eta`, and `vp`: full mantle temperature, viscosity,
+velocity and pressure on a 128 × 384 × 64 × 2 Yin–Yang grid. This is a model
+of self-organized plates and subduction, not an imposed geological plate
+reconstruction. The archived numbers 30–39 are snapshot indices, not ages in Ma.
+
+The archive is **1,335,785,967 bytes** (1.34 GB), MD5
+`10f8a6ce4a4229bd45739e5f052495e1`; the 30 extracted binary files occupy about
+1.53 GB. The complete archive was downloaded and its checksum verified.
+Frames 30 and 39 were converted with the corrected converter as a two-frame
+sequence, retaining all 27 fields and saved times.
+
+After installing `requirements-stagyy.txt` as below, run from DEEP:
+
+```bash
+STAGYY_MALLARD="$HOME/Downloads/stagyy-mallard2016"
+mkdir -p "$STAGYY_MALLARD"
+curl -fL --retry 3 \
+  "https://zenodo.org/api/records/20728077/files/PJB6_YS1.tar.gz/content" \
+  -o "$STAGYY_MALLARD/PJB6_YS1.tar.gz"
+
+printf '%s  %s\n' "10f8a6ce4a4229bd45739e5f052495e1" \
+  "$STAGYY_MALLARD/PJB6_YS1.tar.gz" | md5sum -c - &&
+tar -xzf "$STAGYY_MALLARD/PJB6_YS1.tar.gz" -C "$STAGYY_MALLARD"
+
+python3 tools/convert_stagyy_to_viewer.py \
+  --input "$STAGYY_MALLARD/PJB6_YS1/PJB6_YS1_Rh32_t00039" \
+  --out "/mnt/c/Users/wgdh881/Desktop/public/data_stagyy_Mallard16" \
+  --title "StagYY — Mallard et al. 2016, PJB6_YS1" \
+  --source-url "https://doi.org/10.5281/zenodo.20728077" \
+  --incremental --cache-dir "$HOME/.cache/deepscope"
+```
+
+For the full ten-frame sequence instead:
+
+```bash
+python3 tools/convert_stagyy_to_viewer.py \
+  --input "$STAGYY_MALLARD"/PJB6_YS1/PJB6_YS1_Rh32_t0003[0-9] \
+  --out "/mnt/c/Users/wgdh881/Desktop/public/data_stagyy_Mallard16_sequence" \
+  --source-url "https://doi.org/10.5281/zenodo.20728077" \
+  --incremental --cache-dir "$HOME/.cache/deepscope"
+```
+
+At default resolution each frame is about 227 MB; a sequence also keeps a
+root copy of the first frame for the viewer. Reserve about 2.5 GB for output,
+in addition to the downloaded archive and extracted inputs.
+
 ## Verified dataset
 
 **Langemeyer, Lowman & Tackley (2021)**,
@@ -130,12 +207,13 @@ so the existing sequence loader can preload fields used in cuts/Mollweide maps.
   the Yang rotation is `(x,y,z) → (-x,z,y)`. Legacy velocity interpretation
   follows the [pypStag geometry reader](https://github.com/AlexandrePFJanin/pypStag/blob/master/pypStag/stagData.py):
   local `vtheta,vphi,vr`, omitting redundant high-side horizontal vp rows.
-  Vectors are rotated to global Cartesian components before interpolation and
-  overlap blending, then projected onto DEEP's spherical basis.
-- Trilinear interpolation per patch, weighted by angular distance to patch
-  edges. At patch corners, linear extension is limited to half an angular
-  source cell to its wall. There is **no radial extrapolation**. Viscosity
-  is interpolated in log10 space; `eta` is reconstructed afterwards.
+  Vectors are rotated to global Cartesian components before interpolation on
+  the stitched mesh, then projected onto DEEP's spherical basis.
+- Redundant corners are discarded following the reference StagYY VTK exporter.
+  A convex hull of retained unit-sphere nodes supplies angular triangles.
+  Normalized barycentric interpolation on those triangles is combined with
+  linear interpolation in radius. There is **no radial extrapolation**.
+  Viscosity is interpolated in log10 space; `eta` is reconstructed afterwards.
 - This snapshot's sampled radii are **1.2164797783 to 2.2029337883**.
   Physical wall radii are separately recorded in `source_grid`. Fields stop
   at saved cell centres, labelled **Near CMB / Near surface**. Radius

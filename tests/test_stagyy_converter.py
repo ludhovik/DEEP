@@ -18,7 +18,7 @@ except ImportError:
     stagpy_field = None
 
 
-def write_fixture(root, index=0, time=2.5, offset=0, composition=True, precision=4):
+def write_fixture(root, index=0, time=2.5, offset=0, composition=True, precision=4, poison_corners=False):
     """Write a decomposed legacy stream independently of the StagPy reader.
 
     T=z+offset, C=x, velocity=(1,2,3), eta=100, P=7 on both patches.
@@ -45,6 +45,12 @@ def write_fixture(root, index=0, time=2.5, offset=0, composition=True, precision
     vp[:3,:nx,:ny,:,1] = local_velocity((-1,3,2))
     vp[3,:nx,:ny,:,:] = 7
     temp = np.stack((xyz[...,2]+offset,yang[...,2]+offset),axis=-1)[None]
+    if poison_corners:
+        # Independent Cartesian form of the reference exporter's corner cut.
+        # These unused values must never affect the physical stitched sphere.
+        ux,uy = st*cp,st*sp
+        redundant = ((ux < 0) & (np.abs(uy) < 1/np.sqrt(2)))[:,:,0]
+        temp[0][redundant] = -1000
     fields = {'t':temp,'eta':np.full_like(temp,100.),'vp':vp}
     if composition:
         fields['c'] = np.stack((xyz[...,0],yang[...,0]),axis=-1)[None]
@@ -117,6 +123,16 @@ class StagYYTests(unittest.TestCase):
         np.testing.assert_allclose(a,b,atol=2e-7)
         self.assertEqual(a.shape,(1,32,96,6,2))
         self.assertEqual(h['ti_ad'],2.5)
+
+    def test_redundant_corner_values_cannot_create_meridional_anomaly_bands(self):
+        self.run_converter('--output','T','T_anomaly','advT')
+        clean={name:self.volume(name) for name in ('T','T_anomaly','advT')}
+        write_fixture(self.root,poison_corners=True)
+        self.run_converter('--output','T','T_anomaly','advT')
+        for name,values in clean.items():
+            # Includes all meridian longitudes, not only the coordinate planes
+            # where the overlap has zero width and the old bug was invisible.
+            np.testing.assert_array_equal(self.volume(name),values)
 
     def test_truncated_extra_and_wrong_endian_fail_before_allocation(self):
         original=self.source.read_bytes()
