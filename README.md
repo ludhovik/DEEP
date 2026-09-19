@@ -226,10 +226,15 @@ codes with native camera positions are converted when loaded.
 Every CMB, ICB, radial, equatorial, and meridional display has:
 
 - a field selector;
-- symmetric, min/max, or manual scaling;
+- min/max scaling by default, with symmetric and manual alternatives;
 - a colour-map selector;
 - manual minimum and maximum values;
 - opacity.
+
+Colourbars update with their successfully rendered fields; a pending or failed
+replacement retains the preceding field and legend. PNG/PDF exports use that
+same displayed palette and range. Saved view codes retain their explicit scale
+choices, including symmetric or manual settings.
 
 Each meridional plane displays the same field, scale, colour map and opacity on
 both halves by default. Enable **Independent sides** to expose separate controls
@@ -560,7 +565,9 @@ arrays. Each field is sampled and drawn on its own grid; neither dataset is
 resampled onto the other. Secondary fields carry the selected label, such as
 `D2:T_anomaly`, in the surface, slice, isosurface, φ-average and Mollweide lists.
 
-**Dataset → Dataset radii** controls their relative size in the viewer:
+**Dataset → Dataset radii** controls their relative size in the viewer. Editing
+a reference value updates the readouts and geometry without closing or
+recreating the panel:
 
 | Control | Meaning |
 | --- | --- |

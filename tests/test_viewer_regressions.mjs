@@ -2131,7 +2131,7 @@ test("reloading after deleting a Figshare or Zenodo view resets the rendered app
     assert.deepEqual(ctx.camera.up.toArray(), [0, 0, 1]);
     assert.equal(ctx.camera.fov, 45);
     assert.equal(displayed.backgroundColor, "#050505");
-    assert.equal(displayed.cmbScale, "symmetric");
+    assert.equal(displayed.cmbScale, "minmax");
     assert.equal(displayed.cmbMin, -1);
     assert.equal(displayed.cmbMax, 1);
     assert.equal(displayed.showCMB, true);
@@ -3117,4 +3117,124 @@ test("radius conversion preserves aspect ratios, handles cell centres, and repor
   assert.equal(placementSummary({r_inner:.5,r_outer:1},{r_inner:5,r_outer:10}).interface,"Same sampled shell/sphere");
   for(const value of [0,-1,Infinity,NaN]) assert.throws(()=>datasetPlacement(core,mantle,{secondaryPhysicalRadius:value}),/positive radius/);
   assert.throws(()=>datasetPlacement(core,mantle,{secondaryNativeRadius:-1}),/reference radius/);
+});
+
+function attachColourbar(ctx, slot) {
+  if (!ctx.displayNames) vm.runInContext(constant("displayNames") + "\nglobalThis.displayNames = displayNames;",ctx);
+  ctx.colourbars ||= {};
+  ctx.displaySlots = Object.keys(ctx.colourbars);
+  const bar = { title: {}, min: {}, mid: {}, max: {}, gradient: {style:{}}, row: {style:{display:"none"}} };
+  ctx.colourbars[slot] = bar;
+  ctx.displaySlots = Object.keys(ctx.colourbars);
+  ctx.colourStops = { "blue-white-red": [[0,[0,0,255]],[1,[255,0,0]]], viridis: [[0,[25,50,75]],[1,[125,150,175]]] };
+  for (const name of ["formatNumber", "cssHexToRgb", "getColourStops", "colourbarCssGradient",
+    "setColourbarForSlot", "hideColourbarForSlot", "refreshColourbarGradients", "setFieldLineColourbar",
+    "getLineColourbarState", "fieldLineQuantityLabel"])
+    vm.runInContext(definition(name),ctx);
+  return bar;
+}
+
+test("radius edits keep the same open GUI and refresh dimensions without rebuilding controls", async () => {
+  const ctx=twoGridViewer(), controllers=[], folder={closed:false,scrollTop:73};
+  ctx.datasetRadiusSummary={primary:"",secondary:"",interface:""};
+  ctx.datasetRadiusControllers=[];
+  ctx.debouncedViewerTask=(label,task)=>task;
+  folder.add=(object,property)=>{
+    const controller={object,property,domElement:{},updates:0,
+      name(){return this;},disable(){return this;},onFinishChange(callback){this.finish=callback;return this;},
+      updateDisplay(){this.updates++;}};
+    controllers.push(controller);return controller;
+  };
+  const datasetFolder={addFolder:()=>folder};
+  ctx.cancelPendingViewerTasks=()=>ctx.invalidateRenderRequests();
+  ctx.pauseSequence=()=>{};ctx.disposeHeavyPlaybackCaches=()=>{};
+  let renders=0;ctx.rebuildAllMeshes=async()=>{renders++;};ctx.loadFieldLines=async()=>{};
+  ctx.buildGui=()=>{throw new Error("Must not replace the user's open panel");};
+  for(const name of ["refreshDatasetRadiusSummary","refreshDatasetPlacement","addDatasetRadiusControls"])
+    vm.runInContext(definition(name),ctx);
+  ctx.addDatasetRadiusControls(datasetFolder);
+  const control=controllers.find(c=>c.property==="secondaryPhysicalRadius");
+  ctx.params.secondaryPhysicalRadius=7000;
+  await control.finish();
+  assert.equal(folder.closed,false);assert.equal(folder.scrollTop,73);
+  assert.equal(controllers.find(c=>c.property==="secondaryPhysicalRadius"),control);
+  assert.match(ctx.datasetRadiusSummary.secondary,/7000/);
+  assert.match(ctx.datasetRadiusSummary.interface,/Gap/);
+  assert.equal(renders,1);
+  assert.ok(ctx.datasetRadiusControllers.every(c=>c.updates===2));
+});
+
+test("failed field replacement retains both old geometry and its colourbar", async () => {
+  const ctx=viewer(),bar=attachColourbar(ctx,"equator");
+  ctx.loadField=async name=>({name});
+  ctx.horizontalSliceRange=field=>field.name==="Br"?[-8,12]:[2,5];
+  ctx.params.equatorField="T";
+  await ctx.rebuildEquator();
+  const old=ctx.equatorMesh,legend=JSON.stringify(bar);
+  ctx.params.equatorField="Br";ctx.params.equatorColormap="viridis";
+  ctx.makeHorizontalSliceMesh=()=>{throw new Error("geometry failure");};
+  await assert.rejects(ctx.rebuildEquator(),/geometry failure/);
+  assert.equal(ctx.equatorMesh,old);assert.equal(old.geometry.disposed,false);
+  assert.equal(JSON.stringify(bar),legend);
+});
+
+test("slow superseded reads cannot change the committed field legend or export palette", async () => {
+  const ctx=viewer(),bar=attachColourbar(ctx,"equator"),slow=deferred();
+  ctx.loadField=name=>name==="Br"?slow.promise:Promise.resolve({name});
+  ctx.horizontalSliceRange=field=>field.name==="T"?[2,5]:[20,30];
+  ctx.params.equatorField="T";await ctx.rebuildEquator();
+  ctx.params.equatorField="Br";const pending=ctx.rebuildEquator();
+  assert.equal(bar.title.textContent,"Equator 1: T");
+  ctx.params.equatorField="C";ctx.params.equatorColormap="viridis";await ctx.rebuildEquator();
+  const legend=JSON.stringify(bar);
+  slow.resolve({name:"Br"});await pending;
+  assert.equal(JSON.stringify(bar),legend);assert.equal(bar.title.textContent,"Equator 1: C");
+  assert.equal(bar.min.textContent,"20.000");assert.equal(bar.max.textContent,"30.000");
+  ctx.params.equatorColormap="blue-white-red";
+  ctx.refreshColourbarGradients();assert.equal(JSON.stringify(bar),legend);
+  ctx.getVisibleColourbarSlots=()=>["equator"];
+  ctx.drawRoundedRectPath=()=>{};ctx.window.innerWidth=1000;
+  let exported;
+  ctx.drawColourbarGradient=(canvas,x,y,w,h,scheme,stops)=>{exported=stops;};
+  vm.runInContext(definition("drawExportColourbars"),ctx);
+  const canvas={save(){},restore(){},fill(){},stroke(){},fillText(){},fillRect(){}};
+  ctx.drawExportColourbars(canvas,1000,700);
+  assert.equal(exported,bar.committedStops);
+  assert.deepEqual(Array.from(exported[0][1]),[25,50,75]);
+});
+
+test("linked meridian colourbars stay hidden and failed split geometry retains both legends", async () => {
+  for(const slot of ["meridian","meridian2"]) {
+    const ctx=meridianViewer(),right=attachColourbar(ctx,slot),left=attachColourbar(ctx,`${slot}Left`);
+    const rebuild=slot==="meridian"?"rebuildMeridian":"rebuildMeridian2";
+    await ctx[rebuild]();
+    assert.equal(left.row.style.display,"none");
+    ctx.params[`${slot}Field`]="Br";await ctx[rebuild]();
+    assert.equal(left.row.style.display,"none");assert.match(right.title.textContent,/Br$/);
+    ctx.params[`${slot}IndependentSides`]=true;
+    ctx.params[`${slot}LeftField`]="C";await ctx[rebuild]();
+    assert.equal(left.row.style.display,"block");assert.match(left.title.textContent,/C$/);
+    const saved=[JSON.stringify(right),JSON.stringify(left)],mesh=ctx[`${slot}Mesh`];
+    ctx.params[`${slot}Field`]="ur";
+    ctx.makeSplitMeridionalSliceGroup=()=>{throw new Error("split failure");};
+    await assert.rejects(ctx[rebuild](),/split failure/);
+    assert.equal(ctx[`${slot}Mesh`],mesh);
+    assert.deepEqual([JSON.stringify(right),JSON.stringify(left)],saved);
+  }
+});
+
+test("palette RGB values are converted from sRGB for vertex colours", () => {
+  const ctx=viewer();ctx.THREE=RealTHREE;
+  ctx.getColourStops=()=>[[0,[128,64,32]],[1,[128,64,32]]];
+  for(const name of ["interpolateStops","colourMap"]) vm.runInContext(definition(name),ctx);
+  const actual=ctx.colourMap(.5,0,1),expected=new RealTHREE.Color("rgb(128,64,32)");
+  for(const component of ["r","g","b"]) assert.ok(Math.abs(actual[component]-expected[component])<1e-12);
+});
+
+test("new views default to minmax on all scalar displays while explicit saved scales survive", () => {
+  const ctx=viewer();
+  const slots=["cmb","icb","radial","earth","equator","equator2","meridian","meridianLeft","meridian2","meridian2Left","mollweide","line"];
+  for(const slot of slots)assert.equal(ctx.params[`${slot}Scale`],"minmax");
+  ctx.applyViewStateParams({params:{cmbScale:"symmetric",meridianScale:"manual"}});
+  assert.equal(ctx.params.cmbScale,"symmetric");assert.equal(ctx.params.meridianScale,"manual");
 });

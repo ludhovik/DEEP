@@ -68,6 +68,8 @@ const workProgress = createWorkProgress({
 const geometryClient = new GeometryClient();
 const longitudeAverageCache = new LongitudeAverageCache();
 const meridianFieldControllers = [];
+const datasetRadiusControllers = [];
+const datasetRadiusSummary = { primary: "", secondary: "", interface: "" };
 
 async function runGeometryJob(type, payload, label) {
   const progress = workProgress.begin(label, () => geometryClient.cancelAll());
@@ -426,34 +428,34 @@ const params = {
   meridian2Opacity: 1.0,
   meridian2LeftOpacity: 1.0,
 
-  cmbScale: "symmetric",
+  cmbScale: "minmax",
   cmbMin: -1.0,
   cmbMax: 1.0,
-  icbScale: "symmetric",
+  icbScale: "minmax",
   icbMin: -1.0,
   icbMax: 1.0,
-  radialScale: "symmetric",
+  radialScale: "minmax",
   radialMin: -1.0,
   radialMax: 1.0,
-  earthScale: "symmetric",
+  earthScale: "minmax",
   earthMin: -1.0,
   earthMax: 1.0,
-  equatorScale: "symmetric",
+  equatorScale: "minmax",
   equatorMin: -1.0,
   equatorMax: 1.0,
-  equator2Scale: "symmetric",
+  equator2Scale: "minmax",
   equator2Min: -1.0,
   equator2Max: 1.0,
-  meridianScale: "symmetric",
+  meridianScale: "minmax",
   meridianMin: -1.0,
   meridianMax: 1.0,
-  meridianLeftScale: "symmetric",
+  meridianLeftScale: "minmax",
   meridianLeftMin: -1.0,
   meridianLeftMax: 1.0,
-  meridian2Scale: "symmetric",
+  meridian2Scale: "minmax",
   meridian2Min: -1.0,
   meridian2Max: 1.0,
-  meridian2LeftScale: "symmetric",
+  meridian2LeftScale: "minmax",
   meridian2LeftMin: -1.0,
   meridian2LeftMax: 1.0,
 
@@ -557,7 +559,7 @@ const params = {
   mollweideX: .5,
   mollweideY: .5,
   mollweideWidth: 0.36,
-  mollweideScale: "symmetric",
+  mollweideScale: "minmax",
   mollweideMin: -1,
   mollweideMax: 1,
   mollweideColormap: "blue-white-red",
@@ -1243,11 +1245,12 @@ function setColourbarForSlot(slot, fieldName, vmin, vmax) {
 
   const mid = 0.5 * (vmin + vmax);
   const cmap = params[`${slot}Colormap`] || "blue-white-red";
+  bar.committedStops = getColourStops(cmap).map(([t, rgb]) => [t, [...rgb]]);
   bar.title.textContent = `${displayBoundaryName(slot)}: ${fieldName}`;
   bar.min.textContent = formatNumber(vmin);
   if (bar.mid) bar.mid.textContent = formatNumber(mid);
   bar.max.textContent = formatNumber(vmax);
-  if (bar.gradient) bar.gradient.style.background = colourbarCssGradient(cmap);
+  if (bar.gradient) bar.gradient.style.background = colourbarCssGradient(cmap, bar.committedStops);
   bar.row.style.display = "block";
 }
 
@@ -1263,13 +1266,13 @@ function refreshColourbarGradients() {
     const scheme = slot === "fieldlines"
       ? params.lineColormap
       : params[`${slot}Colormap`];
-    bar.gradient.style.background = colourbarCssGradient(scheme);
+    if (bar.committedStops) bar.gradient.style.background = colourbarCssGradient(scheme, bar.committedStops);
   }
 }
 
 let customColourRefreshTimer = null;
 function scheduleCustomColourRefresh() {
-  refreshColourbarGradients();
+  // Keep the displayed legend until the matching geometry has been recoloured.
   if (customColourRefreshTimer) window.clearTimeout(customColourRefreshTimer);
   customColourRefreshTimer = window.setTimeout(() => {
     customColourRefreshTimer = null;
@@ -1339,7 +1342,8 @@ function setFieldLineColourbar(vmin, vmax) {
   bar.min.textContent = formatNumber(vmin);
   if (bar.mid) bar.mid.textContent = formatNumber(mid);
   bar.max.textContent = formatNumber(vmax);
-  if (bar.gradient) bar.gradient.style.background = colourbarCssGradient(params.lineColormap || "viridis");
+  bar.committedStops = getColourStops(params.lineColormap || "viridis").map(([t, rgb]) => [t, [...rgb]]);
+  if (bar.gradient) bar.gradient.style.background = colourbarCssGradient(params.lineColormap || "viridis", bar.committedStops);
   bar.row.style.display = params.showFieldLines && params.lineColourMode === "strength" ? "block" : "none";
 }
 
@@ -1859,7 +1863,6 @@ async function updateEarthSurface(options = {}) {
         ? metadataRadius
         : Number(fieldSourceGrid(fieldObject).meta.r_outer) * radiusScale;
       const [vmin, vmax] = earthSurfaceFieldRange(fieldObject);
-      setColourbarForSlot("earth", params.earthField, vmin, vmax);
 
       if (
         reuseGeometry
@@ -1891,6 +1894,7 @@ async function updateEarthSurface(options = {}) {
         datasetGroup.add(earthMesh);
       }
 
+      setColourbarForSlot("earth", params.earthField, vmin, vmax);
       if (attribution) attribution.style.display = "none";
     } else {
       const body = params.earthTextureBody;
@@ -3915,14 +3919,45 @@ function meshMatchesFieldGrid(mesh, field) {
     && previous.scale === fieldPlacementScale(field);
 }
 
+function addDatasetRadiusControls(datasetFolder) {
+  const placementFolder = datasetFolder.addFolder("Dataset radii");
+  const refreshPlacement = debouncedViewerTask("Dataset radii", refreshDatasetPlacement);
+  placementFolder.add(params, "placementUnit").name("Common unit (label)").onFinishChange(refreshPlacement);
+  for (const [role, label] of [["primary", "Primary"], ["secondary", "Secondary"]]) {
+    placementFolder.add(params, `${role}NativeRadius`, 0).name(`${label} native reference`).onFinishChange(refreshPlacement)
+      .domElement.title = "0 uses metadata.r_outer. For cell-centred data, enter the native physical outer wall radius if known.";
+    placementFolder.add(params, `${role}PhysicalRadius`, 1e-30).name(`${label} physical reference`).onFinishChange(refreshPlacement)
+      .domElement.title = "Physical radius corresponding to the native reference, in the common unit. Use equal values for the same outer boundary.";
+  }
+  for (const [key, label] of [["primary", "Primary sampled radii"],
+    ["secondary", "Secondary sampled radii"], ["interface", "Boundary check"]]) {
+    datasetRadiusControllers.push(placementFolder.add(datasetRadiusSummary, key).name(label).disable());
+  }
+  refreshDatasetRadiusSummary();
+}
+
+function refreshDatasetRadiusSummary() {
+  try {
+    Object.assign(datasetRadiusSummary, placementSummary(metadata, secondaryDataset?.metadata, params));
+  } catch (error) {
+    Object.assign(datasetRadiusSummary, { primary: "", secondary: "", interface: error.message });
+  }
+  for (const controller of datasetRadiusControllers) {
+    controller.updateDisplay();
+    controller.domElement.title = String(datasetRadiusSummary[controller.property] || "");
+  }
+}
+
 async function refreshDatasetPlacement() {
+  refreshDatasetRadiusSummary();
   datasetPlacement(metadata, secondaryDataset?.metadata, params);
   cancelPendingViewerTasks();
   pauseSequence(false);
   disposeHeavyPlaybackCaches();
+  const request = beginRenderRequest("placement");
   await rebuildAllMeshes();
+  if (!renderRequestIsCurrent(request)) return;
   await loadFieldLines();
-  buildGui();
 }
 
 function fieldDisplayDomain(field) {
@@ -5877,11 +5912,10 @@ function colourMap(value, vmin, vmax, scheme = "blue-white-red") {
   const t = clamp((value - vmin) / (vmax - vmin || 1.0), 0.0, 1.0);
   const stops = getColourStops(scheme);
   const rgb = interpolateStops(t, stops);
-  return new THREE.Color(rgb[0] / 255.0, rgb[1] / 255.0, rgb[2] / 255.0);
+  return new THREE.Color().setRGB(rgb[0] / 255.0, rgb[1] / 255.0, rgb[2] / 255.0, THREE.SRGBColorSpace);
 }
 
-function colourbarCssGradient(scheme = "blue-white-red") {
-  const stops = getColourStops(scheme);
+function colourbarCssGradient(scheme = "blue-white-red", stops = getColourStops(scheme)) {
   const parts = stops.map(([t, rgb]) => `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]}) ${100 * t}%`);
   return `linear-gradient(to right, ${parts.join(", ")})`;
 }
@@ -6682,11 +6716,11 @@ async function rebuildCMB(options = {}) {
   if (!renderRequestIsCurrent(request)) return;
   const radialIndex = fieldSourceGrid(fieldObject).meta.nr - 1;
   const [vmin, vmax] = cmbDisplayRange(fieldObject, radialIndex, "cmb");
-  setColourbarForSlot("cmb", params.cmbField, vmin, vmax);
 
   if (reuseGeometry && cmbMesh && updateCmbMeshColours(cmbMesh, fieldObject, radialIndex, vmin, vmax, params.cmbColormap)) {
     cmbMesh.visible = params.showCMB;
     applyOpacityAndDepth(cmbMesh.material, params.cmbOpacity);
+    setColourbarForSlot("cmb", params.cmbField, vmin, vmax);
   } else {
     const cmbClip = getActiveCmbClipOptions();
     const replacement = makeCmbSurfaceMesh(fieldObject, radialIndex, params.cmbOpacity, vmin, vmax, params.cmbColormap, cmbClip);
@@ -6694,6 +6728,7 @@ async function rebuildCMB(options = {}) {
     cmbMesh = replacement;
     cmbMesh.visible = params.showCMB;
     datasetGroup.add(cmbMesh);
+    setColourbarForSlot("cmb", params.cmbField, vmin, vmax);
     await updateEarthSurface();
   }
   if (!renderRequestIsCurrent(request)) return;
@@ -6714,17 +6749,18 @@ async function rebuildICB(options = {}) {
   if (!renderRequestIsCurrent(request)) return;
   const radialIndex = withFieldGrid(field, () => icbRadiusIndex());
   const [vmin, vmax] = surfaceRange(field, radialIndex, "icb");
-  setColourbarForSlot("icb", params.icbField, vmin, vmax);
 
   if (reuseGeometry && icbMesh && updateSurfaceMeshColours(icbMesh, field, radialIndex, vmin, vmax, params.icbColormap)) {
     icbMesh.visible = params.showICB;
     applyOpacityAndDepth(icbMesh.material, params.icbOpacity);
+    setColourbarForSlot("icb", params.icbField, vmin, vmax);
   } else {
     const replacement = makeSurfaceMesh(field, radialIndex, params.icbOpacity, vmin, vmax, params.icbColormap);
     disposeObject(icbMesh);
     icbMesh = replacement;
     icbMesh.visible = params.showICB;
     datasetGroup.add(icbMesh);
+    setColourbarForSlot("icb", params.icbField, vmin, vmax);
   }
   setStatusSummary(`${displayBoundaryName("icb")}:${params.icbField}`);
 }
@@ -6738,7 +6774,6 @@ async function rebuildRadialSurface(options = {}) {
   if (!renderRequestIsCurrent(request)) return;
   const sampling = radialSurfaceSampling(field);
   const [vmin, vmax] = radialSurfaceRange(field, sampling, "radial");
-  setColourbarForSlot("radial", params.radialField, vmin, vmax);
 
   if (
     reuseGeometry
@@ -6754,6 +6789,7 @@ async function rebuildRadialSurface(options = {}) {
   ) {
     radialSurfaceMesh.visible = params.showRadialSurface;
     applyOpacityAndDepth(radialSurfaceMesh.material, params.radialOpacity);
+    setColourbarForSlot("radial", params.radialField, vmin, vmax);
   } else {
     const replacement = makeRadialSurfaceMesh(
       field,
@@ -6767,6 +6803,7 @@ async function rebuildRadialSurface(options = {}) {
     radialSurfaceMesh = replacement;
     radialSurfaceMesh.visible = params.showRadialSurface;
     datasetGroup.add(radialSurfaceMesh);
+    setColourbarForSlot("radial", params.radialField, vmin, vmax);
   }
 
   const rOuter = Math.max(Math.abs(Number(fieldSourceGrid(field).meta.r_outer)) || 1.0, 1.0e-30);
@@ -6784,17 +6821,18 @@ async function rebuildEquator(options = {}) {
   const field = await loadForRender(request, () => loadField(params.equatorField));
   if (!renderRequestIsCurrent(request)) return;
   const [vmin, vmax] = horizontalSliceRange(field, 0.0, "equator");
-  setColourbarForSlot("equator", params.equatorField, vmin, vmax);
 
   if (reuseGeometry && equatorMesh && updateSampledMeshColours(equatorMesh, field, "horizontal", vmin, vmax, params.equatorColormap)) {
     equatorMesh.visible = params.showEquator;
     applyOpacityAndDepth(equatorMesh.material, params.equatorOpacity);
+    setColourbarForSlot("equator", params.equatorField, vmin, vmax);
   } else {
     const replacement = makeHorizontalSliceMesh(field, 0.0, params.equatorOpacity, vmin, vmax, params.equatorColormap);
     disposeObject(equatorMesh);
     equatorMesh = replacement;
     equatorMesh.visible = params.showEquator;
     datasetGroup.add(equatorMesh);
+    setColourbarForSlot("equator", params.equatorField, vmin, vmax);
     await rebuildGapFillers();
   }
   if (!renderRequestIsCurrent(request)) return;
@@ -6809,19 +6847,20 @@ async function rebuildEquator2(options = {}) {
   if (!renderRequestIsCurrent(request)) return;
   const z = params.equator2Z * fieldSourceGrid(field).meta.r_outer;
   const [vmin, vmax] = horizontalSliceRange(field, z, "equator2");
-  setColourbarForSlot("equator2", params.equator2Field, vmin, vmax);
 
   const topologyMatches = equator2Mesh?.userData?.viewerTopology?.kind === "horizontal" &&
     Math.abs(Number(equator2Mesh.userData.viewerTopology.z) - z) < 1.0e-12;
   if (reuseGeometry && topologyMatches && updateSampledMeshColours(equator2Mesh, field, "horizontal", vmin, vmax, params.equator2Colormap)) {
     equator2Mesh.visible = params.showEquator2;
     applyOpacityAndDepth(equator2Mesh.material, params.equator2Opacity);
+    setColourbarForSlot("equator2", params.equator2Field, vmin, vmax);
   } else {
     const replacement = makeHorizontalSliceMesh(field, z, params.equator2Opacity, vmin, vmax, params.equator2Colormap);
     disposeObject(equator2Mesh);
     equator2Mesh = replacement;
     equator2Mesh.visible = params.showEquator2;
     datasetGroup.add(equator2Mesh);
+    setColourbarForSlot("equator2", params.equator2Field, vmin, vmax);
     await rebuildGapFillers();
   }
   if (!renderRequestIsCurrent(request)) return;
@@ -6848,8 +6887,6 @@ async function rebuildMeridian(options = {}) {
   const [leftMin, leftMax] = independent
     ? meridianHalfRange(leftField, params.meridianPhiDeg, "left", "meridianLeft")
     : [rightMin, rightMax];
-  setColourbarForSlot("meridian", meridianDisplayLabel("meridian"), rightMin, rightMax);
-  setColourbarForSlot("meridianLeft", meridianDisplayLabel("meridianLeft"), leftMin, leftMax);
   const replacement = makeSplitMeridionalSliceGroup(rightField, leftField, params.meridianPhiDeg, {
     right: { opacity: params.meridianOpacity, vmin: rightMin, vmax: rightMax, colormap: params.meridianColormap },
     left: { opacity: params.meridianLeftOpacity, vmin: leftMin, vmax: leftMax, colormap: params.meridianLeftColormap },
@@ -6858,6 +6895,9 @@ async function rebuildMeridian(options = {}) {
   meridianMesh = replacement;
   meridianMesh.visible = params.showMeridian;
   datasetGroup.add(meridianMesh);
+  setColourbarForSlot("meridian", meridianDisplayLabel("meridian"), rightMin, rightMax);
+  setColourbarForSlot("meridianLeft", meridianDisplayLabel("meridianLeft"), leftMin, leftMax);
+  if (!independent) hideColourbarForSlot("meridianLeft");
   await rebuildGapFillers();
   if (!renderRequestIsCurrent(request)) return;
   setStatusSummary(`Meridian:${meridianFieldSummary("meridian")}`);
@@ -6881,8 +6921,6 @@ async function rebuildMeridian2(options = {}) {
   const [leftMin, leftMax] = independent
     ? meridianHalfRange(leftField, params.meridian2PhiDeg, "left", "meridian2Left")
     : [rightMin, rightMax];
-  setColourbarForSlot("meridian2", meridianDisplayLabel("meridian2"), rightMin, rightMax);
-  setColourbarForSlot("meridian2Left", meridianDisplayLabel("meridian2Left"), leftMin, leftMax);
   const replacement = makeSplitMeridionalSliceGroup(rightField, leftField, params.meridian2PhiDeg, {
     right: { opacity: params.meridian2Opacity, vmin: rightMin, vmax: rightMax, colormap: params.meridian2Colormap },
     left: { opacity: params.meridian2LeftOpacity, vmin: leftMin, vmax: leftMax, colormap: params.meridian2LeftColormap },
@@ -6891,6 +6929,9 @@ async function rebuildMeridian2(options = {}) {
   meridian2Mesh = replacement;
   meridian2Mesh.visible = params.showMeridian2;
   datasetGroup.add(meridian2Mesh);
+  setColourbarForSlot("meridian2", meridianDisplayLabel("meridian2"), rightMin, rightMax);
+  setColourbarForSlot("meridian2Left", meridianDisplayLabel("meridian2Left"), leftMin, leftMax);
+  if (!independent) hideColourbarForSlot("meridian2Left");
   await rebuildGapFillers();
   if (!renderRequestIsCurrent(request)) return;
   setStatusSummary(`Meridian2:${meridianFieldSummary("meridian2")}`);
@@ -8334,6 +8375,7 @@ function addTubeMemoryControls(lineFolder, refreshFieldLines) {
 
 function buildGui() {
   meridianFieldControllers.length = 0;
+  datasetRadiusControllers.length = 0;
   if (guiRoot) guiRoot.destroy();
   if (povGuiRoot) {
     povGuiRoot.destroy();
@@ -8362,23 +8404,7 @@ function buildGui() {
     datasetFolder.add({ loaded: `${secondaryDataset.label}: ${secondaryDataset.basePath}` }, "loaded").name("Loaded secondary");
   }
 
-  const placementFolder = datasetFolder.addFolder("Dataset radii");
-  const refreshPlacement = debouncedViewerTask("Dataset radii", refreshDatasetPlacement);
-  placementFolder.add(params, "placementUnit").name("Common unit (label)").onFinishChange(refreshPlacement);
-  for (const [role, label] of [["primary", "Primary"], ["secondary", "Secondary"]]) {
-    placementFolder.add(params, `${role}NativeRadius`, 0).name(`${label} native reference`).onFinishChange(refreshPlacement)
-      .domElement.title = "0 uses metadata.r_outer. For cell-centred data, enter the native physical outer wall radius if known.";
-    placementFolder.add(params, `${role}PhysicalRadius`, 1e-30).name(`${label} physical reference`).onFinishChange(refreshPlacement)
-      .domElement.title = "Physical radius corresponding to the native reference, in the common unit. Use equal values for the same outer boundary.";
-  }
-  try {
-    const summary = placementSummary(metadata, secondaryDataset?.metadata, params);
-    placementFolder.add(summary, "primary").name("Primary sampled radii").disable().domElement.title = summary.primary;
-    placementFolder.add(summary, "secondary").name("Secondary sampled radii").disable().domElement.title = summary.secondary;
-    if (secondaryDataset) placementFolder.add(summary, "interface").name("Boundary check").disable().domElement.title = summary.interface;
-  } catch (error) {
-    placementFolder.add({ error: error.message }, "error").name("Radius error").disable();
-  }
+  addDatasetRadiusControls(datasetFolder);
 
   const sequenceFolder = gui.addFolder("Sequence playback");
   const mapFolder = gui.addFolder("Mollweide map");
@@ -8770,8 +8796,7 @@ function drawRoundedRectPath(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-function drawColourbarGradient(ctx, x, y, w, h, scheme) {
-  const stops = getColourStops(scheme);
+function drawColourbarGradient(ctx, x, y, w, h, scheme, stops = getColourStops(scheme)) {
   const gradient = ctx.createLinearGradient(x, y, x + w, y);
   for (const [t, rgb] of stops) {
     gradient.addColorStop(t, `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`);
@@ -8848,7 +8873,7 @@ function drawExportColourbars(ctx, width, height) {
     const gy = y + 27 * scale;
     const gw = panelWidth - 18 * scale;
     const gh = 13 * scale;
-    drawColourbarGradient(ctx, gx, gy, gw, gh, scheme);
+    drawColourbarGradient(ctx, gx, gy, gw, gh, scheme, bar.committedStops);
 
     ctx.font = `${Math.round(10 * scale)}px system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif`;
     ctx.textBaseline = "top";
