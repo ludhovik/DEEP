@@ -1,4 +1,4 @@
-# DEEPscope — Spherical Dynamo Viewer
+# DEEPscope Spherical Viewer for deep planetary interiors
 
 DEEPscope is a browser-based Three.js viewer for three-dimensional spherical-dynamo
 and convection simulations. It includes converters for:
