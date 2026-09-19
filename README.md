@@ -12,7 +12,11 @@ and convection simulations. It includes converters for:
 - QuICC/EPMDynamoCode spherical HDF5 spectral states: full-sphere `WLFl`/`WLFm`
   and spherical-shell `SLFl`/`SLFm` ordering;
 - Rayleigh `Spherical_3D` outputs and single- or multiple-domain version-2 Chebyshev checkpoints
-  (see [Rayleigh converter and public example](RAYLEIGH_CONVERTER.md)).
+  (see [Rayleigh converter and public example](RAYLEIGH_CONVERTER.md));
+- ASPECT three-dimensional spherical mantle volumes in VTU/PVTU/PVD format
+  (see [ASPECT converter](ASPECT_CONVERTER.md));
+- StagYY legacy binary spherical Yin–Yang mantle volumes
+  (see [StagYY converter and public datasets](STAGYY_CONVERTER.md)).
 
 For complete download, extraction and conversion commands for the selected
 Rayleigh and MagIC datasets, see [the public examples guide](EXAMPLES_DOWNLOAD_AND_CONVERSION.md).
@@ -32,7 +36,8 @@ with Vite. Local datasets are read in the browser and are not uploaded.
 - Sun, Earth, Mars, Ganymede, Jupiter, Saturn, Mercury, Venus, Enceladus and Moon images,
   plus Rodinia at 1 billion years ago, NASA lava-world and Proxima b artwork, and the Bennu mosaic, or
   an available extrapolated radial magnetic field;
-- two compatible datasets on the same grid;
+- two datasets on independent spherical grids, including a mantle–core composite
+  with explicit relative radii;
 - time sequences with playback, preloading, and bounded memory caching;
 - PNG, PDF, WebM, and PNG-sequence output;
 - transferable view-state codes.
@@ -209,9 +214,9 @@ The **Point of view** panel stores distance, azimuth, elevation, target, and
 field of view. **Use current mouse view** copies the current interactive camera
 into those controls.
 
-The viewer displays radii as **r / r_o**, with the outer simulation radius at
-**1**. One display transform scales surfaces, slices, maps and field lines
-together. Dataset coordinates, field values and converter output keep their
+The viewer displays scene lengths in **r / r_o of the primary dataset**, with
+its sampled outer radius at **1**. Secondary meshes have a separate length
+conversion before this common display transform; see **Two datasets** below. Dataset coordinates, field values and converter output keep their
 original units; existing bundles do not need reconversion. Camera distance and
 targets also use r_o units. New view codes record that convention, while older
 codes with native camera positions are converted when loaded.
@@ -546,12 +551,88 @@ seed count alone does not establish convergence. Test one frame into a
 separate output folder before regenerating a long sequence. Existing bundles
 need reconversion to receive the corrected line coordinates.
 
-### Two datasets
+### Two datasets: different grids or mantle and core
 
-Use **Dataset → Secondary path / URL** to load a second converted dataset. Its
-`nr`, `ntheta`, and `nphi` dimensions must match the primary dataset. Secondary
-fields are prefixed with the selected secondary label and can be assigned to
-the same surfaces and slices as primary fields.
+Load the primary dataset normally, then use **Dataset → Select secondary
+folder**, or enter **Secondary path / URL** and click **Load secondary path**.
+The datasets may have different `nr`, `ntheta`, `nphi` and nonuniform coordinate
+arrays. Each field is sampled and drawn on its own grid; neither dataset is
+resampled onto the other. Secondary fields carry the selected label, such as
+`D2:T_anomaly`, in the surface, slice, isosurface, φ-average and Mollweide lists.
+
+**Dataset → Dataset radii** controls their relative size in the viewer:
+
+| Control | Meaning |
+| --- | --- |
+| Common unit (label) | Shared length unit, for example `km`; changing the label alone does not convert values. |
+| Primary / Secondary native reference | Radius in that dataset's native coordinates. `0` uses its `metadata.r_outer`. |
+| Primary / Secondary physical reference | Physical radius corresponding to the native reference, expressed in the common unit. |
+| Primary / Secondary sampled radii | Resulting inner and outer radii of the saved data. |
+| Boundary check | Whether sampled shells match, boundaries meet, or there is a radial gap/overlap. |
+
+The mapping is **physical radius = native radius × physical reference /
+native reference**. Only geometry is scaled: values, gradients, time, source
+coordinates and converted files remain unchanged. Scaling preserves each
+model's inner/outer radius ratio. The viewer never stretches shell thickness
+to force a fit. Dimensions are an explicit user choice, not inferred from the
+solver name, dataset title or selected planet image. Both physical references
+default to `1`, aligning sampled outer boundaries until you specify dimensions.
+
+**Two grids for the same shell/sphere:** use the same physical reference for
+both outer boundaries (for example, `1` and `1`, or `3480` and `3480` km).
+Their scaled inner radii must also agree to represent the same shell. Different
+native normalizations are supported. Choose primary fields on one cut and
+secondary fields on the other, or use the independent meridional halves.
+
+**Earth mantle + core example:** load the core as primary if you want its
+magnetic field lines or time sequence. Load the mantle as secondary, and set:
+
+| Setting | Primary: core | Secondary: mantle |
+| --- | --- | --- |
+| Common unit | `km` | `km` |
+| Native reference | Native CMB radius | Native planetary surface radius |
+| Physical reference | `3480` | `6371` |
+
+These approximate Earth radii are consistent with
+[NASA/JPL Horizons Earth properties](https://ssd.jpl.nasa.gov/api/horizons.api?COMMAND=399&MAKE_EPHEM=NO&format=text).
+A whole-mantle model should then have an inner/outer wall-radius ratio near
+`3480/6371 ≈ 0.54623`. Inspect **sampled radii** and **Boundary check** before
+using the composite scientifically. If the mantle aspect ratio differs, the
+viewer reports the mismatch; changing scale alone cannot match both walls.
+For another planet, enter that planet/model's own radii in the same unit.
+
+For cell-centred output such as StagYY, the first and last saved radii can lie
+inside the physical walls. Enter the known **native wall radius** as the
+reference instead of `0`; do not mistake a cell-centre radius for the CMB or
+surface. The boundary check uses sampled radii, so a small unresolved gap can
+remain even when the physical walls match. No extrapolation fills that gap.
+StagYY bundles record their native wall radii in
+`metadata.json → source_grid.boundary_radii`; use the last value for the
+mantle native surface reference.
+
+To draw a composite cut, enable **Meridian 1** with a core field and
+**Meridian 2** with a mantle field, and set both longitudes to the same value.
+Keep both halves linked within each plane. The two annuli then meet at their
+scaled boundary. Equator 1 and Equator 2 can be used similarly at `z = 0`.
+Zoom out to include the mantle. Hide opaque spherical surfaces to expose the
+interior, or use clipping and opacity. Decorative slice-gap fillers are disabled while a secondary dataset
+is loaded, so they cannot cover real mantle data.
+
+Depth controls (`r/ro`, Equator 2 `z/ro`) refer to the selected field's own
+sampled outer radius. Camera distances remain in primary outer-radius units.
+Planet images use **Image radius / outer** relative to the primary dataset;
+for a core-primary Earth view, use about `6371/3480 = 1.83075` when the primary
+outer sample is the CMB. Adjust for cell-centred boundaries if needed.
+
+Radius settings are included in view codes. Dataset paths/identity are not:
+load both intended datasets before restoring a composite view code.
+The primary sequence controls playback and the time overlay; the secondary
+stays on its loaded snapshot (the first frame if its root is a sequence).
+Open a particular secondary frame folder to choose another snapshot.
+Magnetic field lines also come from the primary dataset. There is no automatic
+time synchronization, vector rotation between coordinate frames, or physical
+coupling between simulations. Both inputs must use the same axis/longitude
+convention for spatial comparisons.
 
 ## Portable view-state codes
 
@@ -662,8 +743,9 @@ Only the latest asynchronous request may replace a surface or field-line set.
 A failed replacement leaves the preceding mesh displayed. Isosurface geometry
 is cached independently of its colour, opacity, and transparency mode.
 
-Frames and secondary datasets are checked against the actual `r`, `theta`, and
-`phi` arrays, not just their dimensions. If metadata declares a coordinates
+Sequence frames are checked against the primary sequence’s actual `r`, `theta`,
+and `phi` arrays, not just their dimensions. Secondary datasets validate their
+own coordinates and may use a different grid. If metadata declares a coordinates
 file, that file is required. Uniform-grid fallback is only for legacy bundles
 that do not declare one. A transferred view code validates field availability
 (including the isosurface field) and restores numeric options such as the Earth

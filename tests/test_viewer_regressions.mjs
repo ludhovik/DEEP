@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
 import test from "node:test";
+import { datasetPlacement, placementSummary } from "../src/dataset-placement.js";
 import { SURFACE_TEXTURES } from "../src/surface-textures.js";
 import { LongitudeAverageCache, longitudeDisplayField, volumeDisplayValue,
   longitudeFieldLabel, computeLongitudeAverage } from "../src/longitude-average.js";
@@ -23,7 +24,8 @@ const source = fs.readFileSync(new URL("../src/main.js", import.meta.url), "utf8
 function definition(name) {
   const match = source.match(new RegExp(`(?:async )?function ${name}\\(`));
   assert.ok(match, `Viewer function ${name} exists`);
-  return source.slice(match.index, source.indexOf("\n}", match.index) + 2);
+  const code = source.slice(match.index, source.indexOf("\n}", match.index) + 2);
+  return code + (source.includes(`function ${name}OnGrid(`) ? "\n" + definition(`${name}OnGrid`) : "");
 }
 function constant(name, end = ";") {
   const start = source.indexOf(`const ${name} = `);
@@ -57,11 +59,12 @@ class Material {
   dispose() { this.disposed = true; }
 }
 class Mesh {
-  constructor(geometry, material) { this.geometry = geometry; this.material = material; this.userData = {}; }
+  constructor(geometry, material) { this.geometry = geometry; this.material = material; this.userData = {}; this.scale = new RealTHREE.Vector3(1, 1, 1); }
 }
 
 function viewer() {
   const ctx = vm.createContext({
+    datasetPlacement, placementSummary, fieldSourceViews: new WeakMap(),
     simulationTimeLabel, TIME_BOX_POSITIONS, simulationTimeOverlay: { render() {} },
     syncOverlayFloaters() {},
     sampleRadialSurface, mollweideRange: surfaceRange, mollweideRequest: null,
@@ -149,6 +152,7 @@ function viewer() {
   Object.assign(ctx.params, { showIsosurfaces: true, showIsoNegative: false });
   for (const name of [
     "displayBoundaryName", "datasetLengthScale", "updateDisplayScale", "updateCameraClipping", "renderScene",
+    "sourceWithPrimary", "fieldViewForSource", "fieldSourceGrid", "withFieldGrid", "fieldPlacementScale", "placeFieldMesh", "meshMatchesFieldGrid",
     "fieldDisplayDomain", "refreshIsosurfaceLegend", "clamp", "formatBytes", "roundedCacheNumber", "captureRenderContext", "renderContextIsCurrent",
     "withCapturedRenderContext", "renderSignature", "beginRenderRequest", "renderRequestIsCurrent",
     "invalidateRenderRequests", "loadForRender", "pinHeavyCacheEntry", "isEffectivelyOpaque", "applyOpacityAndDepth",
@@ -1016,14 +1020,14 @@ test("an incomplete replacement folder leaves the displayed data and source inta
   assert.equal(ctx.datasetLoadInProgress, false);
 });
 
-test("a rejected secondary grid keeps the previous comparison path and files usable", async () => {
+test("a malformed secondary grid keeps the previous comparison path and files usable", async () => {
   const { ctx, selections, messages } = localDatasetViewer();
-  selections.push(selectedFolder(ctx, 1), selectedFolder(ctx, 2), selectedFolder(ctx, 3, { middleRadius: 0.8 }));
+  selections.push(selectedFolder(ctx, 1), selectedFolder(ctx, 2), selectedFolder(ctx, 3, { middleRadius: 1.2 }));
   await ctx.selectDatasetFolder("primary");
   await ctx.selectDatasetFolder("secondary");
   const previous = ctx.secondaryDataset;
   assert.equal(await ctx.selectDatasetFolder("secondary"), false);
-  assert.match(messages.at(-1), /coordinates do not match/);
+  assert.match(messages.at(-1), /strictly increasing/);
   assert.equal(ctx.secondaryDataset, previous);
   assert.equal(ctx.params.secondaryDatasetPath, previous.rootPath);
   const fresh = await ctx.fetchDatasetResource(`${previous.rootPath}/metadata.json`);
@@ -2971,4 +2975,146 @@ test("surface-only CMB dataset loads a surface, selects map defaults, and preloa
   assert.equal(requests[0].filename, "q_CMB_cmb.f32");
   assert.equal(requests[0].expectedLength, meta.ntheta * meta.nphi);
   assert.throws(() => ctx.validateDatasetMetadata({ ...meta, surface_only: false }, "bad"), /no usable/);
+});
+
+test("different secondary grid dimensions and radial coordinates load without resampling", async () => {
+  const { ctx, selections } = localDatasetViewer();
+  selections.push(selectedFolder(ctx, 1), selectedFolder(ctx, 2, { nphi: 7, middleRadius: .8 }));
+  assert.equal(await ctx.selectDatasetFolder("primary"), true);
+  assert.equal(await ctx.selectDatasetFolder("secondary"), true);
+  assert.equal(ctx.metadata.nphi, 4);
+  assert.equal(ctx.secondaryDataset.metadata.nphi, 7);
+  assert.equal(ctx.secondaryDataset.coords.r[1], .8);
+  ctx.params.equatorField = "D2:T";
+  await ctx.rebuildAllMeshes();
+  assert.equal(ctx.displayed.length, 3 * 3 * 7);
+  assert.equal(ctx.displayed[0], 2);
+});
+
+function twoGridViewer() {
+  const ctx = viewer();
+  ctx.THREE = RealTHREE;
+  ctx.colourMap = value => new RealTHREE.Color(value / 100, 0, 0);
+  ctx.metadata = { nr: 3, ntheta: 3, nphi: 4, r_inner: 0, r_outer: 2,
+    fields: { T: "T.f32" } };
+  ctx.coords = { r: [0, .6, 2], theta: [.1, 1, 3], phi: [0, 1, 3, 5] };
+  ctx.secondaryDataset = { basePath: "mantle", metadata: {
+    nr: 4, ntheta: 5, nphi: 8, r_inner: 3480 / 6371 * 10, r_outer: 10,
+    fields: { T: "T.f32" } }, coords: { r: [3480 / 6371 * 10, 6, 8, 10],
+    theta: [.1, .5, 1.5, 2.5, 3], phi: Array.from({length:8},(_,i)=>i*Math.PI/4) } };
+  Object.assign(ctx.params, { primaryPhysicalRadius: 3480, secondaryPhysicalRadius: 6371,
+    placementUnit: "km", meridianField: "D2:T", phiAvgCount: 1, phiAvg1Field: "D2:T", phiAvg1Mode: "mean" });
+  ctx.loadFloat32ForBase = async (base, file, length) => Float32Array.from({length},(_,i)=>i % (base === "mantle" ? 8 : 4));
+  ctx.runGeometryJob = async (type, payload) => computeLongitudeAverage(payload);
+  ctx.applyScale = (slot, lo, hi) => [lo, hi];
+  for (const name of ["loadField", "idx", "radiusAtIndex", "thetaAtIndex", "phiAtIndex", "angularDistance",
+    "nearestRadiusIndex", "nearestThetaIndex", "nearestPhiIndex", "radialSurfaceSampling", "radialSurfaceValue",
+    "makeMeridionalSliceMesh", "makeSplitMeridionalSliceGroup", "makeHorizontalSliceMesh",
+    "makeSurfaceMesh", "makeRadialSurfaceMesh", "makeCmbSurfaceMesh", "loadCmbDisplayField", "cmbValue",
+    "updateSampledMeshColours", "updateMeshColourBuffer", "meridianRange", "rawMinMaxFromSamples"])
+    vm.runInContext(definition(name), ctx);
+  return ctx;
+}
+
+test("actual mantle/core meridians preserve native grids and meet at the physical CMB", async () => {
+  const ctx = twoGridViewer(), originalMeta = ctx.metadata, originalCoords = ctx.coords;
+  const core = await ctx.loadField("T"), mantle = await ctx.loadField("D2:T");
+  const meshes = [core, mantle].map(field => ctx.makeMeridionalSliceMesh(field,45,1,0,8,"viridis"));
+  const extent = mesh => {
+    const p = mesh.geometry.attributes.position.array, radii = [];
+    for(let i=0;i<p.length;i+=3) radii.push(Math.hypot(p[i],p[i+1],p[i+2])*mesh.scale.x/2);
+    return [Math.min(...radii),Math.max(...radii)];
+  };
+  const c = extent(meshes[0]), m = extent(meshes[1]);
+  assert.ok(Math.abs(c[1] - m[0]) < 1e-6);
+  assert.ok(Math.abs(m[1] - 6371/3480) < 1e-6);
+  assert.equal(meshes[1].geometry.attributes.position.count,4*(5+2)*2);
+  assert.equal(ctx.metadata,originalMeta); assert.equal(ctx.coords,originalCoords);
+  assert.deepEqual(Array.from(ctx.meridianRange(mantle,45,"meridian")),[1,5]);
+  assert.equal(ctx.updateSampledMeshColours(meshes[0],mantle,"meridian",0,8,"viridis"),false);
+  const old = meshes[1].scale.x;
+  ctx.params.secondaryPhysicalRadius = 7000;
+  assert.equal(ctx.meshMatchesFieldGrid(meshes[1],mantle),false);
+  assert.equal(meshes[1].scale.x,old,"editing dimensions must not mutate an already committed mesh");
+  for(const mesh of meshes)ctx.disposeObject(mesh);
+});
+
+test("secondary phi averages and radial surfaces use secondary dimensions and coordinates", async () => {
+  const ctx = twoGridViewer();
+  ctx.params.meridianField = "PHI:1";
+  const calculation = ctx.phiCalculation(ctx.params.meridianField,ctx.params);
+  assert.equal(calculation.name,"D2:T");
+  const field = await ctx.loadMeridianDisplayField("meridian",ctx.captureRenderContext());
+  assert.equal(field.nphi,8); assert.equal(field.mean.length,20);
+  assert.ok(field.mean.every(value=>value===3.5));
+  const mesh=ctx.makeMeridionalSliceMesh(field,60,1,0,8,"viridis");
+  assert.equal(mesh.geometry.attributes.position.count,56);
+  const volume = await ctx.loadField("D2:T");
+  ctx.params.radialSurfaceRadiusRo=.7;
+  const sample=ctx.radialSurfaceSampling(volume);
+  assert.equal(sample.radius,7);assert.equal(sample.i0,1);assert.equal(sample.i1,2);
+  const surface=ctx.makeRadialSurfaceMesh(volume,sample,1,0,8,"viridis");
+  assert.equal(surface.geometry.attributes.position.count,40);
+  assert.ok(Math.abs(surface.scale.x - 6371/3480/5) < 1e-12);
+  ctx.disposeObject(mesh);ctx.disposeObject(surface);
+});
+
+test("secondary surface maps and worker isosurfaces use the selected source grid", async () => {
+  const ctx = twoGridViewer();
+  ctx.secondaryDataset.metadata.surface_fields={ q:{surface:"cmb",file:"q.f32"} };
+  const field=await ctx.loadCmbDisplayField("D2:q");
+  const mesh=ctx.makeCmbSurfaceMesh(field,3,1,0,8,"viridis");
+  assert.equal(mesh.geometry.attributes.position.count,40);
+  assert.equal(mesh.userData.viewerTopology.radiusIndex,3);
+  vm.runInContext(definition("buildIsosurfaceInBackground"),ctx);
+  let received;
+  ctx.unpackGeometry=()=>new RealTHREE.BufferGeometry();
+  ctx.runGeometryJob=async(type,payload)=>{received=payload;return {};};
+  const volume=await ctx.loadField("D2:T");
+  await ctx.buildIsosurfaceInBackground(ctx.captureRenderContext(),volume,1);
+  assert.equal(received.metadata,ctx.secondaryDataset.metadata);
+  assert.equal(received.coords,ctx.secondaryDataset.coords);
+  assert.equal(received.field.length,160);
+  ctx.disposeObject(mesh);
+});
+
+test("source provenance survives asynchronous primary frame changes and shared file bytes", async () => {
+  const ctx=twoGridViewer(), first=ctx.metadata, waiting=deferred();
+  ctx.loadFloat32ForBase=()=>waiting.promise;
+  const pending=ctx.loadField("D2:T");
+  ctx.metadata={...first,r_outer:5};
+  const bytes=new Float32Array(160);
+  waiting.resolve(bytes);
+  const field=await pending;
+  assert.equal(field.viewerSource.primaryMeta,first);
+  assert.equal(field.buffer,bytes.buffer);
+  const second=ctx.fieldViewForSource(bytes,{...field.viewerSource,source:"primary"});
+  assert.notEqual(second,field);assert.equal(second.buffer,field.buffer);
+  assert.equal(field.viewerSource.source,"secondary");
+});
+
+test("dataset physical radius settings round-trip in view codes", () => {
+  const ctx=twoGridViewer();
+  ctx.params.secondaryNativeRadius=10.1;
+  const snapshot=ctx.decodeViewState(ctx.encodeViewState(ctx.collectViewState()));
+  ctx.params.secondaryPhysicalRadius=1;ctx.params.secondaryNativeRadius=0;
+  ctx.applyViewStateParams(snapshot);
+  assert.equal(ctx.params.secondaryPhysicalRadius,6371);
+  assert.equal(ctx.params.secondaryNativeRadius,10.1);
+  assert.equal(ctx.params.placementUnit,"km");
+});
+
+test("radius conversion preserves aspect ratios, handles cell centres, and reports mismatches", () => {
+  const core={r_inner:0,r_outer:1}, mantle={r_inner:3480/6371,r_outer:1};
+  const settings={primaryPhysicalRadius:3480,secondaryPhysicalRadius:6371,placementUnit:"km"};
+  assert.equal(placementSummary(core,mantle,settings).interface,"Sampled boundaries meet");
+  assert.match(placementSummary(core,{r_inner:.6,r_outer:1},settings).interface,/Gap/);
+  assert.match(placementSummary(core,{r_inner:.5,r_outer:1},settings).interface,/Overlap/);
+  const centred={r_inner:5.5,r_outer:9.9};
+  const mapped=datasetPlacement(core,centred,{...settings,secondaryNativeRadius:10});
+  assert.ok(Math.abs(mapped.secondary.outer-6307.29)<1e-9);
+  assert.ok(Math.abs(mapped.secondary.inner/mapped.secondary.outer-centred.r_inner/centred.r_outer)<1e-14);
+  assert.equal(placementSummary({r_inner:.5,r_outer:1},{r_inner:5,r_outer:10}).interface,"Same sampled shell/sphere");
+  for(const value of [0,-1,Infinity,NaN]) assert.throws(()=>datasetPlacement(core,mantle,{secondaryPhysicalRadius:value}),/positive radius/);
+  assert.throws(()=>datasetPlacement(core,mantle,{secondaryNativeRadius:-1}),/reference radius/);
 });

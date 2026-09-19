@@ -1,4 +1,5 @@
 import "./style.css";
+import { datasetPlacement, placementSummary } from "./dataset-placement.js";
 import "./mobile-layout.css";
 import { createMobileLayout } from "./mobile-layout.js";
 
@@ -79,10 +80,11 @@ async function runGeometryJob(type, payload, label) {
 }
 
 async function buildIsosurfaceInBackground(context, field, isoValue) {
-  const clipOptions = withCapturedRenderContext(context, () => getActiveIsoClipOptions());
+  const ref = fieldSourceGrid(field);
+  const clipOptions = withCapturedRenderContext(context, () => withFieldGrid(field, () => getActiveIsoClipOptions()));
   const domain = withCapturedRenderContext(context, () => fieldDisplayDomain(field));
-  const data = await runGeometryJob("isosurface", { field, domain, metadata: context.metadata,
-    coords: context.coords, isoValue, requestedResolution: context.params.isoResolution, clipOptions },
+  const data = await runGeometryJob("isosurface", { field, domain, metadata: ref.meta,
+    coords: ref.coords, isoValue, requestedResolution: context.params.isoResolution, clipOptions },
     `Building ${context.params.isoField} isosurface`);
   return unpackGeometry(data);
 }
@@ -160,8 +162,9 @@ const displayNames = {
 };
 
 function displayBoundaryName(slot) {
-  if (slot === "cmb") return metadata?.boundary_labels?.outer || "CMB";
-  if (slot === "icb") return metadata?.boundary_labels?.inner || "ICB";
+  const meta = ["cmb", "icb"].includes(slot) ? resolveFieldSource(params[`${slot}Field`]).meta : metadata;
+  if (slot === "cmb") return meta?.boundary_labels?.outer || "CMB";
+  if (slot === "icb") return meta?.boundary_labels?.inner || "ICB";
   return displayNames[slot];
 }
 
@@ -530,6 +533,11 @@ const params = {
 
   secondaryDatasetPath: DEFAULT_SECONDARY_DATASET_ROOT,
   secondaryDatasetLabel: "D2",
+  primaryNativeRadius: 0,
+  secondaryNativeRadius: 0,
+  primaryPhysicalRadius: 1,
+  secondaryPhysicalRadius: 1,
+  placementUnit: "common units",
   selectSecondaryDatasetFolder: () => selectDatasetFolder("secondary"),
   loadSecondaryDataset: () => loadSecondaryDatasetFromParams(),
   clearSecondaryDataset: () => clearSecondaryDataset(),
@@ -798,7 +806,7 @@ function renderSignature(slot) {
     const clip = ["cmb", "earth"].includes(slot) && (key.startsWith("quarter")
       || key.startsWith("cmbClip") || key === "cmbRearSide"
       || key === "meridianPhiDeg" || key === "meridian2PhiDeg");
-    return own || key === visibility || clip || key === "magneticVolumeDomain"
+    return own || key === visibility || clip || /^(primary|secondary)(Native|Physical)Radius$/.test(key) || key === "magneticVolumeDomain"
       || (slot.startsWith("meridian") && key.startsWith("phiAvg"));
   }));
 }
@@ -1716,7 +1724,11 @@ function makeEarthSurfaceMesh(radius, opacity, texture, longitudeDeg, clipOption
   return mesh;
 }
 
-function makeEarthFieldSurfaceMesh(fieldObject, radius, opacity, vmin, vmax, colormap, clipOptions = null) {
+function makeEarthFieldSurfaceMesh(...args) {
+  return placeFieldMesh(withFieldGrid(args[0], () => makeEarthFieldSurfaceMeshOnGrid(...args)), args[0]);
+}
+
+function makeEarthFieldSurfaceMeshOnGrid(fieldObject, radius, opacity, vmin, vmax, colormap, clipOptions = null) {
   const nt = metadata.ntheta;
   const np = metadata.nphi;
   const positions = [];
@@ -1777,7 +1789,12 @@ function makeEarthFieldSurfaceMesh(fieldObject, radius, opacity, vmin, vmax, col
   return mesh;
 }
 
-function updateEarthFieldMeshColours(mesh, fieldObject, radius, vmin, vmax, colormap) {
+function updateEarthFieldMeshColours(...args) {
+  if (!meshMatchesFieldGrid(args[0], args[1])) return false;
+  return withFieldGrid(args[1], () => updateEarthFieldMeshColoursOnGrid(...args));
+}
+
+function updateEarthFieldMeshColoursOnGrid(mesh, fieldObject, radius, vmin, vmax, colormap) {
   const topology = mesh?.userData?.viewerTopology;
   if (!topology || topology.kind !== "earth-field") return false;
   if (Math.abs(Number(topology.radius) - Number(radius)) > 1.0e-12) return false;
@@ -1840,7 +1857,7 @@ async function updateEarthSurface(options = {}) {
       const metadataRadius = Number(fieldObject.info.radius);
       const radius = Number.isFinite(metadataRadius) && metadataRadius > 0
         ? metadataRadius
-        : Number(metadata?.radii?.outer || metadata?.r_outer || 1.0) * radiusScale;
+        : Number(fieldSourceGrid(fieldObject).meta.r_outer) * radiusScale;
       const [vmin, vmax] = earthSurfaceFieldRange(fieldObject);
       setColourbarForSlot("earth", params.earthField, vmin, vmax);
 
@@ -2758,8 +2775,8 @@ function roundedCacheNumber(value) {
 }
 
 function getIsosurfaceObjectCacheKey(basePath = dataBasePath) {
-  const clip = getActiveIsoClipOptions();
   const source = resolveFieldSource(params.isoField);
+  const clip = withFieldGrid({ viewerSource: source }, () => getActiveIsoClipOptions());
   return JSON.stringify({
     basePath: String(basePath),
     field: params.isoField,
@@ -2771,11 +2788,11 @@ function getIsosurfaceObjectCacheKey(basePath = dataBasePath) {
     fieldSource: [source.basePath, source.meta?.fields?.[source.rawName]],
     clip,
     grid: [
-      Number(metadata?.nr),
-      Number(metadata?.ntheta),
-      Number(metadata?.nphi),
+      Number(source.meta?.nr),
+      Number(source.meta?.ntheta),
+      Number(source.meta?.nphi),
     ],
-    coordinates: coords,
+    coordinates: source.coords,
     magneticVolumeDomain: params.magneticVolumeDomain,
     fieldDomain: source.meta?.field_domains?.[source.rawName],
   });
@@ -3691,15 +3708,7 @@ async function loadSecondaryDatasetFromParams() {
     const coords2 = await loadCoordinatesForBase(basePath, meta2);
     if (!renderRequestIsCurrent(request)) return false;
 
-    if (!sameGridSignature(metadata, meta2) || !sameCoordinateArrays(coords, coords2)) {
-      const a = primaryGridSignature(metadata);
-      const b = primaryGridSignature(meta2);
-      throw new Error(
-        `Secondary grid dimensions or coordinates do not match the primary grid. ` +
-        `Primary nr/ntheta/nphi=${a.nr}/${a.ntheta}/${a.nphi}; ` +
-        `secondary=${b.nr}/${b.ntheta}/${b.nphi}.`
-      );
-    }
+    datasetPlacement(metadata, meta2, params);
 
     await loadFloat32ForBase(basePath, fields[0][1], (meta2.surface_only ? 1 : meta2.nr) * meta2.ntheta * meta2.nphi);
     if (!renderRequestIsCurrent(request)) return false;
@@ -3811,6 +3820,7 @@ function resolveFieldSource(fieldName) {
     const rawName = rawSecondaryFieldName(fieldName);
     return {
       source: "secondary",
+      primaryMeta: metadata,
       displayName: String(fieldName),
       rawName,
       meta: secondaryDataset.metadata,
@@ -3821,6 +3831,7 @@ function resolveFieldSource(fieldName) {
 
   return {
     source: "primary",
+    primaryMeta: metadata,
     displayName: String(fieldName),
     rawName: String(fieldName),
     meta: metadata,
@@ -3833,11 +3844,10 @@ async function loadField(fieldName) {
   const ref = resolveFieldSource(fieldName);
   const filename = ref.meta.fields?.[ref.rawName];
   if (!filename) throw new Error(`Field not found: ${fieldName}`);
-  if (!sameGridSignature(metadata, ref.meta) || !sameCoordinateArrays(coords, ref.coords)) {
-    throw new Error(`Field ${fieldName} is on a grid that does not match the primary dataset.`);
-  }
+
   const expectedLength = ref.meta.nr * ref.meta.ntheta * ref.meta.nphi;
-  const field = await loadFloat32ForBase(ref.basePath, filename, expectedLength);
+  const cached = await loadFloat32ForBase(ref.basePath, filename, expectedLength);
+  const field = fieldViewForSource(cached, ref);
   Object.defineProperty(field, "viewerDomain", { configurable: true, value: {
     ...ref.meta.field_domains?.[ref.rawName],
     magnetic: /^(Br|Bt|Bp|Babs)(_|$)/.test(ref.rawName),
@@ -3845,8 +3855,79 @@ async function loadField(fieldName) {
   return field;
 }
 
+const fieldSourceViews = new WeakMap();
+
+function sourceWithPrimary(ref) {
+  return { ...ref, primaryMeta: ref.primaryMeta || metadata };
+}
+
+function fieldViewForSource(cached, ref) {
+  // Distinct views share bytes but not provenance when a file is used twice.
+  let sources = fieldSourceViews.get(cached);
+  if (!sources) { sources = new WeakMap(); fieldSourceViews.set(cached, sources); }
+  let frames = sources.get(ref.meta);
+  if (!frames) { frames = new WeakMap(); sources.set(ref.meta, frames); }
+  const primaryMeta = ref.primaryMeta || metadata;
+  let entries = frames.get(primaryMeta);
+  if (!entries) { entries = new Map(); frames.set(primaryMeta, entries); }
+  const key = `${ref.source}:${ref.rawName}`;
+  let entry = entries.get(key);
+  if (!entry || entry.ref.coords !== ref.coords) {
+    entry = { ref: sourceWithPrimary(ref), field: new Float32Array(cached.buffer, cached.byteOffset, cached.length) };
+    entry.field.viewerSource = entry.ref;
+    entries.set(key, entry);
+  }
+  return entry.field;
+}
+
+function fieldSourceGrid(field) {
+  return field?.viewerSource || field?.data?.viewerSource
+    || { source: "primary", meta: metadata, coords, primaryMeta: metadata };
+}
+
+function withFieldGrid(field, callback) {
+  const ref = fieldSourceGrid(field);
+  const savedMetadata = metadata, savedCoords = coords;
+  try {
+    metadata = ref.meta; coords = ref.coords;
+    return callback();
+  } finally { metadata = savedMetadata; coords = savedCoords; }
+}
+
+function fieldPlacementScale(field) {
+  const ref = fieldSourceGrid(field);
+  return ref.source === "secondary"
+    ? datasetPlacement(ref.primaryMeta, ref.meta, params).secondaryScale : 1;
+}
+
+function placeFieldMesh(mesh, field) {
+  const ref = fieldSourceGrid(field);
+  mesh.scale.setScalar(fieldPlacementScale(field));
+  mesh.userData.sourceGrid = { meta: ref.meta, coords: ref.coords, scale: mesh.scale.x };
+  return mesh;
+}
+
+function meshMatchesFieldGrid(mesh, field) {
+  const previous = mesh?.userData?.sourceGrid;
+  const ref = fieldSourceGrid(field);
+  return previous && sameGridSignature(previous.meta, ref.meta)
+    && sameCoordinateArrays(previous.coords, ref.coords)
+    && previous.scale === fieldPlacementScale(field);
+}
+
+async function refreshDatasetPlacement() {
+  datasetPlacement(metadata, secondaryDataset?.metadata, params);
+  cancelPendingViewerTasks();
+  pauseSequence(false);
+  disposeHeavyPlaybackCaches();
+  await rebuildAllMeshes();
+  await loadFieldLines();
+  buildGui();
+}
+
 function fieldDisplayDomain(field) {
-  return fieldRadialDomain(metadata, coords, field?.viewerDomain, params.magneticVolumeDomain);
+  const ref = fieldSourceGrid(field);
+  return fieldRadialDomain(ref.meta, ref.coords, field?.viewerDomain, params.magneticVolumeDomain);
 }
 
 async function loadMeridianDisplayField(slot, context) {
@@ -3854,9 +3935,10 @@ async function loadMeridianDisplayField(slot, context) {
   const field = await withCapturedRenderContext(context, () => loadField(name));
   if (!renderContextIsCurrent(context)) throw new DOMException("Meridian read superseded", "AbortError");
   if (mode === "slice") return field;
-  const { nr, ntheta, nphi } = context.metadata;
-  const phi = context.coords.phi;
-  const mean = await longitudeAverageCache.get(field, context.metadata, phi,
+  const ref = fieldSourceGrid(field);
+  const { nr, ntheta, nphi } = ref.meta;
+  const phi = ref.coords.phi;
+  const mean = await longitudeAverageCache.get(field, ref.meta, phi,
     () => runGeometryJob("longitude-average", { field, metadata: { nr, ntheta, nphi }, phi },
       `Computing φ average: ${name}`));
   return longitudeDisplayField(field, mean, mode, nphi);
@@ -3870,17 +3952,14 @@ async function loadCmbDisplayField(fieldName) {
     if (surfaceInfo.surface !== "cmb") {
       throw new Error(`Surface field ${fieldName} is not a CMB field.`);
     }
-    if (ref.meta.ntheta !== metadata.ntheta || ref.meta.nphi !== metadata.nphi || !sameCoordinateArrays(coords, ref.coords)) {
-      throw new Error(`CMB surface field ${fieldName} does not match the primary theta/phi grid.`);
-    }
 
     const expectedLength = ref.meta.ntheta * ref.meta.nphi;
     const data = await loadFloat32ForBase(ref.basePath, surfaceInfo.file, expectedLength);
-    return { kind: "cmb_surface", name: fieldName, data, nphi: ref.meta.nphi };
+    return { kind: "cmb_surface", name: fieldName, data, nphi: ref.meta.nphi, viewerSource: sourceWithPrimary(ref) };
   }
 
   const data = await loadField(fieldName);
-  return { kind: "volume", name: fieldName, data };
+  return { kind: "volume", name: fieldName, data, viewerSource: data.viewerSource };
 }
 
 async function loadEarthDisplayField(fieldName) {
@@ -3889,13 +3968,12 @@ async function loadEarthDisplayField(fieldName) {
   if (!surfaceInfo || surfaceInfo.surface !== "earth") {
     throw new Error(`Surface field ${fieldName} is not an Earth-surface field.`);
   }
-  if (ref.meta.ntheta !== metadata.ntheta || ref.meta.nphi !== metadata.nphi || !sameCoordinateArrays(coords, ref.coords)) {
-    throw new Error(`Earth surface field ${fieldName} does not match the primary theta/phi grid.`);
-  }
+
   const expectedLength = ref.meta.ntheta * ref.meta.nphi;
   const data = await loadFloat32ForBase(ref.basePath, surfaceInfo.file, expectedLength);
   return {
     kind: "earth_surface",
+    viewerSource: sourceWithPrimary(ref),
     name: fieldName,
     data,
     nphi: ref.meta.nphi,
@@ -3955,7 +4033,11 @@ function phiAtIndex(ip) {
 }
 
 
-function radialSurfaceSampling(field = null) {
+function radialSurfaceSampling(...args) {
+  return withFieldGrid(args[0], () => radialSurfaceSamplingOnGrid(...args));
+}
+
+function radialSurfaceSamplingOnGrid(field = null) {
   const nr = Math.max(1, Number(metadata.nr) || 1);
   const rOuter = Number(metadata.r_outer);
   const requestedRatio = clamp(Number(params.radialSurfaceRadiusRo), 0.0, 1.0);
@@ -4154,7 +4236,11 @@ function applyScale(slot, rawMin, rawMax) {
   return [rawMin, rawMax];
 }
 
-function surfaceRange(field, radiusIndex, slot) {
+function surfaceRange(...args) {
+  return withFieldGrid(args[0], () => surfaceRangeOnGrid(...args));
+}
+
+function surfaceRangeOnGrid(field, radiusIndex, slot) {
   const raw = rawMinMaxFromSamples(field, function* () {
     for (let it = 0; it < metadata.ntheta; it++) {
       for (let ip = 0; ip < metadata.nphi; ip++) yield [radiusIndex, it, ip];
@@ -4164,7 +4250,11 @@ function surfaceRange(field, radiusIndex, slot) {
 }
 
 
-function radialSurfaceRange(field, sampling, slot = "radial") {
+function radialSurfaceRange(...args) {
+  return withFieldGrid(args[0], () => radialSurfaceRangeOnGrid(...args));
+}
+
+function radialSurfaceRangeOnGrid(field, sampling, slot = "radial") {
   let vmin = Infinity;
   let vmax = -Infinity;
   for (let it = 0; it < metadata.ntheta; it++) {
@@ -4184,7 +4274,11 @@ function radialSurfaceRange(field, sampling, slot = "radial") {
   return applyScale(slot, vmin, vmax);
 }
 
-function cmbDisplayRange(fieldObject, radiusIndex, slot) {
+function cmbDisplayRange(...args) {
+  return withFieldGrid(args[0], () => cmbDisplayRangeOnGrid(...args));
+}
+
+function cmbDisplayRangeOnGrid(fieldObject, radiusIndex, slot) {
   let raw;
 
   if (fieldObject.kind === "cmb_surface") {
@@ -4227,7 +4321,11 @@ function equatorRange(field, slot) {
   return applyScale(slot, raw[0], raw[1]);
 }
 
-function meridianRange(field, phiDeg, slot) {
+function meridianRange(...args) {
+  return withFieldGrid(args[0], () => meridianRangeOnGrid(...args));
+}
+
+function meridianRangeOnGrid(field, phiDeg, slot) {
   const domain = fieldDisplayDomain(field);
   const phi0 = THREE.MathUtils.degToRad(phiDeg);
   const ip0 = nearestPhiIndex(phi0);
@@ -4242,7 +4340,11 @@ function meridianRange(field, phiDeg, slot) {
   return applyScale(slot, raw[0], raw[1]);
 }
 
-function meridianHalfRange(field, phiDeg, side, slot) {
+function meridianHalfRange(...args) {
+  return withFieldGrid(args[0], () => meridianHalfRangeOnGrid(...args));
+}
+
+function meridianHalfRangeOnGrid(field, phiDeg, side, slot) {
   const domain = fieldDisplayDomain(field);
   const offset = side === "left" ? Math.PI : 0.0;
   const ip = nearestPhiIndex(THREE.MathUtils.degToRad(phiDeg) + offset);
@@ -5784,7 +5886,11 @@ function colourbarCssGradient(scheme = "blue-white-red") {
   return `linear-gradient(to right, ${parts.join(", ")})`;
 }
 
-function makeSurfaceMesh(field, radiusIndex, opacity, vmin, vmax, colormap) {
+function makeSurfaceMesh(...args) {
+  return placeFieldMesh(withFieldGrid(args[0], () => makeSurfaceMeshOnGrid(...args)), args[0]);
+}
+
+function makeSurfaceMeshOnGrid(field, radiusIndex, opacity, vmin, vmax, colormap) {
   const nt = metadata.ntheta;
   const np = metadata.nphi;
   const r = radiusAtIndex(radiusIndex);
@@ -5843,7 +5949,11 @@ function makeSurfaceMesh(field, radiusIndex, opacity, vmin, vmax, colormap) {
 }
 
 
-function makeRadialSurfaceMesh(field, sampling, opacity, vmin, vmax, colormap) {
+function makeRadialSurfaceMesh(...args) {
+  return placeFieldMesh(withFieldGrid(args[0], () => makeRadialSurfaceMeshOnGrid(...args)), args[0]);
+}
+
+function makeRadialSurfaceMeshOnGrid(field, sampling, opacity, vmin, vmax, colormap) {
   const nt = metadata.ntheta;
   const np = metadata.nphi;
   const radius = sampling.radius;
@@ -5904,7 +6014,11 @@ function makeRadialSurfaceMesh(field, sampling, opacity, vmin, vmax, colormap) {
   return mesh;
 }
 
-function makeCmbSurfaceMesh(fieldObject, radiusIndex, opacity, vmin, vmax, colormap, clipOptions = null) {
+function makeCmbSurfaceMesh(...args) {
+  return placeFieldMesh(withFieldGrid(args[0], () => makeCmbSurfaceMeshOnGrid(...args)), args[0]);
+}
+
+function makeCmbSurfaceMeshOnGrid(fieldObject, radiusIndex, opacity, vmin, vmax, colormap, clipOptions = null) {
   const nt = metadata.ntheta;
   const np = metadata.nphi;
   const r = radiusAtIndex(radiusIndex);
@@ -6130,7 +6244,7 @@ async function rebuildGapFillers() {
   disposeObject(meridianFillerMesh); meridianFillerMesh = null;
   disposeObject(meridian2FillerMesh); meridian2FillerMesh = null;
 
-  if (!params.showEarthSurface || !params.showSliceGapFiller) return;
+  if (!params.showEarthSurface || !params.showSliceGapFiller || secondaryDataset) return;
 
   equatorFillerMesh = makeHorizontalGapFillerMesh(0.0, params.sliceGapFillerOpacity);
   equatorFillerMesh.visible = params.showEquator;
@@ -6150,12 +6264,20 @@ async function rebuildGapFillers() {
   datasetGroup.add(meridian2FillerMesh);
 }
 
-function horizontalSliceRange(field, z, slot) {
+function horizontalSliceRange(...args) {
+  return withFieldGrid(args[0], () => horizontalSliceRangeOnGrid(...args));
+}
+
+function horizontalSliceRangeOnGrid(field, z, slot) {
   const raw = horizontalSliceRawRange(field, z);
   return applyScale(slot, raw[0], raw[1]);
 }
 
-function makeHorizontalSliceMesh(field, z, opacity, vmin, vmax, colormap) {
+function makeHorizontalSliceMesh(...args) {
+  return placeFieldMesh(withFieldGrid(args[0], () => makeHorizontalSliceMeshOnGrid(...args)), args[0]);
+}
+
+function makeHorizontalSliceMeshOnGrid(field, z, opacity, vmin, vmax, colormap) {
   const nr = metadata.nr;
   const np = metadata.nphi;
   const domain = fieldDisplayDomain(field);
@@ -6230,7 +6352,11 @@ function makeHorizontalSliceMesh(field, z, opacity, vmin, vmax, colormap) {
   return mesh;
 }
 
-function makeMeridionalSliceMesh(field, phiDeg, opacity, vmin, vmax, colormap, side = "both") {
+function makeMeridionalSliceMesh(...args) {
+  return placeFieldMesh(withFieldGrid(args[0], () => makeMeridionalSliceMeshOnGrid(...args)), args[0]);
+}
+
+function makeMeridionalSliceMeshOnGrid(field, phiDeg, opacity, vmin, vmax, colormap, side = "both") {
   const domain = fieldDisplayDomain(field);
   const nr = Math.max(0, domain.end - domain.start + 1);
   const nt = metadata.ntheta;
@@ -6398,7 +6524,12 @@ function updateMeshColourBuffer(mesh, valueAtVertex, vmin, vmax, colormap) {
   return true;
 }
 
-function updateSurfaceMeshColours(mesh, field, radiusIndex, vmin, vmax, colormap) {
+function updateSurfaceMeshColours(...args) {
+  if (!meshMatchesFieldGrid(args[0], args[1])) return false;
+  return withFieldGrid(args[1], () => updateSurfaceMeshColoursOnGrid(...args));
+}
+
+function updateSurfaceMeshColoursOnGrid(mesh, field, radiusIndex, vmin, vmax, colormap) {
   const topology = mesh?.userData?.viewerTopology;
   if (!topology || topology.kind !== "surface" || topology.radiusIndex !== radiusIndex) return false;
   const np = metadata.nphi;
@@ -6410,7 +6541,12 @@ function updateSurfaceMeshColours(mesh, field, radiusIndex, vmin, vmax, colormap
 }
 
 
-function updateRadialSurfaceMeshColours(mesh, field, sampling, vmin, vmax, colormap) {
+function updateRadialSurfaceMeshColours(...args) {
+  if (!meshMatchesFieldGrid(args[0], args[1])) return false;
+  return withFieldGrid(args[1], () => updateRadialSurfaceMeshColoursOnGrid(...args));
+}
+
+function updateRadialSurfaceMeshColoursOnGrid(mesh, field, sampling, vmin, vmax, colormap) {
   const topology = mesh?.userData?.viewerTopology;
   if (!topology || topology.kind !== "radial-surface") return false;
   const sameSampling = topology.i0 === sampling.i0
@@ -6426,7 +6562,12 @@ function updateRadialSurfaceMeshColours(mesh, field, sampling, vmin, vmax, color
   }, vmin, vmax, colormap);
 }
 
-function updateCmbMeshColours(mesh, fieldObject, radiusIndex, vmin, vmax, colormap) {
+function updateCmbMeshColours(...args) {
+  if (!meshMatchesFieldGrid(args[0], args[1])) return false;
+  return withFieldGrid(args[1], () => updateCmbMeshColoursOnGrid(...args));
+}
+
+function updateCmbMeshColoursOnGrid(mesh, fieldObject, radiusIndex, vmin, vmax, colormap) {
   const topology = mesh?.userData?.viewerTopology;
   if (!topology || topology.kind !== "cmb" || topology.radiusIndex !== radiusIndex) return false;
   const np = metadata.nphi;
@@ -6437,7 +6578,12 @@ function updateCmbMeshColours(mesh, fieldObject, radiusIndex, vmin, vmax, colorm
   }, vmin, vmax, colormap);
 }
 
-function updateSampledMeshColours(mesh, field, expectedKind, vmin, vmax, colormap) {
+function updateSampledMeshColours(...args) {
+  if (!meshMatchesFieldGrid(args[0], args[1])) return false;
+  return withFieldGrid(args[1], () => updateSampledMeshColoursOnGrid(...args));
+}
+
+function updateSampledMeshColoursOnGrid(mesh, field, expectedKind, vmin, vmax, colormap) {
   const topology = mesh?.userData?.viewerTopology;
   if (!topology || topology.kind !== expectedKind || !topology.sampleA) return false;
   if (topology.domainKey !== JSON.stringify(fieldDisplayDomain(field))) return false;
@@ -6534,7 +6680,7 @@ async function rebuildCMB(options = {}) {
   const reuseGeometry = Boolean(options.reuseGeometry);
   const fieldObject = await loadForRender(request, () => loadCmbDisplayField(params.cmbField));
   if (!renderRequestIsCurrent(request)) return;
-  const radialIndex = metadata.nr - 1;
+  const radialIndex = fieldSourceGrid(fieldObject).meta.nr - 1;
   const [vmin, vmax] = cmbDisplayRange(fieldObject, radialIndex, "cmb");
   setColourbarForSlot("cmb", params.cmbField, vmin, vmax);
 
@@ -6557,7 +6703,7 @@ async function rebuildCMB(options = {}) {
 async function rebuildICB(options = {}) {
   if (metadata.surface_only && getVolumeFieldNames().length === 0) return;
   const request = beginRenderRequest("icb");
-  if (!metadata.has_inner_core) {
+  if (!resolveFieldSource(params.icbField).meta.has_inner_core) {
     disposeObject(icbMesh);
     icbMesh = null;
     hideColourbarForSlot("icb");
@@ -6566,7 +6712,7 @@ async function rebuildICB(options = {}) {
   const reuseGeometry = Boolean(options.reuseGeometry);
   const field = await loadForRender(request, () => loadField(params.icbField));
   if (!renderRequestIsCurrent(request)) return;
-  const radialIndex = icbRadiusIndex();
+  const radialIndex = withFieldGrid(field, () => icbRadiusIndex());
   const [vmin, vmax] = surfaceRange(field, radialIndex, "icb");
   setColourbarForSlot("icb", params.icbField, vmin, vmax);
 
@@ -6623,7 +6769,7 @@ async function rebuildRadialSurface(options = {}) {
     datasetGroup.add(radialSurfaceMesh);
   }
 
-  const rOuter = Math.max(Math.abs(Number(metadata.r_outer)) || 1.0, 1.0e-30);
+  const rOuter = Math.max(Math.abs(Number(fieldSourceGrid(field).meta.r_outer)) || 1.0, 1.0e-30);
   const actualRatio = sampling.radius / rOuter;
   const clampText = sampling.clamped ? " (clamped to data domain)" : "";
   setStatusSummary(
@@ -6661,7 +6807,7 @@ async function rebuildEquator2(options = {}) {
   const reuseGeometry = Boolean(options.reuseGeometry);
   const field = await loadForRender(request, () => loadField(params.equator2Field));
   if (!renderRequestIsCurrent(request)) return;
-  const z = params.equator2Z * metadata.r_outer;
+  const z = params.equator2Z * fieldSourceGrid(field).meta.r_outer;
   const [vmin, vmax] = horizontalSliceRange(field, z, "equator2");
   setColourbarForSlot("equator2", params.equator2Field, vmin, vmax);
 
@@ -6768,6 +6914,9 @@ async function rebuildIsosurfaces() {
     if (!renderRequestIsCurrent(request) || !params.showIsosurfaces) return;
     const positive = entry.positive ? new THREE.Mesh(entry.positive, makeIsoMaterial(params.isoPositiveColor, params.isoOpacity)) : null;
     const negative = entry.negative ? new THREE.Mesh(entry.negative, makeIsoMaterial(params.isoNegativeColor, params.isoOpacity)) : null;
+    const source = { viewerSource: sourceWithPrimary(resolveFieldSource(params.isoField)) };
+    if (positive) placeFieldMesh(positive, source);
+    if (negative) placeFieldMesh(negative, source);
     detachActiveIsosurfaces();
     isoPositiveMesh = positive;
     isoNegativeMesh = negative;
@@ -6906,7 +7055,7 @@ async function rebuildAllMeshes(options = {}) {
 
 function updateVisibility() {
   if (cmbMesh) cmbMesh.visible = params.showCMB;
-  if (icbMesh) icbMesh.visible = params.showICB && Boolean(metadata.has_inner_core);
+  if (icbMesh) icbMesh.visible = params.showICB && Boolean(resolveFieldSource(params.icbField).meta.has_inner_core);
   if (radialSurfaceMesh) radialSurfaceMesh.visible = params.showRadialSurface;
   if (equatorMesh) equatorMesh.visible = params.showEquator;
   if (equator2Mesh) equator2Mesh.visible = params.showEquator2;
@@ -6915,14 +7064,14 @@ function updateVisibility() {
   if (isoPositiveMesh) isoPositiveMesh.visible = params.showIsosurfaces && params.showIsoPositive;
   if (isoNegativeMesh) isoNegativeMesh.visible = params.showIsosurfaces && params.showIsoNegative;
   refreshIsosurfaceLegend();
-  const fillerActive = params.showEarthSurface && params.showSliceGapFiller;
+  const fillerActive = params.showEarthSurface && params.showSliceGapFiller && !secondaryDataset;
   if (equatorFillerMesh) equatorFillerMesh.visible = fillerActive && params.showEquator;
   if (equator2FillerMesh) equator2FillerMesh.visible = fillerActive && params.showEquator2;
   if (meridianFillerMesh) meridianFillerMesh.visible = fillerActive && params.showMeridian;
   if (meridian2FillerMesh) meridian2FillerMesh.visible = fillerActive && params.showMeridian2;
 
   if (colourbars.cmb?.row) colourbars.cmb.row.style.display = params.showCMB && cmbMesh ? "block" : "none";
-  if (colourbars.icb?.row) colourbars.icb.row.style.display = params.showICB && metadata.has_inner_core && icbMesh ? "block" : "none";
+  if (colourbars.icb?.row) colourbars.icb.row.style.display = params.showICB && resolveFieldSource(params.icbField).meta.has_inner_core && icbMesh ? "block" : "none";
   if (colourbars.radial?.row) colourbars.radial.row.style.display = params.showRadialSurface && radialSurfaceMesh ? "block" : "none";
   if (colourbars.earth?.row) {
     colourbars.earth.row.style.display = params.showEarthSurface
@@ -7516,6 +7665,8 @@ const VIEW_STATE_SCALE_KEYS = new Set([
 const VIEW_STATE_NUMBER_LIMITS = {
   earthRadiusScale: [1, Infinity], isoResolution: [8, 96], lineStride: [1, 1000],
   cameraDistance: [1e-12, Infinity], cameraFovDeg: [1, 179],
+  primaryNativeRadius: [0, Infinity], secondaryNativeRadius: [0, Infinity],
+  primaryPhysicalRadius: [1e-30, Infinity], secondaryPhysicalRadius: [1e-30, Infinity],
   radialSurfaceRadiusRo: [0, 1],
   lineTubeDiameter: [0.00001, 0.25], lineTubeReference: [0, 1e100],
   lineTubeMinDiameter: [0, 0.25], lineTubeMaxDiameter: [0.00001, 0.25], lineTubeSides: [3, 16],
@@ -8209,6 +8360,24 @@ function buildGui() {
   datasetFolder.add(params, "clearSecondaryDataset").name("Clear secondary");
   if (secondaryDataset) {
     datasetFolder.add({ loaded: `${secondaryDataset.label}: ${secondaryDataset.basePath}` }, "loaded").name("Loaded secondary");
+  }
+
+  const placementFolder = datasetFolder.addFolder("Dataset radii");
+  const refreshPlacement = debouncedViewerTask("Dataset radii", refreshDatasetPlacement);
+  placementFolder.add(params, "placementUnit").name("Common unit (label)").onFinishChange(refreshPlacement);
+  for (const [role, label] of [["primary", "Primary"], ["secondary", "Secondary"]]) {
+    placementFolder.add(params, `${role}NativeRadius`, 0).name(`${label} native reference`).onFinishChange(refreshPlacement)
+      .domElement.title = "0 uses metadata.r_outer. For cell-centred data, enter the native physical outer wall radius if known.";
+    placementFolder.add(params, `${role}PhysicalRadius`, 1e-30).name(`${label} physical reference`).onFinishChange(refreshPlacement)
+      .domElement.title = "Physical radius corresponding to the native reference, in the common unit. Use equal values for the same outer boundary.";
+  }
+  try {
+    const summary = placementSummary(metadata, secondaryDataset?.metadata, params);
+    placementFolder.add(summary, "primary").name("Primary sampled radii").disable().domElement.title = summary.primary;
+    placementFolder.add(summary, "secondary").name("Secondary sampled radii").disable().domElement.title = summary.secondary;
+    if (secondaryDataset) placementFolder.add(summary, "interface").name("Boundary check").disable().domElement.title = summary.interface;
+  } catch (error) {
+    placementFolder.add({ error: error.message }, "error").name("Radius error").disable();
   }
 
   const sequenceFolder = gui.addFolder("Sequence playback");

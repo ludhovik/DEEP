@@ -62,7 +62,7 @@ export class LongitudeAverageCache {
 export function longitudeDisplayField(field, mean, mode, nphi) {
   if (mode === "slice") return field;
   if (!["mean", "fluctuation"].includes(mode)) throw new Error(`Unknown meridian mode: ${mode}`);
-  return { source: field, mean, mode, nphi, viewerDomain: field.viewerDomain };
+  return { source: field, mean, mode, nphi, viewerDomain: field.viewerDomain, viewerSource: field.viewerSource };
 }
 
 export function volumeDisplayValue(field, index) {
