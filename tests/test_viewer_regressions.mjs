@@ -2345,7 +2345,7 @@ function repositoryViewLoader(provider, recordId = "33455986") {
   const state = { revision: 1, hasView: true };
   const root = `${provider}:${recordId}`;
   const apiUrl = provider === "figshare"
-    ? `https://deep-figshare-proxy.ludhovik-research.workers.dev/figshare/articles/${recordId}`
+    ? `https://api.figshare.com/v2/articles/${recordId}`
     : `https://zenodo.org/api/records/${recordId}`;
   ctx.remoteRepositoryIndexCache = new Map();
   ctx.fetchWithTimeout = async (url, options, timeout) => {
@@ -2368,6 +2368,82 @@ function repositoryViewLoader(provider, recordId = "33455986") {
   }
   return { ctx, calls, state, root, apiUrl };
 }
+
+test("Figshare reads the direct API and files without contacting the proxy", async () => {
+  const { ctx, calls, root, apiUrl } = repositoryViewLoader("figshare");
+  const response = await ctx.fetchDatasetResource(`${root}/metadata.json`);
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls.map(call => call.url), [apiUrl, "https://files.example/metadata"]);
+  assert.equal(calls[0].cache, "no-store");
+  assert.equal(calls[0].timeout, 15000);
+});
+
+test("Figshare falls back on API failure and preserves nested folder paths", async () => {
+  for (const failure of ["network", "http", "json", "schema", "timeout"]) {
+    const { ctx, apiUrl } = repositoryViewLoader("figshare");
+    const calls = [], released = [];
+    ctx.releaseDatasetResponse = response => released.push(response.status);
+    ctx.fetchWithTimeout = async (url, options) => {
+      calls.push(url);
+      assert.equal(options.cache, "no-store");
+      if (url === apiUrl) {
+        if (failure === "network") throw new TypeError("Failed to fetch");
+        if (failure === "timeout") throw new DOMException("Direct request timed out", "TimeoutError");
+        if (failure === "http") return new Response("Forbidden", { status: 403 });
+        if (failure === "json") return new Response("<html>Not JSON</html>");
+        return Response.json({ error: "Unexpected response" });
+      }
+      assert.equal(url, "https://deep-figshare-proxy.ludhovik-research.workers.dev/figshare/articles/33455986");
+      return Response.json({
+        files: [{ id: 1, name: "metadata.json", download_url: "https://files.example/meta" }],
+        folder_structure: { 1: "uploads/mantle" },
+      });
+    };
+    const index = await ctx.buildFigshareIndex("33455986");
+    assert.equal(index.get("metadata.json"), "https://files.example/meta");
+    assert.equal(index.get("uploads/mantle/metadata.json"), "https://files.example/meta");
+    assert.equal(calls.length, 2);
+    if (failure === "http") assert.deepEqual(released, [403]);
+  }
+});
+
+test("Figshare reports both failed routes and allows a subsequent direct retry", async () => {
+  const { ctx, root, apiUrl } = repositoryViewLoader("figshare");
+  const originalFetch = ctx.fetchWithTimeout;
+  ctx.fetchWithTimeout = async url => {
+    if (url === apiUrl) return new Response("Unavailable", { status: 503 });
+    throw new TypeError("Proxy blocked by network");
+  };
+  const response = await ctx.fetchRemoteRepositoryResource(`${root}/metadata.json`);
+  assert.equal(response.status, 502);
+  const message = await response.text();
+  assert.match(message, /Direct API .*api\.figshare\.com.*HTTP 503/);
+  assert.match(message, /Proxy fallback .*workers\.dev.*Proxy blocked by network/);
+  assert.equal(ctx.remoteRepositoryIndexCache.has(root), false);
+  ctx.fetchWithTimeout = originalFetch;
+  assert.equal((await ctx.fetchRemoteRepositoryResource(`${root}/metadata.json`)).status, 200);
+});
+
+test("Figshare cancellation does not start the proxy fallback", async () => {
+  for (const stage of ["fetch", "body", "external"]) {
+    const { ctx } = repositoryViewLoader("figshare");
+    const controller = new AbortController();
+    let calls = 0;
+    ctx.fetchWithTimeout = async () => {
+      calls++;
+      if (stage === "external") {
+        controller.abort(new Error("Dataset changed"));
+        throw controller.signal.reason;
+      }
+      if (stage === "fetch") throw new DOMException("Cancelled", "AbortError");
+      return Response.json({ files: [] });
+    };
+    ctx.readDatasetResponse = async () => { throw new DOMException("Cancelled", "AbortError"); };
+    await assert.rejects(ctx.buildFigshareIndex("33455986", { signal: controller.signal }),
+      stage === "external" ? /Dataset changed/ : { name: "AbortError" });
+    assert.equal(calls, 1);
+  }
+});
 
 test("repository datasets load at the root or inside folders without losing full paths", async () => {
   for (const provider of ["figshare", "zenodo"]) {

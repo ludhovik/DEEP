@@ -2161,15 +2161,39 @@ async function fetchWithTimeout(resource, options = {}, timeoutMs = DATASET_FETC
 }
 
 async function buildFigshareIndex(articleId, options = {}) {
-  const response = await fetchWithTimeout(
+  // Like Zenodo, try the public API from the browser first. Some networks
+  // block workers.dev even when Figshare itself is reachable. Keep the
+  // existing metadata-only proxy as a fallback for CORS/network failures.
+  const urls = [
+    `https://api.figshare.com/v2/articles/${articleId}`,
     `https://deep-figshare-proxy.ludhovik-research.workers.dev/figshare/articles/${articleId}`,
-    { signal: options.signal, cache: options.cache ?? "no-store" }, options.timeoutMs
-  );
-  if (!response.ok) {
-    releaseDatasetResponse(response);
-    throw new Error(`Figshare record ${articleId} returned HTTP ${response.status}.`);
+  ];
+  let record;
+  const failures = [];
+  for (const [attempt, url] of urls.entries()) {
+    try {
+      const response = await fetchWithTimeout(url, {
+        signal: options.signal, cache: options.cache ?? "no-store",
+      }, attempt === 0 ? Math.min(options.timeoutMs ?? 15000, 15000) : options.timeoutMs);
+      if (!response.ok) {
+        releaseDatasetResponse(response);
+        throw new Error(`HTTP ${response.status}`);
+      }
+      record = await readDatasetResponse(response, "json");
+      if (!Array.isArray(record?.files)) throw new Error("Record response has no file list.");
+      break;
+    } catch (error) {
+      // Cancellation must not start another request, including cancellation
+      // from the progress panel while reading the response body.
+      if (options.signal?.aborted || error?.name === "AbortError") throw error;
+      failures.push(`${attempt === 0 ? "Direct API" : "Proxy fallback"} (${url}): ${error?.message || error}`);
+      if (attempt === urls.length - 1) {
+        const combined = new Error(`Figshare record ${articleId} could not be read. ${failures.join("; ")}`);
+        if (error?.name === "TimeoutError") combined.name = "TimeoutError";
+        throw combined;
+      }
+    }
   }
-  const record = await readDatasetResponse(response, "json");
   const folders = record.folder_structure || {};
   const entries = (record.files || []).map((file) => {
     const folder = normaliseRepositoryPath(folders[String(file.id)] || folders[file.id] || "");

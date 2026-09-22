@@ -151,9 +151,19 @@ If a record contains several independent datasets, specify the desired folder
 using `figshare:ARTICLE_ID/folder/path`. Reopening a record refreshes its file
 index and JSON manifests so changes to the published folder layout are picked up.
 
-Figshare metadata is read through the small Cloudflare Worker in
-`cloudflare/figshare-proxy.js`; the actual data files are downloaded from
-Figshare. The proxy accepts read-only `GET` and CORS preflight requests,
+Figshare metadata is read directly from `https://api.figshare.com/v2/articles/ARTICLE_ID`,
+just as Zenodo metadata is read from its public API. A successful direct lookup
+does not contact Cloudflare. If that request fails (for example because of CORS,
+a network error or an unavailable API response), the viewer tries the small
+Cloudflare Worker in `cloudflare/figshare-proxy.js`. The direct metadata attempt
+waits at most 15 seconds, or the shorter timeout of the requesting operation.
+Cancelling a load does not start a fallback request. If both routes fail, the
+loading error identifies both URLs and failures. Actual data files are always
+downloaded directly from Figshare and must allow browser CORS access.
+
+This lets networks that block `workers.dev` load records whenever the direct
+Figshare API is accessible. Root and nested-folder handling is the same on both
+routes. The fallback proxy accepts read-only `GET` and CORS preflight requests,
 does not use a Figshare token, and restricts upstream requests to the Figshare
 article API. Record responses bypass browser and Cloudflare caches so published
 file replacements can be discovered. See [proxy deployment](GITHUB_PAGES.md#figshare-proxy)

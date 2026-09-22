@@ -72,8 +72,16 @@ The same CORS requirement applies.
 
 ## Figshare proxy
 
-The Figshare record lookup uses the separate Cloudflare Worker in
-`cloudflare/figshare-proxy.js`. A GitHub Pages deployment updates the viewer;
+The Figshare record lookup first calls the public Figshare API directly, like
+Zenodo. It only uses the separate Cloudflare Worker in
+`cloudflare/figshare-proxy.js` if the direct metadata request fails. A successful
+direct request requires no Worker access or deployment, which helps on networks
+that block `workers.dev`. Data files continue to download directly from Figshare.
+The direct attempt has a 15-second timeout (or the caller's shorter timeout);
+cancellation stops loading without a fallback. Errors report both routes if
+neither succeeds.
+
+A GitHub Pages deployment updates this direct-first viewer behaviour;
 deploy Worker changes separately from the repository root:
 
 ```bash
