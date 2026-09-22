@@ -77,8 +77,10 @@ Zenodo. It only uses the separate Cloudflare Worker in
 `cloudflare/figshare-proxy.js` if the direct metadata request fails. A successful
 direct request requires no Worker access or deployment, which helps on networks
 that block `workers.dev`. Data files continue to download directly from Figshare.
-The direct attempt has a 15-second timeout (or the caller's shorter timeout);
-cancellation stops loading without a fallback. Errors report both routes if
+Transient network failures, timeouts, HTTP 408 and HTTP 5xx responses receive
+one direct retry after 0.5 seconds before the proxy is tried. Each direct attempt
+has a 15-second timeout (or the caller's shorter timeout); cancellation, including
+during the retry delay, stops loading without a fallback. Errors report both routes if
 neither succeeds.
 
 A GitHub Pages deployment updates this direct-first viewer behaviour;

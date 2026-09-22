@@ -2378,6 +2378,51 @@ test("Figshare reads the direct API and files without contacting the proxy", asy
   assert.equal(calls[0].timeout, 15000);
 });
 
+test("Figshare retries a transient direct failure once without using the proxy", async () => {
+  for (const failure of ["network", "body", "timeout", "http"]) {
+    const { ctx, root, apiUrl } = repositoryViewLoader("figshare", "33438247");
+    const fetch = ctx.fetchWithTimeout, calls = [], delays = [];
+    ctx.window.setTimeout = (callback, delay) => {
+      delays.push(delay);
+      return setTimeout(callback, 0);
+    };
+    ctx.fetchWithTimeout = async (url, options, timeout) => {
+      calls.push(url);
+      if (calls.length === 1) {
+        if (failure === "network") throw new Error(`Network request failed for ${url}: NetworkError`);
+        if (failure === "timeout") throw new DOMException("Timed out", "TimeoutError");
+        if (failure === "http") return new Response("Unavailable", { status: 503 });
+        return { ok: true, json: async () => { throw new TypeError("Body stream failed"); } };
+      }
+      return fetch(url, options, timeout);
+    };
+    const results = await Promise.all([
+      ctx.fetchRemoteRepositoryResource(`${root}/metadata.json`),
+      ctx.fetchRemoteRepositoryResource(`${root}/metadata.json`),
+    ]);
+    assert.ok(results.every(response => response.status === 200));
+    assert.deepEqual(calls, [apiUrl, apiUrl, "https://files.example/metadata", "https://files.example/metadata"]);
+    assert.deepEqual(delays, [500], "Concurrent file reads share one delayed retry");
+  }
+});
+
+test("Figshare cancels during the retry delay without another network request", async () => {
+  const { ctx } = repositoryViewLoader("figshare");
+  const controller = new AbortController();
+  let calls = 0, cleared = false;
+  ctx.fetchWithTimeout = async () => { calls++; throw new TypeError("Failed to fetch"); };
+  ctx.window.setTimeout = (callback, delay) => {
+    assert.equal(delay, 500);
+    const timer = setTimeout(callback, delay);
+    queueMicrotask(() => controller.abort());
+    return timer;
+  };
+  ctx.window.clearTimeout = timer => { cleared = true; clearTimeout(timer); };
+  await assert.rejects(ctx.buildFigshareIndex("33438247", { signal: controller.signal }), { name: "AbortError" });
+  assert.equal(calls, 1);
+  assert.equal(cleared, true);
+});
+
 test("Figshare falls back on API failure and preserves nested folder paths", async () => {
   for (const failure of ["network", "http", "json", "schema", "timeout"]) {
     const { ctx, apiUrl } = repositoryViewLoader("figshare");
@@ -2402,7 +2447,7 @@ test("Figshare falls back on API failure and preserves nested folder paths", asy
     const index = await ctx.buildFigshareIndex("33455986");
     assert.equal(index.get("metadata.json"), "https://files.example/meta");
     assert.equal(index.get("uploads/mantle/metadata.json"), "https://files.example/meta");
-    assert.equal(calls.length, 2);
+    assert.equal(calls.length, ["network", "timeout"].includes(failure) ? 3 : 2);
     if (failure === "http") assert.deepEqual(released, [403]);
   }
 });

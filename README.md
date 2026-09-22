@@ -155,7 +155,10 @@ Figshare metadata is read directly from `https://api.figshare.com/v2/articles/AR
 just as Zenodo metadata is read from its public API. A successful direct lookup
 does not contact Cloudflare. If that request fails (for example because of CORS,
 a network error or an unavailable API response), the viewer tries the small
-Cloudflare Worker in `cloudflare/figshare-proxy.js`. The direct metadata attempt
+Cloudflare Worker in `cloudflare/figshare-proxy.js`. A transient network failure,
+timeout, HTTP 408 or server error (HTTP 5xx) triggers one automatic direct retry
+after 0.5 seconds, before trying the proxy. Other HTTP errors and malformed
+record responses go straight to the fallback. Each direct metadata attempt
 waits at most 15 seconds, or the shorter timeout of the requesting operation.
 Cancelling a load does not start a fallback request. If both routes fail, the
 loading error identifies both URLs and failures. Actual data files are always

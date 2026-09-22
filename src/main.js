@@ -2166,18 +2166,40 @@ async function buildFigshareIndex(articleId, options = {}) {
   // existing metadata-only proxy as a fallback for CORS/network failures.
   const urls = [
     `https://api.figshare.com/v2/articles/${articleId}`,
+    `https://api.figshare.com/v2/articles/${articleId}`,
     `https://deep-figshare-proxy.ludhovik-research.workers.dev/figshare/articles/${articleId}`,
   ];
   let record;
+  let retryDirect = false;
   const failures = [];
   for (const [attempt, url] of urls.entries()) {
+    if (attempt === 1 && !retryDirect) continue;
     try {
+      if (attempt === 1) {
+        // A second user-initiated load can succeed after a transient failure.
+        // Retry once here instead, before depending on a blocked proxy host.
+        await new Promise((resolve, reject) => {
+          const signal = options.signal;
+          if (signal?.aborted) { reject(signal.reason); return; }
+          const abort = () => {
+            window.clearTimeout(timer);
+            reject(signal.reason);
+          };
+          const timer = window.setTimeout(() => {
+            signal?.removeEventListener("abort", abort);
+            resolve();
+          }, 500);
+          signal?.addEventListener("abort", abort, { once: true });
+        });
+      }
       const response = await fetchWithTimeout(url, {
         signal: options.signal, cache: options.cache ?? "no-store",
-      }, attempt === 0 ? Math.min(options.timeoutMs ?? 15000, 15000) : options.timeoutMs);
+      }, attempt < 2 ? Math.min(options.timeoutMs ?? 15000, 15000) : options.timeoutMs);
       if (!response.ok) {
         releaseDatasetResponse(response);
-        throw new Error(`HTTP ${response.status}`);
+        throw Object.assign(new Error(`HTTP ${response.status}`), {
+          retryable: response.status === 408 || response.status >= 500,
+        });
       }
       record = await readDatasetResponse(response, "json");
       if (!Array.isArray(record?.files)) throw new Error("Record response has no file list.");
@@ -2186,7 +2208,11 @@ async function buildFigshareIndex(articleId, options = {}) {
       // Cancellation must not start another request, including cancellation
       // from the progress panel while reading the response body.
       if (options.signal?.aborted || error?.name === "AbortError") throw error;
-      failures.push(`${attempt === 0 ? "Direct API" : "Proxy fallback"} (${url}): ${error?.message || error}`);
+      retryDirect = error?.retryable === true
+        || ["TypeError", "NetworkError", "TimeoutError"].includes(error?.name)
+        || String(error?.message || "").startsWith("Network request failed for ");
+      const label = ["Direct API", "Direct API retry", "Proxy fallback"][attempt];
+      failures.push(`${label} (${url}): ${error?.message || error}`);
       if (attempt === urls.length - 1) {
         const combined = new Error(`Figshare record ${articleId} could not be read. ${failures.join("; ")}`);
         if (error?.name === "TimeoutError") combined.name = "TimeoutError";
