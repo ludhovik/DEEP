@@ -48,6 +48,59 @@ two-endpoint custom colour map. The title, legend, and quick-export boxes can
 each be hidden, collapsed, placed at a preset location, dragged, or resized in
 the viewport.
 
+## Local view commands
+
+Open **View commands** at the bottom of the viewer after loading a dataset.
+Type a command and press **Enter** or **Apply**; **Shift+Enter** inserts a line
+break. **Examples** provides editable commands. This is a local JavaScript
+interpreter with a defined vocabulary, not an online AI service: it requires
+no account, API key, worker or paid hosting and works on GitHub Pages. Commands
+are not sent anywhere; remote dataset files still use the usual loading path.
+
+Examples:
+
+```text
+Show meridional ur, equatorial Br, CMB Br, and open one northern octant
+Show meridional 2 temperature from dataset 2
+Change the meridional field to Tanomaly
+Show Br at radius 0.7
+Open northern octant between 0 and 90 degrees
+Set all colour scales to minmax
+Hide field lines and show time
+Close sphere
+Undo
+```
+
+Supported displays are meridional and equatorial cuts 1/2, CMB, ICB and radial
+surfaces. Use the exact field name from the controls or aliases such as
+`temperature`, `radial velocity` and `radial magnetic field`. An unqualified
+field uses dataset 1 when available; append `from dataset 2` to select the
+second dataset explicitly. Setting a meridional field links both halves;
+independent halves remain available through the normal controls. Visibility
+commands also support `axes`, `time` and `field lines`. Colour-scale commands
+support `minmax` and `symmetric` (the latter applies to surfaces and cuts).
+Radius is expressed as `r/ro` using the same reference as the radial-surface
+control, not kilometres; the selected field must cover that radius.
+
+An octant opening hides one northern or southern sector of the clipped outer
+surface, spanning 90° longitude and one hemisphere. Without a longitude, the
+command chooses the camera-facing longitude quadrant. Explicit longitude
+intervals run in the increasing-longitude direction and must span 90°.
+The meridional planes are aligned with the opening edges; at least one is
+shown. This changes surface clipping, not the volume data or the field lines.
+Feedback reports the chosen interval and all requested settings. **Close
+sphere** disables surface clipping without hiding cuts.
+
+Unknown instructions or unavailable fields reject the entire command before
+changing the view. Commands refresh cuts and colourbars through the saved-view
+loading path; a failed update attempts to restore the previous view. **Undo**
+restores the previous view (up to 20 commands) and pauses sequence playback.
+Undo history resets after changing a dataset/frame or the secondary dataset
+label. Manual control edits made since a command are also replaced by Undo.
+The command box is not part of PNG/PDF/video exports. General conversation,
+arbitrary camera instructions, calculator definitions and sequence navigation
+are not supported by this initial grammar; use the existing controls for these.
+
 ## Quick start
 
 ### Use the hosted viewer

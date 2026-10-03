@@ -1,4 +1,6 @@
 import "./style.css";
+import { parseViewerCommand, createCommandHistory } from "./viewer-commands.js";
+import { createCommandBox } from "./command-box.js";
 import { datasetPlacement, placementSummary } from "./dataset-placement.js";
 import "./mobile-layout.css";
 import { createMobileLayout } from "./mobile-layout.js";
@@ -7960,6 +7962,60 @@ async function applyViewState(snapshot) {
   );
 }
 
+// Commands share the view-code rebuild path, including linked halves and legends.
+function bindViewerCommands() {
+  let identityKey = null, identityValue = null;
+  const identity = () => {
+    const key = [metadata, secondaryDataset, dataBasePath, params.secondaryDatasetLabel];
+    if (!identityKey || key.some((value, i) => value !== identityKey[i])) {
+      identityKey = key; identityValue = {};
+    }
+    return identityValue;
+  };
+  const history = createCommandHistory({
+    identity, capture: collectViewState, apply: applyViewState,
+    ready: () => {
+      if (!metadata) throw new Error("Load a dataset before changing the view.");
+      if (datasetLoadInProgress || sequenceFrameLoading || videoState.active || sequencePngExportActive) {
+        throw new Error("Wait for loading or export to finish before applying a command.");
+      }
+    },
+  });
+  createCommandBox({ execute: async text => {
+    const entries = names => names.map(value => ({ value,
+      name: isSecondaryFieldName(value) ? rawSecondaryFieldName(value) : value,
+      dataset: isSecondaryFieldName(value) ? 2 : 1,
+    }));
+    syncCameraParamsFromCamera(false);
+    const volumes = metadata ? entries(getVolumeFieldNames()) : [];
+    const meridians = metadata ? entries(Object.values(getMeridianFieldOptions())) : [];
+    const command = parseViewerCommand(text, { params, cameraAzimuth: params.cameraAzimuthDeg,
+      fields: { meridian: meridians, meridian2: meridians,
+        equator: volumes, equator2: volumes, radial: volumes, icb: volumes,
+        cmb: metadata ? entries(getCmbFieldNames()) : [],
+      },
+    });
+    if (command.action === "help") return { help: true };
+    if (command.patch?.showICB && !resolveFieldSource(command.patch.icbField || params.icbField).meta.has_inner_core) {
+      throw new Error("This field's dataset has no inner-core boundary to display.");
+    }
+    if (command.patch?.showFieldLines && !getAvailableFieldLineModes().length) {
+      throw new Error("This dataset has no magnetic field lines.");
+    }
+    const previousControlsEnabled = controls.enabled;
+    controls.enabled = false;
+    document.body.classList.add("command-applying");
+    try {
+      await history.run(command);
+      setStatus(command.action === "undo" ? "Previous view restored." : "View command applied.");
+      return { message: command.action === "undo" ? "Previous view restored." : command.descriptions.join("\n") };
+    } finally {
+      document.body.classList.remove("command-applying");
+      if (!datasetLoadInProgress && !videoState.active && !sequencePngExportActive) controls.enabled = previousControlsEnabled;
+    }
+  } });
+}
+
 async function copyViewStateCode() {
   const code = encodeViewState(collectViewState());
   try {
@@ -10320,6 +10376,7 @@ async function stepSequenceFrameByKeyboard(delta) {
 }
 
 function handleViewerKeyboardShortcut(event) {
+  if (document.body.classList.contains("command-applying")) return;
   if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
   if (keyboardShortcutTargetIsEditable(event.target)) return;
 
@@ -10379,6 +10436,7 @@ function animate(now = performance.now()) {
 async function init() {
   syncCameraParamsFromCamera(false);
   bindExportPanelButtons();
+  bindViewerCommands();
   bindDatasetLauncher();
   bindPanelLayoutControls();
   updateLighting();

@@ -580,3 +580,33 @@ canvas {
   opacity: .45;
 }
 .overlay-floater:hover .overlay-floater-resize, .overlay-floater:focus-visible .overlay-floater-resize { opacity: 1; }
+
+/* Local commands stay outside the rendered/exported scientific view. */
+#viewer-command-box {
+  position: fixed; z-index: 48; bottom: 12px; left: 50%; transform: translateX(-50%);
+  width: min(460px, calc(100vw - 24px)); box-sizing: border-box;
+  max-height: min(70vh, 600px); overflow: auto;
+  border: 1px solid #63788c; border-radius: 10px;
+  background: #101b29; color: #edf3fa; font: 13px/1.5 system-ui, sans-serif;
+  box-shadow: 0 5px 25px #0008;
+}
+#viewer-command-box summary { cursor: pointer; padding: 9px 14px; font-weight: 650; }
+#viewer-command-box summary span { float: right; color: #b3c9dc; font-size: 11px; }
+#viewer-command-box form, #viewer-command-box .command-feedback, #viewer-command-box .command-examples { padding: 0 14px 12px; }
+#viewer-command-box label { display: block; margin-bottom: 5px; }
+#viewer-command-box textarea { box-sizing: border-box; width: 100%; resize: vertical; min-height: 72px; max-height: 180px; background: #07111c; color: #fff; border: 1px solid #718398; border-radius: 5px; padding: 8px; font: inherit; }
+#viewer-command-box button { cursor: pointer; border: 1px solid #718398; border-radius: 5px; background: #233950; color: #fff; padding: 7px 12px; font: inherit; }
+#viewer-command-box button:disabled { opacity: .5; cursor: wait; }
+#viewer-command-box .command-actions { display: flex; gap: 8px; margin-top: 8px; }
+#viewer-command-box .command-feedback { white-space: pre-line; overflow-wrap: anywhere; }
+#viewer-command-box .error { color: #ffb9b9; }
+#viewer-command-box .command-examples button { display: block; text-align: left; width: 100%; margin-bottom: 6px; }
+#viewer-command-box :focus-visible { outline: 2px solid #9ad7ff; outline-offset: 2px; }
+body.command-applying .lil-gui { pointer-events: none; }
+@media (max-width: 600px) { #viewer-command-box { bottom: max(8px, env(safe-area-inset-bottom)); } }
+.mobile-layout #viewer-command-box {
+  bottom: calc(66px + env(safe-area-inset-bottom) + var(--mobile-keyboard-inset, 0px));
+  max-height: min(65dvh, calc(var(--mobile-viewport-height, 100dvh) - 130px));
+}
+.mobile-layout #viewer-command-box textarea { font-size: 16px; }
+.mobile-layout #viewer-command-box button { min-height: 44px; }
