@@ -610,3 +610,23 @@ body.command-applying .lil-gui { pointer-events: none; }
 }
 .mobile-layout #viewer-command-box textarea { font-size: 16px; }
 .mobile-layout #viewer-command-box button { min-height: 44px; }
+
+
+.dataset-radius-help { margin: 5px 6px 8px; font: 12px/1.5 system-ui, sans-serif; }
+.dataset-radius-help summary { display: flex; align-items: center; gap: 7px; padding: 4px 0; cursor: pointer; color: #bce0ff; list-style: none; }
+.dataset-radius-help summary::-webkit-details-marker { display: none; }
+.radius-help-icon { display: inline-grid; place-items: center; width: 20px; height: 20px; flex: 0 0 20px; border: 1px solid #91b9dd; border-radius: 50%; font-weight: 700; }
+.dataset-radius-help summary:focus-visible { outline: 2px solid #9ad7ff; outline-offset: 2px; }
+.radius-help-content { margin-top: 6px; padding: 9px; background: #15212e; border: 1px solid #63788c; border-radius: 6px; color: #edf3fa; overflow-wrap: anywhere; }
+.radius-help-content p { margin: 0 0 10px; }
+.radius-help-content p:last-child { margin-bottom: 0; }
+.radius-help-content table { width: 100%; border-collapse: collapse; margin: 0 0 10px; font: inherit; }
+.radius-help-content th, .radius-help-content td { padding: 4px; border-bottom: 1px solid #536476; text-align: left; }
+.radius-help-content th[scope="row"] { font-weight: 400; }
+.radius-help-content code { color: #c3e2ff; font-size: 11px; }
+.mobile-layout .dataset-radius-help summary { min-height: 44px; }
+
+.radius-help-content { max-height: min(420px, 55vh); overflow-y: auto; user-select: text; }
+.radius-help-content th[scope="col"]:last-child, .radius-help-content td { white-space: nowrap; min-width: 45px; }
+/* Expanded help must not inherit a stale height from a folder animation. */
+.lil-gui:not(.lil-closed):not(.lil-transition):has(.dataset-radius-help) > .lil-children { height: auto !important; }

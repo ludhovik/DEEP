@@ -633,7 +633,10 @@ resampled onto the other. Secondary fields carry the selected label, such as
 
 **Dataset → Dataset radii** controls their relative size in the viewer. Editing
 a reference value updates the readouts and geometry without closing or
-recreating the panel:
+recreating the panel. Click the **? Earth core + mantle example** just below
+the folder heading for a reference table, the Mallard/StagYY CMB alternative,
+and guidance on cell-centred wall radii. The help stays open while editing
+reference values and does not change any settings:
 
 | Control | Meaning |
 | --- | --- |

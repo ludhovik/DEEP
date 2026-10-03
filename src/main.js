@@ -3971,8 +3971,37 @@ function meshMatchesFieldGrid(mesh, field) {
     && previous.scale === fieldPlacementScale(field);
 }
 
+let datasetRadiusHelpOpen = false;
+
+function addDatasetRadiusHelp(folder) {
+  const help = document.createElement("details");
+  help.className = "dataset-radius-help";
+  help.open = datasetRadiusHelpOpen;
+  help.innerHTML = `
+    <summary title="How to align an Earth core and mantle dataset"><span class="radius-help-icon" aria-hidden="true">?</span> Earth core + mantle example</summary>
+    <div class="radius-help-content">
+      <p><strong>Dataset 1 = core; dataset 2 = mantle.</strong> Set the common unit to <code>km</code>.</p>
+      <p>If both models have a native outer <em>wall</em> radius of <code>1</code>, use:</p>
+      <table><thead><tr><th scope="col">Control</th><th scope="col">Value</th></tr></thead><tbody>
+        <tr><th scope="row">Primary native reference</th><td>1</td></tr>
+        <tr><th scope="row">Primary physical reference</th><td>3480</td></tr>
+        <tr><th scope="row">Secondary native reference</th><td>1</td></tr>
+        <tr><th scope="row">Secondary physical reference</th><td>6371</td></tr>
+      </tbody></table>
+      <p>The core outer wall is the <strong>CMB</strong> (3480 km); the mantle outer wall is the <strong>planetary surface</strong> (6371 km).</p>
+      <p>For other normalizations, replace each <code>1</code> with that model’s native outer wall radius. <code>0</code> uses <code>metadata.r_outer</code>; use it only when the outermost sample represents the wall.</p>
+      <p><strong>Alternatively, anchor the mantle at its CMB:</strong> set Secondary native reference to its native inner wall radius, and Secondary physical reference to <code>3480</code>.</p>
+      <p>For the Mallard/StagYY example with native walls near 1.2 and 2.2, that pair is <code>1.20000004768 → 3480</code>. It implies a model surface of about <code>6380 km</code>, rather than 6371 km. These native values are specific to that model.</p>
+      <p>Check <strong>sampled radii</strong> and <strong>Boundary check</strong>. Cell-centred StagYY samples stop short of the walls, so a small sampled gap can remain. Find its native wall radii in <code>metadata.json → source_grid.boundary_radii</code>.</p>
+      <p>Scaling preserves the model’s shell thickness relative to its radius: both Earth boundaries can match only if the mantle wall ratio is approximately <code>3480/6371 = 0.54623</code>. The planet image does not set dataset dimensions.</p>
+    </div>`;
+  help.addEventListener("toggle", () => { datasetRadiusHelpOpen = help.open; });
+  folder.$children.appendChild(help);
+}
+
 function addDatasetRadiusControls(datasetFolder) {
   const placementFolder = datasetFolder.addFolder("Dataset radii");
+  addDatasetRadiusHelp(placementFolder);
   const refreshPlacement = debouncedViewerTask("Dataset radii", refreshDatasetPlacement);
   placementFolder.add(params, "placementUnit").name("Common unit (label)").onFinishChange(refreshPlacement);
   for (const [role, label] of [["primary", "Primary"], ["secondary", "Secondary"]]) {

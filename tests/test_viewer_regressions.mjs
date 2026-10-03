@@ -3259,6 +3259,7 @@ test("radius edits keep the same open GUI and refresh dimensions without rebuild
   const ctx=twoGridViewer(), controllers=[], folder={closed:false,scrollTop:73};
   ctx.datasetRadiusSummary={primary:"",secondary:"",interface:""};
   ctx.datasetRadiusControllers=[];
+  ctx.addDatasetRadiusHelp=()=>{}; // DOM help is independent of radius geometry updates.
   ctx.debouncedViewerTask=(label,task)=>task;
   folder.add=(object,property)=>{
     const controller={object,property,domElement:{},updates:0,
