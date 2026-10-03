@@ -1,4 +1,4 @@
-import { parseSettingCommand, validateCommandRanges } from './command-settings.js';
+import { parseSettingCommand, validateCommandRanges, commandColor } from './command-settings.js';
 // A deliberately bounded, local grammar. No network, eval, or generated code.
 export const COMMAND_EXAMPLES = [
   'Show meridional ur, equatorial Br, CMB Br, and open one northern octant',
@@ -7,6 +7,7 @@ export const COMMAND_EXAMPLES = [
   'Set radial colourbar to blue-white-red',
   'Show Mollweide Br',
   'Show isosurface of ur at -100',
+  'Remove field lines; show isosurface of ur at +100 and -100 in blue and red',
   'Open northern octant between 0 and 90 degrees',
   'Set all colour scales to minmax',
   'Hide field lines and show time',
@@ -56,6 +57,10 @@ export function parseViewerCommand(input, { fields = {}, params = {}, cameraAzim
   text = text.replace(new RegExp(`between ${number} and ${number}`, 'g'), 'between $1 to $2');
   text = text.replace(/\bwith (?:a )?(?:sphere )?open\b/g, '; open');
   text = text.replace(new RegExp(`((?:with|range(?: to)?) ${isoNumber}) and (${isoNumber})(?=\\s|$)`, 'g'), '$1 to $2');
+  // Keep paired levels and their ordered colours together before splitting actions.
+  const isoColor = '(?:#[a-f0-9]+|[a-z][a-z0-9_-]*)';
+  text = text.replace(new RegExp(`(\\bisosurfaces? [^;,]+? at (?:value )?${isoNumber}) and (${isoNumber})(?=\\s|$)`, 'g'), '$1 isopair $2');
+  text = text.replace(new RegExp(`(\\bisosurfaces? [^;,]+? at (?:value )?${isoNumber}(?: isopair ${isoNumber})? in ${isoColor}) and ((?!(?:show|hide|remove|set|change|open|close|reset|use|display)\\b)${isoColor})(?=\\s|$|[,;])`, 'g'), '$1 isocolor $2');
   const clauses = text.split(/\s*(?:[,;]|\band\b|\bthen\b)\s*/).filter(Boolean);
   const patch = {}, descriptions = [];
   let opening = null, isoField = null;
@@ -136,23 +141,30 @@ export function parseViewerCommand(input, { fields = {}, params = {}, cameraAzim
       if (hidden && /^isosurfaces?$/.test(clause) && dataset === null) {
         patch.showIsosurfaces = false; descriptions.push('Hide isosurfaces'); continue;
       }
-      const iso = new RegExp(`^isosurfaces? (?:of |for )?(.+?) at (?:value )?(${isoNumber})$`).exec(clause);
-      if (hidden || !iso) throw new Error('Use “show isosurface of ur at -100” or “hide isosurfaces”.');
-      const value = Number(iso[2]);
-      if (!Number.isFinite(value)) throw new Error('The isosurface value must be finite.');
+      const iso = new RegExp(`^isosurfaces? (?:of |for )?(.+?) at (?:value )?(${isoNumber})(?: isopair (${isoNumber}))?(?: in (${isoColor})(?: isocolor (${isoColor}))?)?$`).exec(clause);
+      if (hidden || !iso) throw new Error('Use “show isosurface of ur at +100 and -100 in blue and red” or “hide isosurfaces”.');
+      const values = [iso[2], ...(iso[3] === undefined ? [] : [iso[3]])].map(Number);
+      if (!values.every(Number.isFinite)) throw new Error('The isosurface values must be finite.');
       if (palette || limits) throw new Error('Isosurfaces use positive/negative colours, not a colourbar. Choose these in All settings.');
+      const colors = [iso[4],iso[5]].filter(value => value !== undefined).map(restore);
+      if (colors.length > values.length) throw new Error('Specify one colour per isosurface level, in the same order.');
+      const parsedColors = colors.map(color => commandColor(color));
       const field = commandField(restore(iso[1]), fields.iso || [], dataset, 'isosurface');
       if (isoField && isoField !== field.value) throw new Error('The viewer supports one isosurface field at a time. Use the same field for both levels.');
       if (!isoField) { patch.showIsoPositive = false; patch.showIsoNegative = false; }
       isoField = field.value;
       patch.isoField = field.value; patch.showIsosurfaces = true;
-      const sign = value < 0 ? 'Negative' : 'Positive';
-      if (patch[`showIso${sign}`] && patch[`iso${sign}Value`] !== value) {
-        throw new Error('Use at most one negative and one nonnegative isosurface level per command.');
+      for (const [i,value] of values.entries()) {
+        const sign = value < 0 ? 'Negative' : 'Positive';
+        if (patch[`showIso${sign}`] && patch[`iso${sign}Value`] !== value) {
+          throw new Error('Use at most one negative and one nonnegative isosurface level per command.');
+        }
+        patch[`showIso${sign}`] = true;
+        patch[`iso${sign}Value`] = value;
+        const color = parsedColors.length === 1 ? parsedColors[0] : parsedColors[i];
+        if (color) patch[`iso${sign}Color`] = color;
+        descriptions.push(`Show isosurface: ${field.name} = ${value} (dataset ${field.dataset})${color ? ` in ${colors.length === 1 ? colors[0] : colors[i]}` : ''}`);
       }
-      patch[`showIso${sign}`] = true;
-      patch[`iso${sign}Value`] = value;
-      descriptions.push(`Show isosurface: ${field.name} = ${value} (dataset ${field.dataset})`);
       continue;
     }
     let radius = null;

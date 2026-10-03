@@ -52,7 +52,13 @@ the viewport.
 
 Open **View commands** at the bottom of the viewer after loading a dataset.
 Type a command and press **Enter** or **Apply**; **Shift+Enter** inserts a line
-break. **Examples** provides editable commands. This is a local JavaScript
+break. **Examples** provides editable commands. Autocomplete suggests commands,
+loaded field names, setting names, palettes and isosurface colours as you type.
+Use **↑/↓** to highlight, **Tab** or a click to insert; **Enter** accepts a
+highlighted suggestion, otherwise it applies the typed command. **Escape**
+dismisses suggestions. Suggestions fill text without executing it, and all
+matching runs locally. Autocomplete operates on the last action and preserves
+preceding semicolon-separated commands and paired levels/colours. This is a local JavaScript
 interpreter with a defined vocabulary, not an online AI service: it requires
 no account, API key, worker or paid hosting and works on GitHub Pages. Commands
 are not sent anywhere; remote dataset files still use the usual loading path.
@@ -68,6 +74,7 @@ Set radial colourbar to blue-white-red
 Show Mollweide Br
 Set camera azimuth to 45
 Show isosurface of ur at -100
+Remove field lines; show isosurface of ur at +100 and -100 in blue and red
 Open northern octant between 0 and 90 degrees
 Set all colour scales to minmax
 Hide field lines and show time
@@ -111,6 +118,11 @@ settings refreshes its choices after each applied command.
 Isosurface commands accept signed values, zero and scientific notation, for
 example `show isosurface of ur at -1e2`. A single level shows only that level;
 use `show isosurface ur at -100 and show isosurface ur at 100` for a pair.
+The compact form `show isosurface of ur at +100 and -100 in blue and red`
+assigns colours in the written order: +100 is blue, −100 is red. Reversing the
+level order reverses that assignment. A single colour applies to both levels;
+hex colours such as `#3366cc` are accepted. `remove field lines` is equivalent
+to `hide field lines`. These instructions can be combined with semicolons.
 Both levels must use the same field; the viewer supports at most one negative
 and one nonnegative level. Append `from dataset 2` for a secondary volume field.
 Use `hide isosurfaces` to hide them. If no triangles are found at the requested

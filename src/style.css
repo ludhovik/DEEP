@@ -641,3 +641,9 @@ body.command-applying .lil-gui { pointer-events: none; }
 #viewer-command-box .command-settings small { display: block; margin-top: 8px; }
 #viewer-command-box .command-setting-hint { margin: 6px 0; color: #b3c9dc; }
 .mobile-layout #viewer-command-box .command-settings input, .mobile-layout #viewer-command-box .command-settings select { font-size: 16px; }
+
+#viewer-command-suggestions { max-height: 160px; overflow-y: auto; background: #07111c; border: 1px solid #718398; border-radius: 5px; margin-top: 4px; }
+#viewer-command-suggestions [role="option"] { padding: 7px 9px; cursor: pointer; overflow-wrap: anywhere; }
+#viewer-command-suggestions [role="option"]:hover, #viewer-command-suggestions [aria-selected="true"] { background: #284d70; }
+#viewer-command-suggestions small { display: block; color: #b3c9dc; font-size: 11px; }
+#viewer-command-box .command-completion-hint { display: block; margin-top: 4px; color: #b3c9dc; font-size: 11px; }

@@ -3,6 +3,14 @@ export const settingName = text => String(text).toLowerCase().replace(/colou?r/g
   .replace(/meridional|meridian/g, 'meridian').replace(/equatorial/g, 'equator')
   .replace(/[^a-z0-9φ]+/g, ' ').trim().replace(/\s+/g, ' ');
 
+export function commandColor(raw, label = 'Isosurface colour') {
+  const named = {red:'#ff0000',blue:'#0000ff',white:'#ffffff',black:'#000000',green:'#008000',yellow:'#ffff00',orange:'#ffa500',purple:'#800080',grey:'#808080',gray:'#808080',cyan:'#00ffff',magenta:'#ff00ff',pink:'#ffc0cb',brown:'#a52a2a',navy:'#000080',teal:'#008080',lime:'#00ff00'};
+  let value = named[String(raw).toLowerCase()] || String(raw);
+  if (/^#[0-9a-f]{3}$/i.test(value)) value = '#' + [...value.slice(1)].map(x=>x+x).join('');
+  if (!/^#[0-9a-f]{6}$/i.test(value)) throw new Error(`${label}: unknown colour “${raw}”. Use a named colour such as blue/red or a hex colour such as #3366cc.`);
+  return value;
+}
+
 export function parseSettingCommand(clause, settings, restore = text => text) {
   const match = /^(?:set|change) (.+?) to (.+)$/.exec(clause);
   if (!match) return null;
@@ -31,12 +39,7 @@ export function parseSettingCommand(clause, settings, restore = text => text) {
     }
   } else {
     value = raw;
-    if (setting.color) {
-      const named = {red:'#ff0000',blue:'#0000ff',white:'#ffffff',black:'#000000',green:'#008000',yellow:'#ffff00',orange:'#ffa500',purple:'#800080',grey:'#808080',gray:'#808080'};
-      value = named[raw.toLowerCase()] || raw;
-      if (/^#[0-9a-f]{3}$/i.test(value)) value = '#' + [...value.slice(1)].map(x=>x+x).join('');
-      if (!/^#[0-9a-f]{6}$/i.test(value)) throw new Error(`${setting.label}: use a hex colour such as #3366cc.`);
-    }
+    if (setting.color) value = commandColor(raw, setting.label);
   }
   return { key: setting.key, value, description: `${setting.label}: ${raw}` };
 }

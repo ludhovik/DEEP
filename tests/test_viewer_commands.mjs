@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { commandSuggestions, commandCompletionStart } from '../src/command-suggestions.js';
 import { parseViewerCommand, createCommandHistory, COMMAND_EXAMPLES } from '../src/viewer-commands.js';
 const volume = ['ur', 'Br', 'T', 'C', 'Tanomaly'].map(name => ({name, value:name, dataset:1}));
 volume.push({ name:'T', value:'D2:T', dataset:2 });
@@ -161,4 +162,62 @@ test('reset restores the opening view, preserves frame outside view state, and c
     initial:()=>opening,apply:async snapshot=>{state=structuredClone(snapshot)}});
   await h.run(parse('reset view')); assert.deepEqual(state,opening);assert.equal(frame,7);
   await h.run(parse('undo'));assert.equal(state.params.equatorField,'Br');assert.equal(state.params.cameraAzimuthDeg,45);
+});
+
+
+test('paired isosurface colours follow requested level order, including remove and subsequent actions',()=>{
+  const p=parse('remove field lines; show isosurface of ur at +100 and -100 in blue and red;').patch;
+  assert.equal(p.showFieldLines,false);
+  assert.equal(p.isoPositiveValue,100);assert.equal(p.isoPositiveColor,'#0000ff');
+  assert.equal(p.isoNegativeValue,-100);assert.equal(p.isoNegativeColor,'#ff0000');
+  assert.equal(p.showIsoPositive,true);assert.equal(p.showIsoNegative,true);
+  const q=parse('show isosurface of ur at -1e2 and +1e2 in blue and red and hide CMB').patch;
+  assert.equal(q.isoNegativeColor,'#0000ff');assert.equal(q.isoPositiveColor,'#ff0000');assert.equal(q.showCMB,false);
+});
+test('isosurface colours accept a shared colour, single level, hex values and dataset 2',()=>{
+  const p=parse('show isosurfaces temperature at +.5 and -.5 in "#0af" and "#f00" from dataset 2').patch;
+  assert.equal(p.isoField,'D2:T');assert.equal(p.isoPositiveColor,'#00aaff');assert.equal(p.isoNegativeColor,'#ff0000');
+  assert.equal(parse('show isosurface ur at -.5 in blue').patch.isoNegativeColor,'#0000ff');
+  const next=parse('show isosurface ur at -.5 in blue and show time').patch;
+  assert.equal(next.isoNegativeColor,'#0000ff');assert.equal(next.showSimulationTime,true);
+  const shared=parse('show isosurface ur at -.5 and +.5 in cyan').patch;
+  assert.equal(shared.isoNegativeColor,'#00ffff');assert.equal(shared.isoPositiveColor,'#00ffff');
+  const plain=parse('show isosurface ur at +100 and -100').patch;
+  assert.equal(plain.isoPositiveValue,100);assert.equal(plain.isoNegativeValue,-100);
+});
+test('malformed paired levels or colours reject the whole command',()=>{
+  for(const text of ['remove field lines; show isosurface ur at 100 and -100 in blue and bogus',
+    'show isosurface ur at 100 in blue and red','show isosurface ur at 100 and 200 in blue and red',
+    'show isosurface ur at 100 and -100 in blue and red and green',
+    'show isosurface ur at 100 and -100 in #xyz and blue']) assert.throws(()=>parse(text),undefined,text);
+});
+
+
+const completionSettings=[...settings,
+  {key:'meridianField',label:'Meridian / Field',options:[{value:'ur'},{value:'T'},{value:'D2:T'}]},
+  {key:'isoField',label:'Isosurfaces / Field',options:[{value:'ur'},{value:'Br'}]},
+  {key:'radialColormap',label:'Radial / Colour map',options:[{value:'viridis'},{value:'blue-white-red'}]},
+];
+test('autocomplete discovers loaded fields and preserves preceding actions',()=>{
+  const s=commandSuggestions('remove field lines; show meridional D',completionSettings);
+  assert.equal(s[0].value,'remove field lines; show meridional D2:T');
+  assert.equal(commandSuggestions('show isosurface of u',completionSettings)[0].value,'show isosurface of ur at ');
+  assert.equal(commandSuggestions('show meridional nonexistent',completionSettings).length,0);
+  assert.equal(commandSuggestions('show meridional',[],3).length<=3,true);
+});
+test('autocomplete completes ordered colours, palettes and typed settings',()=>{
+  assert.equal(commandSuggestions('show isosurface ur at +100 and -100 in blue and r',completionSettings)[0].value,
+    'show isosurface ur at +100 and -100 in blue and red');
+  assert.equal(commandSuggestions('show Br at radius 0.7 using vi',completionSettings)[0].value,'show Br at radius 0.7 using viridis');
+  assert.equal(commandSuggestions('set camera azi',completionSettings)[0].value,'set "Point of view / Azimuth phi" to ');
+  assert.equal(commandSuggestions('set planet image to j',completionSettings)[0].value,'set planet image to "jupiter"');
+  assert.equal(commandSuggestions('set radial colourbar to vi',completionSettings)[0].value,'set radial colourbar to viridis');
+  assert.equal(commandSuggestions('set showAxes to o',completionSettings).length,2);
+});
+test('completion does not split quoted text or the and in paired levels',()=>{
+  assert.equal(commandCompletionStart('set "Title / Text" to "A, B and show C"'),0);
+  assert.equal(commandCompletionStart('show isosurface ur at 1 and -1 in blue and red'),0);
+  const input='hide CMB and show meridional u';
+  assert.equal(input.slice(commandCompletionStart(input)),'show meridional u');
+  assert.equal(commandSuggestions(input,completionSettings)[0].value,'hide CMB and show meridional ur');
 });
