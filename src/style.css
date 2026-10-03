@@ -630,3 +630,14 @@ body.command-applying .lil-gui { pointer-events: none; }
 .radius-help-content th[scope="col"]:last-child, .radius-help-content td { white-space: nowrap; min-width: 45px; }
 /* Expanded help must not inherit a stale height from a folder animation. */
 .lil-gui:not(.lil-closed):not(.lil-transition):has(.dataset-radius-help) > .lil-children { height: auto !important; }
+
+#viewer-command-box .command-actions { flex-wrap: wrap; }
+#viewer-command-box .command-settings { padding: 0 14px 12px; }
+#viewer-command-box .command-settings input, #viewer-command-box .command-settings select {
+  box-sizing: border-box; width: 100%; background: #07111c; color: #fff;
+  border: 1px solid #718398; border-radius: 5px; padding: 6px; font: inherit;
+}
+#viewer-command-box .command-settings label { margin: 8px 0; }
+#viewer-command-box .command-settings small { display: block; margin-top: 8px; }
+#viewer-command-box .command-setting-hint { margin: 6px 0; color: #b3c9dc; }
+.mobile-layout #viewer-command-box .command-settings input, .mobile-layout #viewer-command-box .command-settings select { font-size: 16px; }

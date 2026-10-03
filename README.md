@@ -63,22 +63,60 @@ Examples:
 Show meridional ur, equatorial Br, CMB Br, and open one northern octant
 Show meridional 2 temperature from dataset 2
 Change the meridional field to Tanomaly
-Show Br at radius 0.7
+Show Br at radius 0.7 with -1 and +1 using viridis
+Set radial colourbar to blue-white-red
+Show Mollweide Br
+Set camera azimuth to 45
+Show isosurface of ur at -100
 Open northern octant between 0 and 90 degrees
 Set all colour scales to minmax
 Hide field lines and show time
 Close sphere
+Reset view
 Undo
 ```
 
-Supported displays are meridional and equatorial cuts 1/2, CMB, ICB and radial
-surfaces. Use the exact field name from the controls or aliases such as
+Supported display shortcuts include meridional and equatorial cuts 1/2, CMB,
+ICB, radial surfaces, Mollweide maps and isosurfaces. All fields in the loaded
+datasets are discovered automatically, with surface-only fields restricted to
+compatible displays. Use the exact field name from the controls or aliases such as
 `temperature`, `radial velocity` and `radial magnetic field`. An unqualified
 field uses dataset 1 when available; append `from dataset 2` to select the
 second dataset explicitly. Setting a meridional field links both halves;
-independent halves remain available through the normal controls. Visibility
+independent halves are also accessible through **All settings**; explicitly
+setting a left-half option enables independent sides. Visibility
 commands also support `axes`, `time` and `field lines`. Colour-scale commands
 support `minmax` and `symmetric` (the latter applies to surfaces and cuts).
+`with -1 and +1` sets a manual colour range. Append `using viridis` (or another
+available palette) to select its colour map, or use `set radial colourbar to
+viridis`. `set radial range to -1 and +1` changes the range without changing its
+field. Minimum must be less than maximum. Palette choices match the viewer.
+
+**All settings** is a searchable catalogue generated from the viewer controls.
+It includes camera, clipping, individual cut halves, field lines/tubes,
+isosurface colour and opacity, planet images, lighting, legends, time/map
+floaters, radius alignment, phi-average definitions and export options. Choose
+a setting and value, then **Use command** to insert a validated command for
+**Apply**. This edits view settings; loading, playback and exporting remain
+explicit actions using their existing buttons. No arbitrary JavaScript runs.
+
+The general syntax is `set "Folder / Control name" to value`. Full names avoid
+ambiguities such as several controls called “Opacity”. For example,
+`set camera azimuth to 45`, `set planet image to Jupiter`, or
+`set negative isosurface colour to blue`. Use quoted text to preserve its case,
+commas and the word “and”. For a phi-average output, first enable the calculator
+count, then select its source/mode and use the newly available field. All
+settings refreshes its choices after each applied command.
+
+Isosurface commands accept signed values, zero and scientific notation, for
+example `show isosurface of ur at -1e2`. A single level shows only that level;
+use `show isosurface ur at -100 and show isosurface ur at 100` for a pair.
+Both levels must use the same field; the viewer supports at most one negative
+and one nonnegative level. Append `from dataset 2` for a secondary volume field.
+Use `hide isosurfaces` to hide them. If no triangles are found at the requested
+level, feedback suggests another value or checking clipping. Opaque outer
+surfaces can obscure an existing isosurface; use `hide CMB` to expose it.
+
 Radius is expressed as `r/ro` using the same reference as the radial-surface
 control, not kilometres; the selected field must cover that radius.
 
@@ -97,9 +135,13 @@ loading path; a failed update attempts to restore the previous view. **Undo**
 restores the previous view (up to 20 commands) and pauses sequence playback.
 Undo history resets after changing a dataset/frame or the secondary dataset
 label. Manual control edits made since a command are also replaced by Undo.
-The command box is not part of PNG/PDF/video exports. General conversation,
-arbitrary camera instructions, calculator definitions and sequence navigation
-are not supported by this initial grammar; use the existing controls for these.
+**Reset view** (button or command) restores the view actually applied when the
+primary dataset was opened: its `view.DTV2` when successfully loaded, otherwise
+the default dataset view. It restores camera and display/radius settings,
+retains the currently loaded datasets and sequence frame, and pauses playback.
+Undo can reverse a reset. Reloading a dataset captures a new initial view.
+The command box is not part of PNG/PDF/video exports. Free-form conversation is
+not supported: use display shortcuts or the generated setting commands.
 
 ## Quick start
 

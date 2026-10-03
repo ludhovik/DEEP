@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { parseViewerCommand, createCommandHistory, COMMAND_EXAMPLES } from '../src/viewer-commands.js';
 const volume = ['ur', 'Br', 'T', 'C', 'Tanomaly'].map(name => ({name, value:name, dataset:1}));
 volume.push({ name:'T', value:'D2:T', dataset:2 });
-const fields = Object.fromEntries(['meridian', 'meridian2', 'equator', 'equator2', 'radial', 'icb', 'cmb'].map(s => [s,volume]));
-const options = { fields, params: {meridianField:'T', cmbField:'Br'}, cameraAzimuth:-45 };
+const fields = Object.fromEntries(['meridian', 'meridian2', 'equator', 'equator2', 'radial', 'icb', 'cmb', 'iso', 'mollweide', 'earth'].map(s => [s,volume]));
+const options = { fields, params: {meridianField:'T', cmbField:'Br'}, cameraAzimuth:-45, colormaps:['viridis','blue-white-red'], settings:[{key:'cameraAzimuthDeg',label:'camera azimuth',type:'number',min:-180,max:180}] };
 const parse = text => parseViewerCommand(text,options);
 
 test('user sentence applies all requested settings with linked meridional halves', () => {
@@ -15,7 +15,7 @@ test('user sentence applies all requested settings with linked meridional halves
   assert.equal(c.patch.showCMB,true); assert.equal(c.patch.showEquator,true); assert.equal(c.patch.showMeridian,true);
   assert.equal(c.patch.quarterN4,false); assert.equal(c.patch.quarterS4,true);
 });
-test('every displayed example parses', () => { for (const s of COMMAND_EXAMPLES) assert.equal(parse(s).action,'apply',s); });
+test('every displayed example parses', () => { for (const s of COMMAND_EXAMPLES) assert.equal(parse(s).action,s==='Reset view'?'reset':'apply',s); });
 test('explicit and wrapped octants follow the geometry sector numbering', () => {
   for (const start of [0,30,90,180,270,300]) {
     const p = parse(`open southern octant between ${start} and ${start+90} degrees`).patch;
@@ -81,4 +81,84 @@ test('overlapping asynchronous commands are rejected',async()=>{
   const pending=h.run(parse('show equatorial Br'));
   await assert.rejects(h.run(parse('show meridional ur')),/already running/);
   release();await pending;
+});
+
+
+test('isosurface commands select exact signed levels, zero and scientific notation',()=>{
+  for (const [input,value] of [['-100',-100],['+100',100],['0',0],['-1e2',-100],['−.5',-.5]]) {
+    const p=parse(`show isosurface of ur at ${input}`).patch;
+    assert.equal(p.isoField,'ur'); assert.equal(p.showIsosurfaces,true);
+    assert.equal(p.showIsoNegative,value<0); assert.equal(p.showIsoPositive,value>=0);
+    assert.equal(p[value<0?'isoNegativeValue':'isoPositiveValue'],value);
+  }
+});
+test('isosurfaces use volume fields, aliases and dataset selection',()=>{
+  const p=parse('show iso-surface of temperature at .4 from dataset 2').patch;
+  assert.equal(p.isoField,'D2:T'); assert.equal(p.isoPositiveValue,.4);
+  assert.equal(parse('hide isosurfaces').patch.showIsosurfaces,false);
+  assert.throws(()=>parse('show isosurface of missing at -100'),/unavailable/);
+  assert.throws(()=>parseViewerCommand('show isosurface of flux at 2',{fields:{cmb:[{name:'flux',value:'flux',dataset:1}]}}),/unavailable/);
+});
+test('paired levels share one field and ambiguous requests reject without partial actions',()=>{
+  const p=parse('show isosurface ur at -100 and show isosurface ur at 100').patch;
+  assert.equal(p.showIsoNegative,true);assert.equal(p.showIsoPositive,true);
+  assert.equal(p.isoNegativeValue,-100);assert.equal(p.isoPositiveValue,100);
+  for (const s of ['show isosurface ur at -1 and show isosurface T at 1',
+    'show isosurface ur at 1 and show isosurface ur at 2',
+    'show isosurface ur at NaN','show isosurface ur at Infinity',
+    'show isosurface ur at 1e999','show isosurface ur at -100 nonsense',
+    'hide isosurface ur at -100']) assert.throws(()=>parse(s),undefined,s);
+});
+
+
+test('manual range in the user sentence remains one instruction',()=>{
+  const p=parse('Show Br at radius 0.7 with -1 and +1').patch;
+  assert.equal(p.radialField,'Br');assert.equal(p.radialSurfaceRadiusRo,.7);
+  assert.equal(p.radialScale,'manual');assert.equal(p.radialMin,-1);assert.equal(p.radialMax,1);
+  const q=parse('Show Br at radius 0.7 with -1 and +1 using viridis and hide CMB').patch;
+  assert.equal(q.radialColormap,'viridis');assert.equal(q.showCMB,false);
+  assert.throws(()=>parse('Show Br at radius 0.7 with 1 and -1'),/minimum/);
+  assert.throws(()=>parse('Show Br at radius 0.7 using nonexistent'),/colour map/);
+});
+test('per-display range, palette, scale and Mollweide fields',()=>{
+  assert.equal(parse('set radial colourbar to viridis').patch.radialColormap,'viridis');
+  assert.equal(parse('set equatorial range to -1e2 and +1e2').patch.equatorMax,100);
+  assert.equal(parse('set meridional colour scale to symmetric').patch.meridianScale,'symmetric');
+  assert.equal(parse('show Mollweide Br using viridis').patch.mollweideField,'Br');
+  assert.throws(()=>parse('set field lines colour scale to symmetric'));
+});
+const settings=[
+  {key:'cameraAzimuthDeg',label:'Point of view / Azimuth phi',aliases:['camera azimuth'],type:'number',min:-180,max:180},
+  {key:'showAxes',label:'Other / Axes',type:'boolean'},
+  {key:'isoNegativeColor',label:'Isosurfaces / Negative color',type:'string',color:true},
+  {key:'earthTextureBody',label:'Planet image',type:'string',options:[{value:'earth',label:'Earth'},{value:'jupiter',label:'Jupiter'}]},
+  {key:'title',label:'Title / Text',type:'string'},
+  {key:'phiAvgCount',label:'Phi average count',type:'number',min:0,max:4,integer:true},
+  {key:'earthField',label:'Earth field',type:'string',options:[]},
+];
+const parseSettings=text=>parseViewerCommand(text,{...options,settings});
+test('typed settings cover enums, booleans, colors, bounds and quoted text',()=>{
+  assert.equal(parseSettings('set camera azimuth to 45').patch.cameraAzimuthDeg,45);
+  assert.equal(parseSettings('set showAxes to on').patch.showAxes,true);
+  assert.equal(parseSettings('set "Isosurfaces / Negative color" to blue').patch.isoNegativeColor,'#0000ff');
+  assert.equal(parseSettings('set planet image to Jupiter').patch.earthTextureBody,'jupiter');
+  assert.equal(parseSettings('set "Title / Text" to "Core and Mantle, Snapshot 1"').patch.title,'Core and Mantle, Snapshot 1');
+  for(const text of ['set camera azimuth to 360','set phi average count to 1.5','set planet image to Vulcan',
+    'set earth field to Br','set showAxes to maybe','set unknownSetting to 1']) assert.throws(()=>parseSettings(text),undefined,text);
+});
+test('ambiguous control labels require a full path',()=>{
+  assert.throws(()=>parseViewerCommand('set opacity to .5',{settings:[
+    {key:'cmbOpacity',label:'CMB / Opacity',aliases:['opacity'],type:'number'},
+    {key:'isoOpacity',label:'Isosurface / Opacity',aliases:['opacity'],type:'number'},
+  ]}),/Ambiguous/);
+});
+
+
+test('reset restores the opening view, preserves frame outside view state, and can be undone',async()=>{
+  let state={params:{equatorField:'Br',cameraAzimuthDeg:45}},frame=7;
+  const opening={params:{equatorField:'T',cameraAzimuthDeg:0}};
+  const h=createCommandHistory({capture:()=>structuredClone(state),identity:()=>1,ready:()=>{},
+    initial:()=>opening,apply:async snapshot=>{state=structuredClone(snapshot)}});
+  await h.run(parse('reset view')); assert.deepEqual(state,opening);assert.equal(frame,7);
+  await h.run(parse('undo'));assert.equal(state.params.equatorField,'Br');assert.equal(state.params.cameraAzimuthDeg,45);
 });

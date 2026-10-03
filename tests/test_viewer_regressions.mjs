@@ -91,7 +91,7 @@ function viewer() {
     metadata: { nr: 3, ntheta: 3, nphi: 4, r_inner: 0.35, r_outer: 1,
       fields: { ur: "ur.f32", Br: "Br.f32", T: "T.f32", C: "C.f32" } },
     coords: { r: [0.35, 0.7, 1], theta: [0.1, 1.5, 3.0], phi: [0, Math.PI / 2, Math.PI, 3 * Math.PI / 2] },
-    dataBasePath: "demo", datasetRootPath: "demo", secondaryDataset: null,
+    dataBasePath: "demo", datasetRootPath: "demo", secondaryDataset: null, initialDatasetView: null,
     activeDatasetFolderSource: null, datasetFolderSources: new Map(),
     datasetFolderSourceCounter: 0, datasetFolderSelectionInProgress: false,
     lastDatasetLoadError: "", datasetLoadInProgress: false, sequenceFrameLoading: false, datasetViewSaveInProgress: false,
@@ -2115,12 +2115,17 @@ test("reloading after deleting a Figshare or Zenodo view resets the rendered app
     ctx.setStatusSummary = text => { message = text; };
     assert.equal(await ctx.loadDatasetFromParams(), true);
     assert.equal(ctx.params.cameraDistance, 7);
+    assert.equal(ctx.initialDatasetView.source, "view.DTV2");
+    assert.equal(ctx.initialDatasetView.snapshot.params.cameraDistance, 7);
+    assert.equal(ctx.initialDatasetView.snapshot.params.cmbMin, -8);
     assert.equal(ctx.camera.fov, 30);
     assert.equal(renders[0].backgroundColor, "#abcdef");
     assert.match(message, /view\.DTV2 applied/);
 
     state.hasView = false;
     assert.equal(await ctx.loadDatasetFromParams(), true);
+    assert.equal(ctx.initialDatasetView.source, "default view");
+    assert.equal(ctx.initialDatasetView.snapshot.params.cmbScale, "minmax");
     const displayed = renders.at(-1);
     assert.equal(renders.length, 2);
     assert.equal(displayed.cameraDistance, 3.29);

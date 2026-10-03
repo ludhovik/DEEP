@@ -599,6 +599,7 @@ const params = {
 };
 
 let metadata = null;
+let initialDatasetView = null;
 let coords = { r: null, theta: null, phi: null };
 
 let cmbMesh = null;
@@ -7808,8 +7809,8 @@ function applyDefaultDatasetView() {
   applyDefaultFields();
 }
 
-function collectViewState() {
-  syncCameraParamsFromCamera(false);
+function collectViewState(syncCamera = true) {
+  if (syncCamera) syncCameraParamsFromCamera(false);
   syncLinkedMeridianSide("meridian");
   syncLinkedMeridianSide("meridian2");
   const snapshot = {
@@ -7991,6 +7992,44 @@ async function applyViewState(snapshot) {
   );
 }
 
+// Derive command names, choices and bounds from the same controls as the GUI.
+function getCommandSettings() {
+  const controllers = [...(guiRoot?.controllersRecursive() || []), ...(povGuiRoot?.controllersRecursive() || [])];
+  const human = key => key.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/([A-Z])([A-Z][a-z])/g, "$1 $2");
+  const fieldNames = key => {
+    if (!metadata) return [];
+    if (key === "cmbField") return getCmbFieldNames();
+    if (key === "earthField") return getEarthFieldNames();
+    if (key === "mollweideField") return getMollweideFieldNames();
+    if (/^meridian(?:2)?(?:Left)?Field$/.test(key)) return Object.values(getMeridianFieldOptions());
+    return getVolumeFieldNames();
+  };
+  return Object.entries(params).filter(([key, value]) =>
+    typeof value !== "function" && !VIEW_STATE_EXCLUDED_PARAMS.has(key)).map(([key, value]) => {
+    const control = controllers.find(c => c.object === params && c.property === key);
+    const path = [];
+    for (let folder = control?.parent; folder?.parent; folder = folder.parent) path.unshift(folder._title);
+    const label = control ? [...path, control._name].join(" / ") : human(key);
+    let options = control?._values?.map((value, i) => ({ value, label: String(control._names[i]) }));
+    if (key.endsWith("Field")) options = fieldNames(key).map(value => ({value, label: value}));
+    if (key.endsWith("Colormap")) options = getAvailableColormapNames().map(value => ({value, label:value}));
+    const bounds = VIEW_STATE_NUMBER_LIMITS[key] || [];
+    const min = Math.max(bounds[0] ?? -Infinity, control?._min ?? -Infinity);
+    const max = Math.min(bounds[1] ?? Infinity, control?._max ?? Infinity);
+    const aliases = [human(key), ...(control ? [control._name] : [])];
+    const friendly = { cameraAzimuthDeg: "camera azimuth", cameraElevationDeg: "camera elevation",
+      cameraDistance: "camera distance", cameraFovDeg: "camera field of view",
+      isoPositiveColor: "positive isosurface colour", isoNegativeColor: "negative isosurface colour",
+      phiAvgCount: "phi average count", earthTextureBody: "planet image", showEarthSurface: "show planet image" };
+    if (friendly[key]) aliases.push(friendly[key]);
+    return { key, label, aliases, type: typeof value, value, options, available: Boolean(control),
+      min: Number.isFinite(min) ? min : undefined, max: Number.isFinite(max) ? max : undefined,
+      integer: ["phiAvgCount", "simulationTimePrecision", "lineTubeSides"].includes(key) || control?._step === 1,
+      color: /(?:Color|ColourLow|ColourHigh)$/.test(key),
+    };
+  }).filter(setting => setting.available);
+}
+
 // Commands share the view-code rebuild path, including linked halves and legends.
 function bindViewerCommands() {
   let identityKey = null, identityValue = null;
@@ -8002,7 +8041,13 @@ function bindViewerCommands() {
     return identityValue;
   };
   const history = createCommandHistory({
-    identity, capture: collectViewState, apply: applyViewState,
+    identity, capture: collectViewState, initial: () => initialDatasetView?.snapshot, apply: async snapshot => {
+      datasetPlacement(metadata, secondaryDataset?.metadata, snapshot.params);
+      if (["primaryNativeRadius", "primaryPhysicalRadius", "secondaryNativeRadius", "secondaryPhysicalRadius"]
+        .some(key => snapshot.params[key] !== params[key])) disposeHeavyPlaybackCaches();
+      await applyViewState(snapshot);
+      refreshDatasetRadiusSummary();
+    },
     ready: () => {
       if (!metadata) throw new Error("Load a dataset before changing the view.");
       if (datasetLoadInProgress || sequenceFrameLoading || videoState.active || sequencePngExportActive) {
@@ -8010,7 +8055,7 @@ function bindViewerCommands() {
       }
     },
   });
-  createCommandBox({ execute: async text => {
+  createCommandBox({ getSettings: getCommandSettings, execute: async text => {
     const entries = names => names.map(value => ({ value,
       name: isSecondaryFieldName(value) ? rawSecondaryFieldName(value) : value,
       dataset: isSecondaryFieldName(value) ? 2 : 1,
@@ -8019,9 +8064,12 @@ function bindViewerCommands() {
     const volumes = metadata ? entries(getVolumeFieldNames()) : [];
     const meridians = metadata ? entries(Object.values(getMeridianFieldOptions())) : [];
     const command = parseViewerCommand(text, { params, cameraAzimuth: params.cameraAzimuthDeg,
+      settings: getCommandSettings(), colormaps: getAvailableColormapNames(),
       fields: { meridian: meridians, meridian2: meridians,
-        equator: volumes, equator2: volumes, radial: volumes, icb: volumes,
+        equator: volumes, equator2: volumes, radial: volumes, icb: volumes, iso: volumes,
         cmb: metadata ? entries(getCmbFieldNames()) : [],
+        mollweide: metadata ? entries(getMollweideFieldNames()) : [],
+        earth: metadata ? entries(getEarthFieldNames()) : [],
       },
     });
     if (command.action === "help") return { help: true };
@@ -8036,8 +8084,21 @@ function bindViewerCommands() {
     document.body.classList.add("command-applying");
     try {
       await history.run(command);
-      setStatus(command.action === "undo" ? "Previous view restored." : "View command applied.");
-      return { message: command.action === "undo" ? "Previous view restored." : command.descriptions.join("\n") };
+      if (command.patch?.showIsosurfaces && command.patch.isoField) {
+        for (const [enabled, mesh, value] of [
+          [command.patch.showIsoPositive, isoPositiveMesh, command.patch.isoPositiveValue],
+          [command.patch.showIsoNegative, isoNegativeMesh, command.patch.isoNegativeValue],
+        ]) {
+          if (enabled && !mesh?.geometry?.getAttribute("position")?.count) {
+            command.descriptions.push(`No surface was found at ${value} in the sampled field/domain. Try another value or check isosurface clipping.`);
+          }
+        }
+      }
+      const message = command.action === "undo" ? "Previous view restored."
+        : command.action === "reset" ? `Initial ${initialDatasetView.source} restored; current dataset and sequence frame retained.`
+        : command.descriptions.join("\n");
+      setStatus(command.action === "apply" ? "View command applied." : message);
+      return { message };
     } finally {
       document.body.classList.remove("command-applying");
       if (!datasetLoadInProgress && !videoState.active && !sequencePngExportActive) controls.enabled = previousControlsEnabled;
@@ -8420,6 +8481,7 @@ async function loadDatasetFromParams() {
     setStatusSummary(`dataset:${datasetRootPath}${viewStatus}`);
     if (datasetView.warnings.length) setStatus(datasetView.warnings.join("\n"), { level: "warning", scope: "Dataset view" });
     hideDatasetLauncher();
+    initialDatasetView = { snapshot: collectViewState(false), source: usedDatasetView ? DATASET_VIEW_FILENAME : "default view" };
     return true;
   } catch (err) {
     if (err?.name !== "AbortError") console.error(err);

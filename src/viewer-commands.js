@@ -1,15 +1,23 @@
+import { parseSettingCommand, validateCommandRanges } from './command-settings.js';
 // A deliberately bounded, local grammar. No network, eval, or generated code.
 export const COMMAND_EXAMPLES = [
   'Show meridional ur, equatorial Br, CMB Br, and open one northern octant',
   'Show meridional 2 temperature from dataset 2',
-  'Show Br at radius 0.7',
+  'Show Br at radius 0.7 with -1 and +1 using viridis',
+  'Set radial colourbar to blue-white-red',
+  'Show Mollweide Br',
+  'Show isosurface of ur at -100',
   'Open northern octant between 0 and 90 degrees',
   'Set all colour scales to minmax',
   'Hide field lines and show time',
+  'Set camera azimuth to 45',
+  'Reset view',
 ];
 const norm = text => String(text).toLowerCase().trim()
   .replace(/meriodional|merdional|meridian/g, 'meridional')
   .replace(/cross[ -]?sections?|slices?|cuts?/g, ' ')
+  .replace(/−/g, '-')
+  .replace(/iso[ -]surfaces?/g, 'isosurface')
   .replace(/\bu_r\b/g, 'ur').replace(/\bb_r\b/g, 'br')
   .replace(/\s+/g, ' ').trim();
 const aliases = { 'radial velocity': 'ur', 'radial magnetic field': 'Br',
@@ -18,22 +26,58 @@ const aliases = { 'radial velocity': 'ur', 'radial magnetic field': 'Br',
 const slots = {
   meridional: ['meridian', 'showMeridian'], 'meridional 2': ['meridian2', 'showMeridian2'],
   equatorial: ['equator', 'showEquator'], 'equatorial 2': ['equator2', 'showEquator2'],
+  mollweide: ['mollweide', 'showMollweide'], earth: ['earth', 'showEarthSurface'],
   cmb: ['cmb', 'showCMB'], icb: ['icb', 'showICB'], radial: ['radial', 'showRadialSurface'],
 };
 const mod = n => ((n % 360) + 360) % 360;
 const number = '(-?\\d+(?:\\.\\d+)?)';
 
-export function parseViewerCommand(input, { fields = {}, params = {}, cameraAzimuth = 0 } = {}) {
-  let text = norm(input).replace(/[.!?]+$/, '').replace(/^please\s+/, '');
-  if (!text || text.length > 1200) throw new Error('Enter a command of 1–1200 characters.');
+function commandField(requested, available, dataset, label) {
+  const wanted = norm(aliases[requested.toLowerCase()] || requested.replace(/^field /, ''));
+  const candidates = available.filter(f => (dataset === null || f.dataset === dataset)
+    && (norm(f.name) === wanted || norm(f.value) === wanted));
+  const field = candidates.find(f => f.dataset === (dataset || 1)) || candidates[0];
+  if (!field) throw new Error(`Field “${requested}” is unavailable for ${label}${dataset ? ` in dataset ${dataset}` : ''}. Available: ${available.slice(0, 20).map(f => `${f.name} (dataset ${f.dataset})`).join(', ')}.`);
+  return field;
+}
+const isoNumber = '[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:e[+-]?\\d+)?';
+
+export function parseViewerCommand(input, { fields = {}, params = {}, cameraAzimuth = 0, settings = [], colormaps = [] } = {}) {
+  const quotes = [];
+  const protectedInput = String(input).replace(/"(?:\\.|[^"\\])*"/g, value => {
+    quotes.push(JSON.parse(value)); return `quotedtoken${quotes.length - 1}`;
+  });
+  const restore = value => value.replace(/quotedtoken(\d+)/g, (_, index) => quotes[Number(index)] ?? _);
+  let text = norm(protectedInput).replace(/[.!?]+$/, '').replace(/^please\s+/, '');
+  if (!text || String(input).length > 1200) throw new Error('Enter a command of 1–1200 characters.');
+  if (/^reset(?: (?:the )?view)?$/.test(text)) return { action: 'reset' };
   if (/^(undo|help|examples)$/.test(text)) return { action: text === 'undo' ? 'undo' : 'help' };
   // Preserve the "and" in an explicit longitude interval before splitting clauses.
   text = text.replace(new RegExp(`between ${number} and ${number}`, 'g'), 'between $1 to $2');
   text = text.replace(/\bwith (?:a )?(?:sphere )?open\b/g, '; open');
+  text = text.replace(new RegExp(`((?:with|range(?: to)?) ${isoNumber}) and (${isoNumber})(?=\\s|$)`, 'g'), '$1 to $2');
   const clauses = text.split(/\s*(?:[,;]|\band\b|\bthen\b)\s*/).filter(Boolean);
   const patch = {}, descriptions = [];
-  let opening = null;
+  let opening = null, isoField = null;
+  function setStyle(prefix, palette, limits) {
+    if (palette) {
+      const canonical = colormaps.find(name => norm(name).replace(/[ -]/g,'') === norm(palette).replace(/[ -]/g,''));
+      if (!canonical) throw new Error(`Unknown colour map “${palette}”. Choose: ${colormaps.join(', ')}.`);
+      patch[`${prefix}Colormap`] = canonical;
+    }
+    if (limits) {
+      if (!limits.every(Number.isFinite) || limits[0] >= limits[1]) throw new Error('The colour-range minimum must be smaller than its maximum.');
+      patch[`${prefix}Scale`] = 'manual';
+      patch[`${prefix}Min`] = limits[0]; patch[`${prefix}Max`] = limits[1];
+    }
+  }
   for (const original of clauses) {
+    const setting = parseSettingCommand(original, settings, restore);
+    if (setting) {
+      patch[setting.key] = setting.value;
+      descriptions.push(setting.description);
+      continue;
+    }
     let clause = original.replace(/^(?:show me|show|display|enable|change|set|use)\s+/, '')
       .replace(/^the\s+/, '');
     const hidden = /^(hide|disable|remove)\s+/.test(clause);
@@ -69,11 +113,53 @@ export function parseViewerCommand(input, { fields = {}, params = {}, cameraAzim
     }
     let dataset = null;
     clause = clause.replace(/\s+(?:from |using )?dataset ([12])$/, (_, d) => { dataset = Number(d); return ''; });
+    let palette = null, limits = null;
+    clause = clause.replace(/\s+(?:using|with colou?rmap|with colou?r map|with colou?rbar) (.+)$/, (_, name) => { palette = restore(name); return ''; });
+    clause = clause.replace(new RegExp(`\\s+with (${isoNumber}) to (${isoNumber})$`), (_, low, high) => { limits = [Number(low), Number(high)]; return ''; });
+    const style = /^(meridional(?: [12])?|equatorial(?: [12])?|cmb|icb|radial|mollweide|earth|field lines) (colou?rbar|colou?r ?map|colou?r scale|range) (?:to )?(.+)$/.exec(clause);
+    if (!hidden && style) {
+      const prefix = style[1] === 'field lines' ? 'line' : slots[style[1].replace(/ 1$/, '')][0];
+      if (palette || limits) throw new Error('Specify one colour setting per instruction.');
+      if (style[2] === 'range') {
+        const pair = new RegExp(`^(${isoNumber}) to (${isoNumber})$`).exec(style[3]);
+        if (!pair) throw new Error('Use “set radial range to -1 and +1”.');
+        limits = [Number(pair[1]),Number(pair[2])];
+      } else if (/scale/.test(style[2])) {
+        if (!['minmax','min-max','symmetric','manual'].includes(style[3])) throw new Error('Colour scale must be minmax, symmetric or manual.');
+        if (prefix === 'line' && style[3] === 'symmetric') throw new Error('Field-line strength supports minmax or manual.');
+        patch[`${prefix}Scale`] = style[3].replace('min-max','minmax');
+      } else palette = restore(style[3]);
+      setStyle(prefix, palette, limits);
+      descriptions.push(`${style[1]} ${style[2]}: ${restore(style[3])}`); continue;
+    }
+    if (/^isosurfaces?(?: |$)/.test(clause)) {
+      if (hidden && /^isosurfaces?$/.test(clause) && dataset === null) {
+        patch.showIsosurfaces = false; descriptions.push('Hide isosurfaces'); continue;
+      }
+      const iso = new RegExp(`^isosurfaces? (?:of |for )?(.+?) at (?:value )?(${isoNumber})$`).exec(clause);
+      if (hidden || !iso) throw new Error('Use “show isosurface of ur at -100” or “hide isosurfaces”.');
+      const value = Number(iso[2]);
+      if (!Number.isFinite(value)) throw new Error('The isosurface value must be finite.');
+      if (palette || limits) throw new Error('Isosurfaces use positive/negative colours, not a colourbar. Choose these in All settings.');
+      const field = commandField(restore(iso[1]), fields.iso || [], dataset, 'isosurface');
+      if (isoField && isoField !== field.value) throw new Error('The viewer supports one isosurface field at a time. Use the same field for both levels.');
+      if (!isoField) { patch.showIsoPositive = false; patch.showIsoNegative = false; }
+      isoField = field.value;
+      patch.isoField = field.value; patch.showIsosurfaces = true;
+      const sign = value < 0 ? 'Negative' : 'Positive';
+      if (patch[`showIso${sign}`] && patch[`iso${sign}Value`] !== value) {
+        throw new Error('Use at most one negative and one nonnegative isosurface level per command.');
+      }
+      patch[`showIso${sign}`] = true;
+      patch[`iso${sign}Value`] = value;
+      descriptions.push(`Show isosurface: ${field.name} = ${value} (dataset ${field.dataset})`);
+      continue;
+    }
     let radius = null;
     clause = clause.replace(new RegExp(`(?:at )?radius ${number}(?:\\s*r\\/ro)?$`), (_, r) => { radius = Number(r); return 'radial'; }).trim();
-    let match = /^(meridional(?: [12])?|equatorial(?: [12])?|cmb|icb|radial)(?:\s+(?:field\s+)?(?:of\s+|to\s+)?(.+))?$/.exec(clause);
+    let match = /^(meridional(?: [12])?|equatorial(?: [12])?|cmb|icb|radial|mollweide|earth)(?:\s+(?:field\s+)?(?:of\s+|to\s+)?(.+))?$/.exec(clause);
     if (!match) {
-      const reversed = /^(.+?) (?:at|on|in|for) (?:the )?(meridional(?: [12])?|equatorial(?: [12])?|cmb|icb|radial)$/.exec(clause);
+      const reversed = /^(.+?) (?:at|on|in|for) (?:the )?(meridional(?: [12])?|equatorial(?: [12])?|cmb|icb|radial|mollweide|earth)$/.exec(clause);
       if (reversed) match = [reversed[0], reversed[2], reversed[1]];
       else if (radius !== null) {
         const radial = /^(.+?)\s+radial$/.exec(clause);
@@ -82,30 +168,27 @@ export function parseViewerCommand(input, { fields = {}, params = {}, cameraAzim
     }
     if (!match) throw new Error(`Unrecognised instruction: “${original}”. Use Examples for supported commands; nothing was changed.`);
     const label = match[1].replace(/ 1$/, ''), [slot, show] = slots[label];
-    if (hidden && (match[2] || dataset !== null || radius !== null)) throw new Error(`Use “hide ${label}” without a field or position.`);
+    if (hidden && (match[2] || dataset !== null || radius !== null || palette || limits)) throw new Error(`Use “hide ${label}” without a field or position.`);
     const available = fields[slot] || [];
     if (!hidden && !available.length) throw new Error(`No fields are available for ${label} in the loaded datasets.`);
     patch[show] = !hidden;
     let field = null;
     if (!hidden && (match[2] || dataset !== null)) {
-      const requested = (match[2] || params[`${slot}Field`] || '').trim();
-      const wanted = norm(aliases[requested] || requested.replace(/^field /, ''));
-      // Field entries carry the dataset explicitly; do not guess a secondary prefix.
-      const candidates = available.filter(f => (dataset === null || f.dataset === dataset)
-        && (norm(f.name) === wanted || norm(f.value) === wanted));
-      field = candidates.find(f => f.dataset === (dataset || 1)) || candidates[0];
-      if (!field) throw new Error(`Field “${requested}” is unavailable for ${label}${dataset ? ` in dataset ${dataset}` : ''}. Available: ${available.slice(0, 20).map(f => `${f.name} (dataset ${f.dataset})`).join(', ')}.`);
+      const requested = restore((match[2] || params[`${slot}Field`] || '').trim());
+      field = commandField(requested, available, dataset, label);
       patch[`${slot}Field`] = field.value;
       if (slot.startsWith('meridian')) {
         patch[`${slot}LeftField`] = field.value;
         patch[`${slot}IndependentSides`] = false;
       }
     }
+    if (slot === 'earth' && field) patch.earthDisplayMode = 'magnetic';
+    setStyle(slot, palette, limits);
     if (radius !== null) {
       if (radius < 0 || radius > 1) throw new Error('Radius must lie between 0 and 1 in r/ro.');
       patch.radialSurfaceRadiusRo = radius;
     }
-    descriptions.push(`${hidden ? 'Hide' : 'Show'} ${label}${field ? `: ${field.name} (dataset ${field.dataset})` : ''}${radius !== null ? ` at r/ro=${radius}` : ''}`);
+    descriptions.push(`${hidden ? 'Hide' : 'Show'} ${label}${field ? `: ${field.name} (dataset ${field.dataset})` : ''}${radius !== null ? ` at r/ro=${radius}` : ''}${limits ? `; range ${limits[0]} to ${limits[1]}` : ''}${palette ? `; colour map ${palette}` : ''}`);
   }
   if (opening) {
     const { start, end, north } = opening;
@@ -125,11 +208,17 @@ export function parseViewerCommand(input, { fields = {}, params = {}, cameraAzim
     descriptions.push(`Open ${north ? 'northern' : 'southern'} surface octant ${start}°–${end === 0 ? 360 : end}°; align meridional planes to its edges`);
   }
   if (!Object.keys(patch).length) throw new Error('No supported viewer action was found.');
+  for (const prefix of ['meridian','meridian2']) {
+    if (Object.keys(patch).some(key=>key.startsWith(`${prefix}Left`)) && !(`${prefix}IndependentSides` in patch)) {
+      patch[`${prefix}IndependentSides`] = true;
+    }
+  }
+  validateCommandRanges(patch, params);
   return { action: 'apply', patch, descriptions };
 }
 
 // Keep undo snapshots tied to the loaded data and roll back failed updates.
-export function createCommandHistory({ capture, apply, identity, ready }) {
+export function createCommandHistory({ capture, apply, identity, ready, initial = () => null }) {
   let history = [], dataset = null, busy = false;
   return {
     async run(command) {
@@ -138,8 +227,8 @@ export function createCommandHistory({ capture, apply, identity, ready }) {
       const current = identity();
       if (dataset !== current) { history = []; dataset = current; }
       const before = capture();
-      const target = command.action === 'undo' ? history.at(-1) : { ...before, params: { ...before.params, ...command.patch } };
-      if (!target) throw new Error('Nothing to undo for this dataset.');
+      const target = command.action === 'undo' ? history.at(-1) : command.action === 'reset' ? initial() : { ...before, params: { ...before.params, ...command.patch } };
+      if (!target) throw new Error(command.action === 'reset' ? 'No initial view is available; open a dataset first.' : 'Nothing to undo for this dataset.');
       busy = true;
       try {
         await apply(target);
