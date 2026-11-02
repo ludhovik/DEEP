@@ -178,7 +178,7 @@ function viewer() {
     "buildFieldLineObjectCacheEntry", "ensureFieldLineObjectCacheEntry", "loadFieldLines", "updateFieldLineVisuals",
     "tubeGeometryLimitMiB", "checkTubeGeometryBudget", "checkFieldLineEntryBudget", "addTubeMemoryControls",
     "applyViewStateParams", "applyDefaultDatasetView", "refreshViewPresentation", "applyViewState", "loadDatasetViewState",
-    "updateEarthSurface", "ensureEarthTexture", "updateSurfaceAttribution",
+    "configureSurfaceUnderside", "getSurfaceClipOptions", "updateEarthSurface", "ensureEarthTexture", "updateSurfaceAttribution",
     "viewStateBlob", "writeDatasetViewFile", "saveViewStateCode", "downloadViewStateCode",
     "parseFolderSourcePath", "fileFromDirectoryHandle", "parseLocalFilesystemPath", "encodeLocalFilesystemPath",
     "captureDatasetState", "restoreDatasetState", "refreshRepositoryLookup", "loadDatasetFromParams",
@@ -3364,4 +3364,66 @@ test("new views default to minmax on all scalar displays while explicit saved sc
   for(const slot of slots)assert.equal(ctx.params[`${slot}Scale`],"minmax");
   ctx.applyViewStateParams({params:{cmbScale:"symmetric",meridianScale:"manual"}});
   assert.equal(ctx.params.cmbScale,"symmetric");assert.equal(ctx.params.meridianScale,"manual");
+});
+
+test("independent strides change only the requested region and retain grouped return segments", () => {
+  const ctx = viewer(), fixture = pairedLineFixture();
+  fixture.shell.push({ line_id: "seed-0:return", line_group_id: "seed-0" });
+  const denseOuter = ctx.selectFieldLinesByStride(fixture, { shell: 3, exterior: 1 });
+  assert.equal(denseOuter.shell.length, 5);
+  assert.equal(denseOuter.exterior.length, 7);
+  const sparseOuter = ctx.selectFieldLinesByStride(fixture, { shell: 3, exterior: 2 });
+  assert.deepEqual(Array.from(sparseOuter.shell), Array.from(denseOuter.shell));
+  assert.deepEqual(Array.from(sparseOuter.exterior), fixture.exterior.filter((_, i) => i % 2 === 0));
+  assert.ok(denseOuter.shell.some(line => line.line_id === "seed-0:return"));
+});
+
+test("independent density settings are used in loads and distinguish cached geometry", async () => {
+  const ctx = viewer(), fixture = pairedLineFixture();
+  ctx.metadata.field_lines = { shell: "shell.json", exterior: "exterior.json" };
+  Object.assign(ctx.params, { showFieldLines: true, fieldLineDisplay: "both",
+    lineSeparateStrides: true, lineShellStride: 3, lineExteriorStride: 1 });
+  ctx.fetchDatasetResource = async url => new Response(JSON.stringify(url.endsWith("shell.json") ? fixture.shell : fixture.exterior));
+  await ctx.loadFieldLines();
+  const original = { ...ctx.fieldLineGroups };
+  assert.equal(original.shell.userData.lines.length, 4);
+  assert.equal(original.exterior.userData.lines.length, 7);
+  ctx.params.lineExteriorStride = 2;
+  await ctx.loadFieldLines();
+  assert.equal(ctx.fieldLineGroups.shell.userData.lines.length, 4);
+  assert.equal(ctx.fieldLineGroups.exterior.userData.lines.length, 4);
+  ctx.params.lineExteriorStride = 1;
+  await ctx.loadFieldLines();
+  assert.equal(ctx.fieldLineGroups.exterior, original.exterior);
+});
+
+test("surface and density controls round-trip in saved views with invalid values rejected", () => {
+  const ctx = viewer();
+  const values = { lineSeparateStrides: true, lineShellStride: 7, lineExteriorStride: 2,
+    cmbSurfaceCut: "none", earthSurfaceCut: "independent", earthCutLongitude: 310,
+    earthCutWidth: 90, earthCutHemisphere: "north", earthUnderside: "custom",
+    earthUndersideColor: "#123456", earthUndersideLighting: false,
+    sliceGapFillerColor: "#654321", sliceGapFillerLighting: false };
+  for (const [key, value] of Object.entries(values)) assert.equal(ctx.applySnapshotParam(key, value), true, key);
+  const restored = ctx.decodeViewState(ctx.encodeViewState(ctx.collectViewState(false)));
+  for (const [key, value] of Object.entries(values)) assert.equal(restored.params[key], value, key);
+  for (const [key, value] of [["lineShellStride", 0], ["lineExteriorStride", 2.2],
+    ["earthCutWidth", 361], ["earthSurfaceCut", "invalid"], ["cmbUndersideColor", "invalid"]])
+    assert.equal(ctx.applySnapshotParam(key, value), false, key);
+});
+
+test("legacy complete views restore shared density and slice-driven surfaces; partial updates preserve independence", () => {
+  const ctx = viewer();
+  Object.assign(ctx.params, { lineSeparateStrides: true, lineShellStride: 8, lineExteriorStride: 2,
+    cmbSurfaceCut: "independent", earthSurfaceCut: "none", earthUnderside: "custom" });
+  ctx.applyViewStateParams({ backgroundColor: "#123456" });
+  assert.equal(ctx.params.cmbSurfaceCut, "independent");
+  const oldView = { version: 2, cameraLengthUnit: "r_outer", scalarNamingVersion: 2,
+    params: { lineStride: 5, earthTextureBody: "earth" } };
+  ctx.applyViewStateParams(oldView);
+  assert.equal(ctx.params.lineStride, 5);
+  assert.equal(ctx.params.lineSeparateStrides, false);
+  assert.equal(ctx.params.cmbSurfaceCut, "follow");
+  assert.equal(ctx.params.earthSurfaceCut, "follow");
+  assert.equal(ctx.params.earthUnderside, "original");
 });

@@ -96,6 +96,7 @@ export function parseViewerCommand(input, { fields = {}, params = {}, cameraAzim
     if (!hidden && /^(?:close (?:the )?(?:sphere|opening)|full sphere)$/.test(clause)) {
       if (opening) throw new Error('Choose either an open octant or a closed sphere in one command.');
       patch.cmbClipWithMeridian = false; patch.cmbClipMode = 'none';
+      patch.cmbSurfaceCut = 'none'; patch.earthSurfaceCut = 'none';
       descriptions.push('Close the surface opening'); continue;
     }
     if (!hidden && clause.startsWith('open ')) {
@@ -214,6 +215,7 @@ export function parseViewerCommand(input, { fields = {}, params = {}, cameraAzim
       patch.meridian2PhiDeg = end;
     }
     patch.cmbClipWithMeridian = true; patch.cmbClipMode = 'selected-eight-quarters';
+    patch.cmbSurfaceCut = 'follow'; patch.earthSurfaceCut = 'follow';
     for (const h of ['N', 'S']) for (let i = 1; i <= 4; i++) patch[`quarter${h}${i}`] = true;
     const bounds = [start, end, mod(start + 180), mod(end + 180)].sort((a, b) => a - b);
     patch[`quarter${north ? 'N' : 'S'}${bounds.indexOf(start) + 1}`] = false;

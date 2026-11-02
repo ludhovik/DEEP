@@ -381,6 +381,20 @@ const params = {
   cmbClipWithMeridian: true,
   cmbClipMode: "rear-half",
   cmbRearSide: "positive",
+  cmbSurfaceCut: "follow",
+  cmbCutLongitude: 0,
+  cmbCutWidth: 90,
+  cmbCutHemisphere: "north",
+  cmbUnderside: "original",
+  cmbUndersideColor: "#888888",
+  cmbUndersideLighting: true,
+  earthSurfaceCut: "follow",
+  earthCutLongitude: 0,
+  earthCutWidth: 90,
+  earthCutHemisphere: "north",
+  earthUnderside: "original",
+  earthUndersideColor: "#888888",
+  earthUndersideLighting: true,
   quarterN1: true,
   quarterN2: true,
   quarterN3: true,
@@ -473,6 +487,9 @@ const params = {
   meridian2LeftColormap: "blue-white-red",
 
   lineStride: 3,
+  lineSeparateStrides: false,
+  lineShellStride: 3,
+  lineExteriorStride: 3,
   lineColourMode: "strength",
   linePositiveColor: "#ffd700",
   lineNegativeColor: "#246bff",
@@ -507,6 +524,8 @@ const params = {
   earthOpacity: 0.95,
   showSliceGapFiller: true,
   sliceGapFillerOpacity: 0.35,
+  sliceGapFillerColor: "#cecece",
+  sliceGapFillerLighting: true,
 
   cameraDistance: 3.29,
   cameraAzimuthDeg: -90,
@@ -1504,6 +1523,42 @@ function updateSurfaceAttribution(body) {
   attrib.style.display = "block";
 }
 
+function getSurfaceClipOptions(slot) {
+  const mode = params[`${slot}SurfaceCut`] || "follow";
+  if (mode === "none") return { enabled: false };
+  if (mode === "independent") {
+    return {
+      enabled: true, mode: "independent-sector",
+      longitude: Number(params[`${slot}CutLongitude`]) * Math.PI / 180,
+      width: Math.max(0, Math.min(360, Number(params[`${slot}CutWidth`]))) * Math.PI / 180,
+      hemisphere: params[`${slot}CutHemisphere`],
+    };
+  }
+  return getActiveCmbClipOptions();
+}
+
+// One material keeps opacity, disposal and colour-buffer updates unchanged.
+// Only inward-facing fragments receive the custom colour/lighting treatment.
+function configureSurfaceUnderside(material, slot) {
+  const mode = params[`${slot}Underside`] || "original";
+  if (mode === "original") return material;
+  material.side = mode === "hidden" ? THREE.FrontSide : THREE.DoubleSide;
+  if (mode !== "custom") return material;
+  const colour = new THREE.Color(params[`${slot}UndersideColor`]);
+  const lighting = params[`${slot}UndersideLighting`] !== false;
+  material.onBeforeCompile = shader => {
+    shader.uniforms.undersideColour = { value: colour };
+    shader.uniforms.undersideLighting = { value: lighting };
+    shader.fragmentShader = "uniform vec3 undersideColour;\nuniform bool undersideLighting;\n" + shader.fragmentShader;
+    shader.fragmentShader = shader.fragmentShader.replace("#include <color_fragment>",
+      "#include <color_fragment>\nif (!gl_FrontFacing) diffuseColor.rgb = undersideColour;");
+    shader.fragmentShader = shader.fragmentShader.replace("#include <opaque_fragment>",
+      "if (!gl_FrontFacing && !undersideLighting) outgoingLight = undersideColour;\n#include <opaque_fragment>");
+  };
+  material.customProgramCacheKey = () => "surface-custom-underside-v1";
+  return material;
+}
+
 function getActiveCmbClipOptions() {
   const mer1Shown = params.showMeridian;
   const mer2Shown = params.showMeridian2;
@@ -1619,6 +1674,14 @@ function getSectorIndexForPhi(phiValue, phiA, phiB) {
 
 function shouldKeepSurfaceCellForClip(thetaValue, phiValue, clipOptions = null) {
   if (!clipOptions?.enabled) return true;
+  if (clipOptions.mode === "independent-sector") {
+    const north = thetaValue < Math.PI / 2;
+    const inHemisphere = clipOptions.hemisphere === "both"
+      || (clipOptions.hemisphere === "north" ? north : !north);
+    const offset = normalizePhi(phiValue - clipOptions.longitude);
+    // Start is inclusive, end exclusive; a zero-width cut removes nothing.
+    return !(inHemisphere && offset < clipOptions.width);
+  }
 
   const phiMid = normalizePhi(phiValue);
   if (clipOptions.mode === "selected-eight-quarters" && clipOptions.hasTwoPlanes) {
@@ -1723,6 +1786,7 @@ function makeEarthSurfaceMesh(radius, opacity, texture, longitudeDeg, clipOption
   textureMap.needsUpdate = true;
 
   const material = new THREE.MeshPhongMaterial({ map: textureMap, side: THREE.FrontSide, shininess: 6 });
+  configureSurfaceUnderside(material, "earth");
   applyOpacityAndDepth(material, Number(opacity));
   const mesh = new THREE.Mesh(geometry, material);
   mesh.name = "earth-surface-sphere";
@@ -1784,6 +1848,7 @@ function makeEarthFieldSurfaceMeshOnGrid(fieldObject, radius, opacity, vmin, vma
     side: THREE.DoubleSide,
     shininess: 8,
   });
+  configureSurfaceUnderside(material, "earth");
   applyOpacityAndDepth(material, opacity);
 
   const mesh = new THREE.Mesh(geometry, material);
@@ -1846,7 +1911,7 @@ async function updateEarthSurface(options = {}) {
   }
 
   try {
-    const clipOptions = getActiveCmbClipOptions();
+    const clipOptions = getSurfaceClipOptions("earth");
 
     if (params.earthDisplayMode === "magnetic") {
       const earthFields = getEarthFieldNames();
@@ -2860,6 +2925,8 @@ function getFieldLineObjectCacheKey(basePath = dataBasePath) {
     basePath: String(basePath),
     display: params.fieldLineDisplay,
     stride: Math.max(1, Math.round(Number(params.lineStride))),
+    separateStrides: Boolean(params.lineSeparateStrides),
+    regionStrides: params.lineSeparateStrides ? [params.lineShellStride, params.lineExteriorStride] : null,
     renderMode: params.lineRenderMode,
     tube: [params.lineTubeDiameter, params.lineTubeReference, params.lineTubeMinDiameter,
            params.lineTubeMaxDiameter, params.lineTubeSides, params.lineTubeSimplify,
@@ -2986,7 +3053,9 @@ async function buildFieldLineObjectCacheEntry(context = captureRenderContext()) 
             ? sampleVolumeNearest(strength, p[0], p[1], p[2]) : NaN) };
       }));
     }
-    let selected = selectFieldLinesByStride(linesByMode, context.params.lineStride);
+    let selected = selectFieldLinesByStride(linesByMode, context.params.lineSeparateStrides
+      ? { shell: context.params.lineShellStride, exterior: context.params.lineExteriorStride }
+      : context.params.lineStride);
     let tubeDetail = null;
     const originalPointCounts = Object.fromEntries(Object.entries(selected).map(([mode, lines]) =>
       [mode, lines.reduce((sum, line) => sum + (line.points?.length || 0), 0)]));
@@ -6190,6 +6259,7 @@ function makeCmbSurfaceMeshOnGrid(fieldObject, radiusIndex, opacity, vmin, vmax,
     side: THREE.DoubleSide,
     shininess: 8,
   });
+  configureSurfaceUnderside(material, "cmb");
   applyOpacityAndDepth(material, opacity);
 
   const mesh = new THREE.Mesh(geometry, material);
@@ -6248,11 +6318,9 @@ function horizontalSliceRawRange(field, z) {
 }
 
 function makeGapFillerMaterial(opacity) {
-  const material = new THREE.MeshPhongMaterial({
-    color: new THREE.Color(0.62, 0.62, 0.62),
-    side: THREE.DoubleSide,
-    shininess: 4,
-  });
+  const material = params.sliceGapFillerLighting
+    ? new THREE.MeshPhongMaterial({ color: params.sliceGapFillerColor, side: THREE.DoubleSide, shininess: 4 })
+    : new THREE.MeshBasicMaterial({ color: params.sliceGapFillerColor, side: THREE.DoubleSide });
   applyOpacityAndDepth(material, opacity);
   return material;
 }
@@ -6804,7 +6872,7 @@ async function rebuildCMB(options = {}) {
     applyOpacityAndDepth(cmbMesh.material, params.cmbOpacity);
     setColourbarForSlot("cmb", params.cmbField, vmin, vmax);
   } else {
-    const cmbClip = getActiveCmbClipOptions();
+    const cmbClip = getSurfaceClipOptions("cmb");
     const replacement = makeCmbSurfaceMesh(fieldObject, radialIndex, params.cmbOpacity, vmin, vmax, params.cmbColormap, cmbClip);
     disposeObject(cmbMesh);
     cmbMesh = replacement;
@@ -7358,8 +7426,7 @@ function fieldLinePairKey(line, mode) {
 }
 
 function selectFieldLinesByStride(linesByMode, requestedStride) {
-  const value = Number(requestedStride);
-  const stride = Number.isFinite(value) ? Math.max(1, Math.round(value)) : 1;
+  const independent = requestedStride !== null && typeof requestedStride === "object";
   const ranks = new Map();
   const selected = {};
   // Shell order defines the shared selection. Missing or reordered exterior
@@ -7367,6 +7434,11 @@ function selectFieldLinesByStride(linesByMode, requestedStride) {
   // follow the shell IDs; repeated IDs retain all segments of the same group.
   for (const mode of ["shell", "exterior"]) {
     if (!Array.isArray(linesByMode[mode])) continue;
+    const value = Number(independent ? requestedStride[mode] : requestedStride);
+    const stride = Number.isFinite(value) ? Math.max(1, Math.round(value)) : 1;
+    // Independent density uses each region's own groups. Repeated segments of
+    // a connected line stay together, even when exterior ordering differs.
+    if (independent) ranks.clear();
     selected[mode] = linesByMode[mode].filter((line, index) => {
       const key = fieldLinePairKey(line, mode);
       // Legacy bundles without IDs retain their independent per-file stride.
@@ -7701,6 +7773,30 @@ function addDisplayControls(gui, slot, label, fieldParam, showParam, opacityPara
   return folder;
 }
 
+function addSurfaceAppearanceControls(folder, slot, rebuild) {
+  const cut = folder.addFolder("Surface cut and underside");
+  const independent = [];
+  const updateControls = () => {
+    independent.forEach(controller => controller.show(params[`${slot}SurfaceCut`] === "independent"));
+    colour.show(params[`${slot}Underside`] === "custom");
+    lighting.show(params[`${slot}Underside`] === "custom");
+  };
+  cut.add(params, `${slot}SurfaceCut`, {
+    "Follow meridional slices": "follow", "No cut": "none", "Independent cut": "independent",
+  }).name("Surface cut").onChange(() => { updateControls(); rebuild(); });
+  independent.push(cut.add(params, `${slot}CutLongitude`, 0, 360, 1).name("Cut start longitude").onFinishChange(rebuild));
+  independent.push(cut.add(params, `${slot}CutWidth`, 0, 360, 1).name("Opening width (deg)").onFinishChange(rebuild));
+  independent.push(cut.add(params, `${slot}CutHemisphere`, { North: "north", South: "south", Both: "both" })
+    .name("Opening hemisphere").onChange(rebuild));
+  cut.add(params, `${slot}Underside`, { "Original appearance": "original", Hidden: "hidden", "Custom colour": "custom" })
+    .name("Underside").onChange(() => { updateControls(); rebuild(); });
+  const colour = cut.addColor(params, `${slot}UndersideColor`).name("Underside colour").onChange(rebuild);
+  const lighting = cut.add(params, `${slot}UndersideLighting`).name("Light underside").onChange(rebuild);
+  cut.domElement.title = "Independent cut removes a longitude sector in the chosen hemisphere, even with all slices hidden. Width 90° + North removes one eighth. Underside controls inward-facing surface colour; lighting uses the Lighting panel.";
+  updateControls();
+  closeGuiFolder(cut);
+}
+
 function addMeridianSideControls(folder, label, slot, fieldParam, opacityParam, rebuildFn, availableFields) {
   const side = folder.addFolder(label);
   const rebuild = debouncedViewerTask(`${label} update`, rebuildFn);
@@ -7787,6 +7883,9 @@ const VIEW_STATE_SCALE_KEYS = new Set([
 ]);
 const VIEW_STATE_NUMBER_LIMITS = {
   earthRadiusScale: [1, Infinity], isoResolution: [8, 96], lineStride: [1, 1000],
+  lineShellStride: [1, 1000], lineExteriorStride: [1, 1000],
+  cmbCutLongitude: [0, 360], earthCutLongitude: [0, 360],
+  cmbCutWidth: [0, 360], earthCutWidth: [0, 360],
   cameraDistance: [1e-12, Infinity], cameraFovDeg: [1, 179],
   primaryNativeRadius: [0, Infinity], secondaryNativeRadius: [0, Infinity],
   primaryPhysicalRadius: [1e-30, Infinity], secondaryPhysicalRadius: [1e-30, Infinity],
@@ -7865,6 +7964,11 @@ function applySnapshotParam(key, value) {
   if (VIEW_STATE_SCALE_KEYS.has(key) && !["symmetric", "minmax", "manual"].includes(value)) return false;
   if (!validFieldForState(key, value)) return false;
   if (["linePositiveColor", "lineNegativeColor"].includes(key) && !/^#[0-9a-f]{6}$/i.test(value)) return false;
+  if (["cmbSurfaceCut", "earthSurfaceCut"].includes(key) && !["follow", "none", "independent"].includes(value)) return false;
+  if (["cmbCutHemisphere", "earthCutHemisphere"].includes(key) && !["north", "south", "both"].includes(value)) return false;
+  if (["cmbUnderside", "earthUnderside"].includes(key) && !["original", "hidden", "custom"].includes(value)) return false;
+  if (["cmbUndersideColor", "earthUndersideColor", "sliceGapFillerColor"].includes(key) && !/^#[0-9a-f]{6}$/i.test(value)) return false;
+  if (["lineShellStride", "lineExteriorStride"].includes(key) && !Number.isInteger(value)) return false;
   if (key === "lineColourMode" && !["strength", "polarity", "radial-polarity"].includes(value)) return false;
   if (key === "lineRenderMode" && !["lines", "b2-tubes"].includes(value)) return false;
   if (key === "lineTubeSides" && !Number.isInteger(value)) return false;
@@ -7911,6 +8015,14 @@ function applyViewStateParams(snapshot) {
   // Partial parameter objects still change only the supplied options.
   if (snapshot.params && snapshot.version && !Object.prototype.hasOwnProperty.call(snap.params, "earthTextureBody")) {
     params.earthTextureBody = "earth";
+  }
+  // Older full view codes must recover linked strides and slice-driven cuts,
+  // even if the current view has independent controls enabled.
+  if (snapshot.params && snapshot.version) {
+    for (const key of Object.keys(DEFAULT_VIEW_PARAMS)) {
+      if (/^(lineSeparateStrides|lineShellStride|lineExteriorStride|(?:cmb|earth)(?:SurfaceCut|CutLongitude|CutWidth|CutHemisphere|Underside.*)|sliceGapFiller(?:Color|Lighting))$/.test(key)
+          && !Object.prototype.hasOwnProperty.call(snap.params, key)) params[key] = DEFAULT_VIEW_PARAMS[key];
+    }
   }
   // View codes created before split meridians used one field/scale per plane.
   // Mirror those settings to the new left (-s) half when the new keys are absent.
@@ -8680,6 +8792,7 @@ function buildGui() {
   const cmbFields = getCmbFieldNames();
 
   const cmbFolder = addDisplayControls(gui, "cmb", `${displayBoundaryName("cmb")} surface`, "cmbField", "showCMB", "cmbOpacity", rebuildCMB, cmbFields);
+  addSurfaceAppearanceControls(cmbFolder, "cmb", debouncedViewerTask("Boundary surface cut", () => rebuildCMB({ reuseGeometry: false })));
   if (metadata.inner_core?.available || (metadata.has_inner_core && metadata.r_inner < metadata.r_icb)) {
     gui.add(params, "magneticVolumeDomain", { "Whole core": "all", "Fluid outer core": "fluid", "Inner core only": "inner-core" })
       .name("Magnetic volume region").onChange(() => runViewerTask("Magnetic region", async () => {
@@ -8807,7 +8920,19 @@ function buildGui() {
     if (lineModes.includes("exterior")) lineModeOptions["Exterior potential/poloidal"] = "exterior";
     if (lineModes.includes("both")) lineModeOptions["Both"] = "both";
     lineFolder.add(params, "fieldLineDisplay", lineModeOptions).name("Line type").onChange(refreshFieldLines);
-    lineFolder.add(params, "lineStride", 1, 10, 1).name("Line stride").onFinishChange(refreshFieldLines);
+    const sharedStride = lineFolder.add(params, "lineStride", 1, 100, 1).name("Shared stride").onFinishChange(refreshFieldLines);
+    const shellStride = lineFolder.add(params, "lineShellStride", 1, 100, 1).name("Internal stride").onFinishChange(refreshFieldLines);
+    const exteriorStride = lineFolder.add(params, "lineExteriorStride", 1, 100, 1).name("Exterior stride").onFinishChange(refreshFieldLines);
+    const updateStrideControls = () => {
+      sharedStride.show(!params.lineSeparateStrides);
+      shellStride.show(params.lineSeparateStrides && lineModes.includes("shell"));
+      exteriorStride.show(params.lineSeparateStrides && lineModes.includes("exterior"));
+    };
+    lineFolder.add(params, "lineSeparateStrides").name("Separate strides").onChange(() => {
+      updateStrideControls();
+      refreshFieldLines();
+    }).domElement.title = "Choose independent internal and exterior densities. Stride 1 shows all available line groups, 2 every second group, etc. Shared stride preserves paired internal/exterior selections.";
+    updateStrideControls();
     lineFolder.add(params, "lineColourMode", { Strength: "strength", "Starting CMB Br (whole line)": "polarity", "Local Br (along line)": "radial-polarity" }).name("Colour by").onChange(refreshFieldLines);
     lineFolder.addColor(params, "linePositiveColor").name("Br > 0 colour").onChange(refreshFieldLines);
     lineFolder.addColor(params, "lineNegativeColor").name("Br < 0 colour").onChange(refreshFieldLines);
@@ -8876,6 +9001,7 @@ function buildGui() {
   if (earthFields.length > 0 && !earthFields.includes(params.earthField)) {
     params.earthField = chooseField(["Br_Earth_lmax13"], earthFields);
   }
+  addSurfaceAppearanceControls(earthFolder, "earth", rebuildEarth);
   earthFolder.add(params, "showEarthSurface").name("Show").onChange(rebuildEarth);
   earthFolder.add(params, "earthDisplayMode", earthModes).name("Display").onChange(rebuildEarth);
   earthFolder.add(params, "earthTextureBody", SURFACE_TEXTURE_OPTIONS).name("Image body").onChange(rebuildEarth);
@@ -8891,6 +9017,10 @@ function buildGui() {
   earthFolder.add(params, "earthOpacity", 0.05, 1.0, 0.01).name("Opacity").onChange(updateOpacities);
   earthFolder.add(params, "showSliceGapFiller").name("Slice gap filler")
     .onChange(viewerTaskCallback("Slice gap filler", rebuildGapFillers));
+  earthFolder.addColor(params, "sliceGapFillerColor").name("Filler colour")
+    .onChange(debouncedViewerTask("Gap filler colour", rebuildGapFillers));
+  earthFolder.add(params, "sliceGapFillerLighting").name("Light filler")
+    .onChange(viewerTaskCallback("Gap filler lighting", rebuildGapFillers));
   earthFolder.add(params, "sliceGapFillerOpacity", 0.0, 1.0, 0.01).name("Filler opacity").onChange(updateOpacities);
 
   const other = gui.addFolder("Other visualisation");

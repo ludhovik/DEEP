@@ -6,10 +6,10 @@ import test from "node:test";
 import * as THREE from "three";
 
 const source = fs.readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
-const ctx = vm.createContext({ THREE, OPAQUE_OPACITY: 0.999 });
+const ctx = vm.createContext({ THREE, OPAQUE_OPACITY: 0.999, params: {} });
 for (const name of ["clamp", "normalizePhi", "isAngleInCCWSector", "getFourSectorBoundaries",
   "getSectorIndexForPhi", "shouldKeepSurfaceCellForClip", "isEffectivelyOpaque",
-  "applyOpacityAndDepth", "makeEarthSurfaceMesh"]) {
+  "applyOpacityAndDepth", "configureSurfaceUnderside", "getSurfaceClipOptions", "getActiveCmbClipOptions", "makeEarthSurfaceMesh", "makeGapFillerMaterial"]) {
   const match = source.match(new RegExp(`function ${name}\\(`));
   assert.ok(match, `Viewer function ${name} exists`);
   vm.runInContext(source.slice(match.index, source.indexOf("\n}", match.index) + 2), ctx);
@@ -121,4 +121,65 @@ test("the bundled texture is a 2:1 PNG suitable for latitude-longitude mapping",
   const width = png.readUInt32BE(16), height = png.readUInt32BE(20);
   assert.ok(width >= 2048);
   assert.equal(width, 2 * height);
+});
+
+test("independent surface cuts work with hidden slices and leave the other surface alone", () => {
+  Object.assign(ctx.params, { cmbSurfaceCut: "none", earthSurfaceCut: "independent",
+    earthCutLongitude: 315, earthCutWidth: 90, earthCutHemisphere: "north",
+    showMeridian: false, showMeridian2: false });
+  const cut = ctx.getSurfaceClipOptions("earth");
+  const keep = (theta, phi) => ctx.shouldKeepSurfaceCellForClip(theta, phi, cut);
+  assert.equal(keep(Math.PI / 4, 0), false, "cut wraps through zero longitude");
+  assert.equal(keep(3 * Math.PI / 4, 0), true, "southern hemisphere preserved");
+  assert.equal(keep(Math.PI / 4, Math.PI), true, "outside sector preserved");
+  const full = mesh(), clipped = mesh(0, cut);
+  assert.equal(clipped.geometry.index.count, full.geometry.index.count * 7 / 8);
+  assert.equal(ctx.getSurfaceClipOptions("cmb").enabled, false);
+  ctx.params.meridianPhiDeg = 140; ctx.params.showMeridian = true;
+  assert.deepEqual(ctx.getSurfaceClipOptions("earth"), cut, "slice controls cannot move an independent cut");
+  ctx.params.earthCutWidth = 0;
+  assert.equal(mesh(0, ctx.getSurfaceClipOptions("earth")).geometry.index.count, full.geometry.index.count);
+  ctx.params.earthCutWidth = 360; ctx.params.earthCutHemisphere = "both";
+  assert.equal(mesh(0, ctx.getSurfaceClipOptions("earth")).geometry.index.count, 0);
+});
+
+test("legacy surface clipping still follows meridians and requires a visible slice", () => {
+  Object.assign(ctx.params, { cmbSurfaceCut: "follow", earthSurfaceCut: "follow",
+    cmbClipWithMeridian: true, cmbClipMode: "rear-half", cmbRearSide: "positive",
+    meridianPhiDeg: 60, showMeridian: true, showMeridian2: false });
+  assert.deepEqual(ctx.getSurfaceClipOptions("earth"), ctx.getSurfaceClipOptions("cmb"));
+  assert.equal(ctx.getSurfaceClipOptions("earth").enabled, true);
+  ctx.params.showMeridian = false;
+  assert.equal(ctx.getSurfaceClipOptions("earth").enabled, false);
+});
+
+test("custom underside uses an inward-facing colour with optional lighting, preserving the outer texture", () => {
+  Object.assign(ctx.params, { earthUnderside: "custom", earthUndersideColor: "#2479ae", earthUndersideLighting: false });
+  const m = mesh().material;
+  assert.equal(m.side, THREE.DoubleSide);
+  assert.ok(m.map, "outer image retained");
+  const shader = { uniforms: {}, fragmentShader: THREE.ShaderLib.phong.fragmentShader };
+  m.onBeforeCompile(shader);
+  assert.equal(shader.uniforms.undersideColour.value.getHexString(), "2479ae");
+  assert.equal(shader.uniforms.undersideLighting.value, false);
+  assert.ok(shader.fragmentShader.includes("if (!gl_FrontFacing) diffuseColor.rgb = undersideColour"));
+  assert.ok(shader.fragmentShader.includes("if (!gl_FrontFacing && !undersideLighting) outgoingLight = undersideColour"));
+  ctx.params.earthUndersideLighting = true;
+  const litShader = { uniforms: {}, fragmentShader: THREE.ShaderLib.phong.fragmentShader };
+  mesh().material.onBeforeCompile(litShader);
+  assert.equal(litShader.uniforms.undersideLighting.value, true);
+  ctx.params.earthUnderside = "hidden";
+  assert.equal(mesh().material.side, THREE.FrontSide);
+  ctx.params.earthUnderside = "original";
+  assert.equal(mesh().material.side, THREE.FrontSide);
+});
+
+test("gap filler can use a custom colour either lit or flat", () => {
+  Object.assign(ctx.params, { sliceGapFillerColor: "#b57c53", sliceGapFillerLighting: false });
+  const flat = ctx.makeGapFillerMaterial(.4);
+  assert.equal(flat.type, "MeshBasicMaterial");
+  assert.equal(flat.color.getHexString(), "b57c53");
+  assert.equal(flat.opacity, .4);
+  ctx.params.sliceGapFillerLighting = true;
+  assert.equal(ctx.makeGapFillerMaterial(.4).type, "MeshPhongMaterial");
 });

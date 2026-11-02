@@ -398,6 +398,26 @@ Proxima b (NASA artwork), or Asteroid — Bennu (NASA/OSIRIS-REx).
 radius / outer**, and **Opacity** adjust its placement and appearance. Images
 use the same closed sphere, polar caps and meridian clipping as the Earth image.
 
+Both **CMB surface** (or the dataset's outer-boundary surface) and
+**Sun / planet / moon surface** have a **Surface cut and underside** folder:
+
+- **Surface cut → Follow meridional slices** retains the original clipping behaviour.
+- **No cut** keeps that surface whole.
+- **Independent cut** removes a sector using its own **Cut start longitude**,
+  **Opening width (deg)** and **Opening hemisphere**, even when all slices are hidden.
+  For example, start 0°, width 90°, North removes one eighth of the sphere;
+  width 360°, North removes the northern hemisphere. These controls do not move
+  or hide the meridional/equatorial slices. Each surface has its own settings.
+- **Underside → Custom colour** colours only inward-facing surface fragments
+  exposed through a cut. **Light underside** makes them respond to the ambient
+  and directional controls in **Lighting**; switch it off for a flat colour.
+  **Hidden** removes inward-facing fragments. **Original appearance** preserves
+  the existing material behaviour. Outward-facing field colours/image are retained.
+- The planet panel also provides **Filler colour** and **Light filler** for the
+  gap-filling faces between the simulation boundary and planet image. These are
+  visual fillers, not simulated fields; they remain attached to the visible slices
+  and are disabled when a secondary dataset supplies the mantle.
+
 Changing the body changes the reference image only. It preserves your simulation
 fields, camera, clipping and radius settings. The radius is a multiple of the
 dataset's outer radius; choose the ratio appropriate to your figure. This is a
@@ -484,6 +504,21 @@ When the converter wrote magnetic field lines, the viewer can display internal
 shell lines, exterior potential/poloidal lines, or both. Lines can be coloured
 by strength or CMB seed polarity, with configurable width, opacity, stride, and
 range.
+
+Enable **Magnetic field lines → Separate strides** to set **Internal stride**
+and **Exterior stride** independently. For example, internal 8 and exterior 2
+shows every eighth internal group and every second exterior group. A stride
+of 1 shows all available groups; increasing it reduces the number displayed.
+Segments belonging to one line group stay together within each region.
+When the toggle is off, **Shared stride** preserves matched internal/exterior
+line selections. Independent densities can intentionally display an exterior
+arc without its internal continuation, or vice versa. These settings apply to
+both ordinary lines and B² tubes and participate in sequence preloading/caching.
+The available line count is limited by the converted trajectories.
+
+Surface cuts, underside/filler appearance and both stride settings are stored
+in `view.DTV2` and exports use the same rendered appearance. Older saved views
+retain their original linked clipping and shared-stride defaults.
 
 Choose **Magnetic field lines → Render as → B² tubes** to give each line a
 three-dimensional tube whose diameter varies along its path:
