@@ -3400,7 +3400,7 @@ test("independent density settings are used in loads and distinguish cached geom
 test("surface and density controls round-trip in saved views with invalid values rejected", () => {
   const ctx = viewer();
   const values = { lineSeparateStrides: true, lineShellStride: 7, lineExteriorStride: 2,
-    cmbSurfaceCut: "none", earthSurfaceCut: "independent", earthCutLongitude: 310,
+    cmbSectorS3: false, earthSectorN1: false, earthCutLongitude: 310,
     earthCutWidth: 90, earthCutHemisphere: "north", earthUnderside: "custom",
     earthUndersideColor: "#123456", earthUndersideLighting: false,
     sliceGapFillerColor: "#654321", sliceGapFillerLighting: false };
@@ -3412,18 +3412,18 @@ test("surface and density controls round-trip in saved views with invalid values
     assert.equal(ctx.applySnapshotParam(key, value), false, key);
 });
 
-test("legacy complete views restore shared density and slice-driven surfaces; partial updates preserve independence", () => {
+test("legacy complete views restore shared density and whole surfaces; partial updates preserve selections", () => {
   const ctx = viewer();
   Object.assign(ctx.params, { lineSeparateStrides: true, lineShellStride: 8, lineExteriorStride: 2,
-    cmbSurfaceCut: "independent", earthSurfaceCut: "none", earthUnderside: "custom" });
+    cmbSectorS3: false, earthSectorN1: false, earthUnderside: "custom" });
   ctx.applyViewStateParams({ backgroundColor: "#123456" });
-  assert.equal(ctx.params.cmbSurfaceCut, "independent");
+  assert.equal(ctx.params.cmbSectorS3, false);
   const oldView = { version: 2, cameraLengthUnit: "r_outer", scalarNamingVersion: 2,
     params: { lineStride: 5, earthTextureBody: "earth" } };
   ctx.applyViewStateParams(oldView);
   assert.equal(ctx.params.lineStride, 5);
   assert.equal(ctx.params.lineSeparateStrides, false);
-  assert.equal(ctx.params.cmbSurfaceCut, "follow");
-  assert.equal(ctx.params.earthSurfaceCut, "follow");
+  assert.equal(ctx.params.cmbSectorS3, true);
+  assert.equal(ctx.params.earthSectorN1, true);
   assert.equal(ctx.params.earthUnderside, "original");
 });

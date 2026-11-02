@@ -221,3 +221,18 @@ test('completion does not split quoted text or the and in paired levels',()=>{
   assert.equal(input.slice(commandCompletionStart(input)),'show meridional u');
   assert.equal(commandSuggestions(input,completionSettings)[0].value,'hide CMB and show meridional ur');
 });
+
+test('open/close commands target independent surface-sector masks', () => {
+  const opened = parse('open north octant between 270 and 360 degrees').patch;
+  for (const slot of ['cmb', 'earth']) {
+    assert.equal(opened[`${slot}CutLongitude`], 270);
+    assert.equal(opened[`${slot}SectorN1`], false);
+    for (const h of ['N', 'S']) for (let i = 1; i <= 4; i++) {
+      if (h === 'N' && i === 1) continue;
+      assert.equal(opened[`${slot}Sector${h}${i}`], true);
+    }
+  }
+  const closed = parse('close sphere').patch;
+  for (const slot of ['cmb', 'earth']) for (const h of ['N', 'S']) for (let i = 1; i <= 4; i++)
+    assert.equal(closed[`${slot}Sector${h}${i}`], true);
+});

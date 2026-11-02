@@ -9,7 +9,7 @@ const source = fs.readFileSync(new URL("../src/main.js", import.meta.url), "utf8
 const ctx = vm.createContext({ THREE, OPAQUE_OPACITY: 0.999, params: {} });
 for (const name of ["clamp", "normalizePhi", "isAngleInCCWSector", "getFourSectorBoundaries",
   "getSectorIndexForPhi", "shouldKeepSurfaceCellForClip", "isEffectivelyOpaque",
-  "applyOpacityAndDepth", "configureSurfaceUnderside", "getSurfaceClipOptions", "getActiveCmbClipOptions", "makeEarthSurfaceMesh", "makeGapFillerMaterial"]) {
+  "applyOpacityAndDepth", "addSurfaceAppearanceControls", "configureSurfaceUnderside", "getSurfaceClipOptions", "getActiveCmbClipOptions", "makeEarthSurfaceMesh", "makeGapFillerMaterial"]) {
   const match = source.match(new RegExp(`function ${name}\\(`));
   assert.ok(match, `Viewer function ${name} exists`);
   vm.runInContext(source.slice(match.index, source.indexOf("\n}", match.index) + 2), ctx);
@@ -123,34 +123,38 @@ test("the bundled texture is a 2:1 PNG suitable for latitude-longitude mapping",
   assert.equal(width, 2 * height);
 });
 
-test("independent surface cuts work with hidden slices and leave the other surface alone", () => {
-  Object.assign(ctx.params, { cmbSurfaceCut: "none", earthSurfaceCut: "independent",
-    earthCutLongitude: 315, earthCutWidth: 90, earthCutHemisphere: "north",
-    showMeridian: false, showMeridian2: false });
-  const cut = ctx.getSurfaceClipOptions("earth");
-  const keep = (theta, phi) => ctx.shouldKeepSurfaceCellForClip(theta, phi, cut);
-  assert.equal(keep(Math.PI / 4, 0), false, "cut wraps through zero longitude");
-  assert.equal(keep(3 * Math.PI / 4, 0), true, "southern hemisphere preserved");
-  assert.equal(keep(Math.PI / 4, Math.PI), true, "outside sector preserved");
-  const full = mesh(), clipped = mesh(0, cut);
-  assert.equal(clipped.geometry.index.count, full.geometry.index.count * 7 / 8);
-  assert.equal(ctx.getSurfaceClipOptions("cmb").enabled, false);
-  ctx.params.meridianPhiDeg = 140; ctx.params.showMeridian = true;
-  assert.deepEqual(ctx.getSurfaceClipOptions("earth"), cut, "slice controls cannot move an independent cut");
-  ctx.params.earthCutWidth = 0;
-  assert.equal(mesh(0, ctx.getSurfaceClipOptions("earth")).geometry.index.count, full.geometry.index.count);
-  ctx.params.earthCutWidth = 360; ctx.params.earthCutHemisphere = "both";
+test("all 256 surface-sector masks select exactly their own octants without slices", () => {
+  Object.assign(ctx.params, { earthCutLongitude: 0, showMeridian: false, showMeridian2: false, showEquator: false });
+  const keys = ["N", "S"].flatMap(h => [1, 2, 3, 4].map(i => `earthSector${h}${i}`));
+  for (let bits = 0; bits < 256; bits++) {
+    keys.forEach((key, i) => ctx.params[key] = Boolean(bits & (1 << i)));
+    const clip = ctx.getSurfaceClipOptions("earth");
+    for (let i = 0; i < 8; i++) {
+      const theta = i < 4 ? Math.PI / 4 : 3 * Math.PI / 4;
+      const phi = ((i % 4) + .5) * Math.PI / 2;
+      assert.equal(ctx.shouldKeepSurfaceCellForClip(theta, phi, clip), Boolean(bits & (1 << i)));
+    }
+  }
+  keys.forEach(key => ctx.params[key] = true);
+  const full = mesh();
+  ctx.params.earthSectorN1 = false;
+  assert.equal(mesh(0, ctx.getSurfaceClipOptions("earth")).geometry.index.count, full.geometry.index.count * 7 / 8);
+  keys.forEach(key => ctx.params[key] = false);
   assert.equal(mesh(0, ctx.getSurfaceClipOptions("earth")).geometry.index.count, 0);
 });
 
-test("legacy surface clipping still follows meridians and requires a visible slice", () => {
-  Object.assign(ctx.params, { cmbSurfaceCut: "follow", earthSurfaceCut: "follow",
-    cmbClipWithMeridian: true, cmbClipMode: "rear-half", cmbRearSide: "positive",
-    meridianPhiDeg: 60, showMeridian: true, showMeridian2: false });
-  assert.deepEqual(ctx.getSurfaceClipOptions("earth"), ctx.getSurfaceClipOptions("cmb"));
-  assert.equal(ctx.getSurfaceClipOptions("earth").enabled, true);
-  ctx.params.showMeridian = false;
-  assert.equal(ctx.getSurfaceClipOptions("earth").enabled, false);
+test("surface sector masks and rotation are independent of every slice and of each other", () => {
+  for (const slot of ["earth", "cmb"]) for (const h of ["N", "S"]) for (let i = 1; i <= 4; i++)
+    ctx.params[`${slot}Sector${h}${i}`] = true;
+  Object.assign(ctx.params, { earthCutLongitude: 315, earthSectorN1: false, cmbCutLongitude: 0 });
+  const before = ctx.getSurfaceClipOptions("earth");
+  assert.equal(ctx.shouldKeepSurfaceCellForClip(Math.PI / 4, 0, before), false);
+  assert.equal(ctx.shouldKeepSurfaceCellForClip(3 * Math.PI / 4, 0, before), true);
+  assert.equal(ctx.shouldKeepSurfaceCellForClip(Math.PI / 4, 0, ctx.getSurfaceClipOptions("cmb")), true);
+  Object.assign(ctx.params, { showMeridian: true, showMeridian2: true, showEquator: true,
+    meridianPhiDeg: 210, meridian2PhiDeg: 310, equator2Z: -.5, quarterN1: false,
+    cmbSurfaceCut: "follow", earthSurfaceCut: "follow", cmbClipWithMeridian: true });
+  assert.deepEqual(ctx.getSurfaceClipOptions("earth"), before);
 });
 
 test("custom underside uses an inward-facing colour with optional lighting, preserving the outer texture", () => {
@@ -182,4 +186,32 @@ test("gap filler can use a custom colour either lit or flat", () => {
   assert.equal(flat.opacity, .4);
   ctx.params.sliceGapFillerLighting = true;
   assert.equal(ctx.makeGapFillerMaterial(.4).type, "MeshPhongMaterial");
+});
+
+
+test("all eight sector checkboxes and underside colour/lighting are accessible; colour enables custom mode", () => {
+  const controls = [], children = [];
+  const folder = () => ({ domElement: { classList: { add() {} } }, addFolder() { const child = folder(); children.push(child); return child; },
+    add(object, key) {
+      const c = { object, key, name(label) { this.label = label; return this; },
+        onChange(fn) { this.change = fn; return this; }, onFinishChange(fn) { this.finish = fn; return this; },
+        updateDisplay() {}, domElement: {} };
+      controls.push(c); return c;
+    }, addColor(object, key) { return this.add(object, key); } });
+  ctx.closeGuiFolder = () => {};
+  Object.assign(ctx.params, { earthUnderside: "original", earthUndersideColor: "#888888", earthUndersideLighting: true });
+  let builds = 0;
+  ctx.addSurfaceAppearanceControls(folder(), "earth", () => builds++);
+  assert.equal(controls.filter(c => /^earthSector[NS][1-4]$/.test(c.key)).length, 8);
+  assert.ok(!controls.some(c => c.key === "earthSurfaceCut" || c.key === "earthCutWidth"));
+  const colour = controls.find(c => c.key === "earthUndersideColor");
+  const light = controls.find(c => c.key === "earthUndersideLighting");
+  assert.ok(colour && light);
+  colour.object[colour.key] = "#c86532"; colour.change();
+  assert.equal(ctx.params.earthUnderside, "custom");
+  ctx.params.earthUnderside = "hidden";
+  light.object[light.key] = false; light.change();
+  assert.equal(ctx.params.earthUnderside, "custom");
+  assert.equal(ctx.params.earthUndersideLighting, false);
+  assert.equal(builds, 2);
 });

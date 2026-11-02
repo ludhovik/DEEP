@@ -387,36 +387,37 @@ worker. The small `(nr, ntheta)` means are cached by source volume and grid,
 shared across outputs, and released with the source cache. Full derived
 volumes are not allocated; fluctuations are evaluated only where displayed.
 
-The CMB can be clipped by one or two meridional planes or by an explicit
-eight-quarter mask. In **Between meridional planes** mode, **CMB side** switches
-between the complementary front and rear sectors. Open **Sun / planet / moon surface**, enable **Show**, choose
+The CMB and planet surfaces each have their own eight-sector visibility mask,
+independent of meridional and equatorial slices. Open **Sun / planet / moon surface**, enable **Show**, choose
 **Display → Surface image**, then select **Image body**: Sun, Earth, Mars, Ganymede,
 Jupiter, Saturn, Mercury, Venus (radar surface), Enceladus, Moon, Earth — Rodinia
 (1 billion years ago), Early Earth (NASA lava-world analogue), Super-Earth —
 Proxima b (NASA artwork), or Asteroid — Bennu (NASA/OSIRIS-REx).
 **Texture longitude**, **Image
 radius / outer**, and **Opacity** adjust its placement and appearance. Images
-use the same closed sphere, polar caps and meridian clipping as the Earth image.
+use the same closed sphere, polar caps and independent sector selection as the Earth image.
 
 Both **CMB surface** (or the dataset's outer-boundary surface) and
-**Sun / planet / moon surface** have a **Surface cut and underside** folder:
+**Sun / planet / moon surface** have **Surface sectors (checked = shown)**:
 
-- **Surface cut → Follow meridional slices** retains the original clipping behaviour.
-- **No cut** keeps that surface whole.
-- **Independent cut** removes a sector using its own **Cut start longitude**,
-  **Opening width (deg)** and **Opening hemisphere**, even when all slices are hidden.
-  For example, start 0°, width 90°, North removes one eighth of the sphere;
-  width 360°, North removes the northern hemisphere. These controls do not move
-  or hide the meridional/equatorial slices. Each surface has its own settings.
-- **Underside → Custom colour** colours only inward-facing surface fragments
-  exposed through a cut. **Light underside** makes them respond to the ambient
-  and directional controls in **Lighting**; switch it off for a flat colour.
-  **Hidden** removes inward-facing fragments. **Original appearance** preserves
-  the existing material behaviour. Outward-facing field colours/image are retained.
-- The planet panel also provides **Filler colour** and **Light filler** for the
-  gap-filling faces between the simulation boundary and planet image. These are
-  visual fillers, not simulated fields; they remain attached to the visible slices
-  and are disabled when a secondary dataset supplies the mantle.
+- Eight checkboxes select four northern and four southern sectors independently.
+  Checked = shown, unchecked = removed. Each sector spans 90° of longitude and
+  one hemisphere. Uncheck **North 1: 0–90°** to open one eighth of the sphere.
+- **Sector rotation (deg)** rotates the eight-sector layout without moving
+  any meridional or equatorial slices. The checkbox angles are relative to this
+  rotation. The CMB and planet map have separate masks and rotation controls.
+- All eight checked shows the whole sphere; all eight unchecked hides its mesh.
+  The selection works with every meridional/equatorial slice hidden.
+- **Underside colour** and **Light underside** are always visible directly in
+  the surface's main folder. Changing either automatically selects **Custom
+  colour**, including after loading an older view set to Original/Hidden.
+  Lighting on responds to **Lighting** angle and intensity; off gives a flat
+  colour. Only inward-facing fragments change; the outer image/field is retained.
+- **Underside → Hidden** hides inward-facing fragments. **Original appearance**
+  retains the source material's behaviour.
+- **Filler colour** and **Light filler** control the separate gap-filling faces
+  between the simulation boundary and planet image. These visual fillers follow
+  the visible slices and are disabled when a secondary dataset supplies the mantle.
 
 Changing the body changes the reference image only. It preserves your simulation
 fields, camera, clipping and radius settings. The radius is a multiple of the
@@ -518,7 +519,9 @@ The available line count is limited by the converted trajectories.
 
 Surface cuts, underside/filler appearance and both stride settings are stored
 in `view.DTV2` and exports use the same rendered appearance. Older saved views
-retain their original linked clipping and shared-stride defaults.
+retain shared-stride defaults. Views without the new surface-sector keys start
+with all eight sectors shown; choose and save their surface masks once. The old
+meridian-linked surface clipping controls have been removed.
 
 Choose **Magnetic field lines → Render as → B² tubes** to give each line a
 three-dimensional tube whose diameter varies along its path:

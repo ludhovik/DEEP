@@ -382,6 +382,14 @@ const params = {
   cmbClipMode: "rear-half",
   cmbRearSide: "positive",
   cmbSurfaceCut: "follow",
+  cmbSectorN1: true,
+  cmbSectorN2: true,
+  cmbSectorN3: true,
+  cmbSectorN4: true,
+  cmbSectorS1: true,
+  cmbSectorS2: true,
+  cmbSectorS3: true,
+  cmbSectorS4: true,
   cmbCutLongitude: 0,
   cmbCutWidth: 90,
   cmbCutHemisphere: "north",
@@ -389,6 +397,14 @@ const params = {
   cmbUndersideColor: "#888888",
   cmbUndersideLighting: true,
   earthSurfaceCut: "follow",
+  earthSectorN1: true,
+  earthSectorN2: true,
+  earthSectorN3: true,
+  earthSectorN4: true,
+  earthSectorS1: true,
+  earthSectorS2: true,
+  earthSectorS3: true,
+  earthSectorS4: true,
   earthCutLongitude: 0,
   earthCutWidth: 90,
   earthCutHemisphere: "north",
@@ -827,10 +843,7 @@ function renderSignature(slot) {
     if (typeof value === "function" || key.endsWith("Opacity")) return false;
     if (slot === "mollweide" && ["mollweidePosition", "mollweideWidth", "mollweideX", "mollweideY"].includes(key)) return false;
     const own = key.startsWith(prefix) && !key.startsWith(`${prefix}2`);
-    const clip = ["cmb", "earth"].includes(slot) && (key.startsWith("quarter")
-      || key.startsWith("cmbClip") || key === "cmbRearSide"
-      || key === "meridianPhiDeg" || key === "meridian2PhiDeg");
-    return own || key === visibility || clip || /^(primary|secondary)(Native|Physical)Radius$/.test(key) || key === "magneticVolumeDomain"
+    return own || key === visibility || /^(primary|secondary)(Native|Physical)Radius$/.test(key) || key === "magneticVolumeDomain"
       || (slot.startsWith("meridian") && key.startsWith("phiAvg"));
   }));
 }
@@ -1524,17 +1537,13 @@ function updateSurfaceAttribution(body) {
 }
 
 function getSurfaceClipOptions(slot) {
-  const mode = params[`${slot}SurfaceCut`] || "follow";
-  if (mode === "none") return { enabled: false };
-  if (mode === "independent") {
-    return {
-      enabled: true, mode: "independent-sector",
-      longitude: Number(params[`${slot}CutLongitude`]) * Math.PI / 180,
-      width: Math.max(0, Math.min(360, Number(params[`${slot}CutWidth`]))) * Math.PI / 180,
-      hemisphere: params[`${slot}CutHemisphere`],
-    };
-  }
-  return getActiveCmbClipOptions();
+  // Surface sectors belong to the surface itself, never to a visible slice.
+  return {
+    enabled: true, mode: "surface-sectors",
+    longitude: Number(params[`${slot}CutLongitude`] || 0) * Math.PI / 180,
+    northMask: [1, 2, 3, 4].map(i => params[`${slot}SectorN${i}`] !== false),
+    southMask: [1, 2, 3, 4].map(i => params[`${slot}SectorS${i}`] !== false),
+  };
 }
 
 // One material keeps opacity, disposal and colour-buffer updates unchanged.
@@ -1625,7 +1634,7 @@ function getActiveIsoClipOptions() {
       : Number(params.isoClipOffsetMeridian1 || 0.0);
 
   let isoClip = { enabled: false };
-  if (params.cmbClipWithMeridian && anyMeridianShown && params.cmbClipMode !== "none") {
+  if (anyMeridianShown && params.cmbClipMode !== "none") {
     if (params.cmbClipMode === "between-meridians-behind" && mer1Shown && mer2Shown) {
       isoClip = {
         enabled: true,
@@ -1674,6 +1683,11 @@ function getSectorIndexForPhi(phiValue, phiA, phiB) {
 
 function shouldKeepSurfaceCellForClip(thetaValue, phiValue, clipOptions = null) {
   if (!clipOptions?.enabled) return true;
+  if (clipOptions.mode === "surface-sectors") {
+    const sector = Math.min(3, Math.floor(normalizePhi(phiValue - clipOptions.longitude) / (Math.PI / 2)));
+    const mask = thetaValue < Math.PI / 2 ? clipOptions.northMask : clipOptions.southMask;
+    return mask[sector] !== false;
+  }
   if (clipOptions.mode === "independent-sector") {
     const north = thetaValue < Math.PI / 2;
     const inHemisphere = clipOptions.hemisphere === "both"
@@ -7759,7 +7773,7 @@ function addDisplayControls(gui, slot, label, fieldParam, showParam, opacityPara
     if (params[showParam]) await rebuildFn({ reuseGeometry: true });
     updateVisibility();
     if (slot === "meridian" || slot === "meridian2") {
-      if (params.showCMB) await rebuildCMB({ reuseGeometry: false });
+      await rebuildGapFillers();
       if (params.showIsosurfaces && !params.sequencePlaying) await rebuildIsosurfaces();
     }
   }));
@@ -7774,27 +7788,30 @@ function addDisplayControls(gui, slot, label, fieldParam, showParam, opacityPara
 }
 
 function addSurfaceAppearanceControls(folder, slot, rebuild) {
-  const cut = folder.addFolder("Surface cut and underside");
-  const independent = [];
-  const updateControls = () => {
-    independent.forEach(controller => controller.show(params[`${slot}SurfaceCut`] === "independent"));
-    colour.show(params[`${slot}Underside`] === "custom");
-    lighting.show(params[`${slot}Underside`] === "custom");
+  folder.domElement.classList.add("surface-appearance-controls");
+  const sectors = folder.addFolder("Surface sectors (checked = shown)");
+  sectors.domElement.classList.add("surface-appearance-controls");
+  sectors.add(params, `${slot}CutLongitude`, 0, 360, 1).name("Sector rotation (deg)").onFinishChange(rebuild);
+  for (const [hemisphere, label] of [["N", "North"], ["S", "South"]]) {
+    for (let i = 1; i <= 4; i++) {
+      sectors.add(params, `${slot}Sector${hemisphere}${i}`)
+        .name(`${label} ${i}: ${(i - 1) * 90}–${i * 90}°`).onChange(rebuild);
+    }
+  }
+  sectors.domElement.title = "Checked sectors are shown; unchecked sectors are removed. The angles are relative to Sector rotation. These eight choices do not depend on meridional or equatorial cuts.";
+  const underside = folder.add(params, `${slot}Underside`, {
+    "Custom colour": "custom", Hidden: "hidden", "Original appearance": "original",
+  }).name("Underside").onChange(rebuild);
+  // Always accessible, even when an older saved view selected Original/Hidden.
+  const activateCustom = () => {
+    params[`${slot}Underside`] = "custom";
+    underside.updateDisplay();
+    rebuild();
   };
-  cut.add(params, `${slot}SurfaceCut`, {
-    "Follow meridional slices": "follow", "No cut": "none", "Independent cut": "independent",
-  }).name("Surface cut").onChange(() => { updateControls(); rebuild(); });
-  independent.push(cut.add(params, `${slot}CutLongitude`, 0, 360, 1).name("Cut start longitude").onFinishChange(rebuild));
-  independent.push(cut.add(params, `${slot}CutWidth`, 0, 360, 1).name("Opening width (deg)").onFinishChange(rebuild));
-  independent.push(cut.add(params, `${slot}CutHemisphere`, { North: "north", South: "south", Both: "both" })
-    .name("Opening hemisphere").onChange(rebuild));
-  cut.add(params, `${slot}Underside`, { "Original appearance": "original", Hidden: "hidden", "Custom colour": "custom" })
-    .name("Underside").onChange(() => { updateControls(); rebuild(); });
-  const colour = cut.addColor(params, `${slot}UndersideColor`).name("Underside colour").onChange(rebuild);
-  const lighting = cut.add(params, `${slot}UndersideLighting`).name("Light underside").onChange(rebuild);
-  cut.domElement.title = "Independent cut removes a longitude sector in the chosen hemisphere, even with all slices hidden. Width 90° + North removes one eighth. Underside controls inward-facing surface colour; lighting uses the Lighting panel.";
-  updateControls();
-  closeGuiFolder(cut);
+  folder.addColor(params, `${slot}UndersideColor`).name("Underside colour").onChange(activateCustom);
+  folder.add(params, `${slot}UndersideLighting`).name("Light underside").onChange(activateCustom)
+    .domElement.title = "On: respond to Lighting angle and intensity. Off: flat custom colour. Changing this enables the custom underside.";
+  closeGuiFolder(sectors);
 }
 
 function addMeridianSideControls(folder, label, slot, fieldParam, opacityParam, rebuildFn, availableFields) {
@@ -7815,7 +7832,7 @@ function addSplitMeridianControls(gui, slot, label, showParam, rebuildFn, availa
   folder.add(params, showParam).name("Show").onChange(viewerTaskCallback(`${label} visibility`, async () => {
     if (params[showParam]) await rebuildFn();
     updateVisibility();
-    if (params.showCMB) await rebuildCMB({ reuseGeometry: false });
+    await rebuildGapFillers();
     if (params.showIsosurfaces && !params.sequencePlaying) await rebuildIsosurfaces();
   }));
   const independentKey = `${slot}IndependentSides`;
@@ -8016,11 +8033,11 @@ function applyViewStateParams(snapshot) {
   if (snapshot.params && snapshot.version && !Object.prototype.hasOwnProperty.call(snap.params, "earthTextureBody")) {
     params.earthTextureBody = "earth";
   }
-  // Older full view codes must recover linked strides and slice-driven cuts,
-  // even if the current view has independent controls enabled.
+  // Older full view codes recover shared strides and all eight surface sectors.
+  // Surface masks in current view codes are restored independently of slices.
   if (snapshot.params && snapshot.version) {
     for (const key of Object.keys(DEFAULT_VIEW_PARAMS)) {
-      if (/^(lineSeparateStrides|lineShellStride|lineExteriorStride|(?:cmb|earth)(?:SurfaceCut|CutLongitude|CutWidth|CutHemisphere|Underside.*)|sliceGapFiller(?:Color|Lighting))$/.test(key)
+      if (/^(lineSeparateStrides|lineShellStride|lineExteriorStride|(?:cmb|earth)(?:SurfaceCut|Sector[NS][1-4]|CutLongitude|CutWidth|CutHemisphere|Underside.*)|sliceGapFiller(?:Color|Lighting))$/.test(key)
           && !Object.prototype.hasOwnProperty.call(snap.params, key)) params[key] = DEFAULT_VIEW_PARAMS[key];
     }
   }
@@ -8812,7 +8829,6 @@ function buildGui() {
   const merFolder = addSplitMeridianControls(gui, "meridian", "Meridional slice 1", "showMeridian", rebuildMeridian, meridianFields);
   const rebuildMeridianView = async () => {
     await rebuildMeridian();
-    await rebuildCMB();
     await rebuildIsosurfaces();
   };
   merFolder.add(params, "meridianPhiDeg", 0, 360, 1).name("Longitude phi")
@@ -8821,36 +8837,10 @@ function buildGui() {
   const mer2Folder = addSplitMeridianControls(gui, "meridian2", "Meridional slice 2", "showMeridian2", rebuildMeridian2, meridianFields);
   const rebuildMeridian2View = async () => {
     await rebuildMeridian2();
-    await rebuildCMB();
-    await rebuildIsosurfaces();
-  };
-  const rebuildCmbAndIso = async () => {
-    await rebuildCMB();
     await rebuildIsosurfaces();
   };
   mer2Folder.add(params, "meridian2PhiDeg", 0, 360, 1).name("Longitude phi")
     .onFinishChange(viewerTaskCallback("Meridian 2 position", rebuildMeridian2View));
-
-  merFolder.add(params, "cmbClipWithMeridian").name(`Clip ${displayBoundaryName("cmb")} with meridians`)
-    .onChange(viewerTaskCallback("CMB clipping", rebuildCmbAndIso));
-  merFolder.add(params, "cmbClipMode", {
-    None: "none",
-    "Rear half": "rear-half",
-    "Between meridional planes": "between-meridians-behind",
-    "Selected 8 quarters": "selected-eight-quarters"
-  }).name(`${displayBoundaryName("cmb")} clip mode`).onChange(viewerTaskCallback("CMB clip mode", rebuildCmbAndIso));
-  merFolder.add(params, "cmbRearSide", { Rear: "positive", Front: "negative" }).name(`${displayBoundaryName("cmb")} side`)
-    .onChange(viewerTaskCallback("CMB clip side", rebuildCmbAndIso));
-  const quarterFolder = merFolder.addFolder("8-quarter selection");
-  const rebuildQuarterMask = debouncedViewerTask("CMB quarter mask", rebuildCMB);
-  quarterFolder.add(params, "quarterN1").name("North Q1").onChange(rebuildQuarterMask);
-  quarterFolder.add(params, "quarterN2").name("North Q2").onChange(rebuildQuarterMask);
-  quarterFolder.add(params, "quarterN3").name("North Q3").onChange(rebuildQuarterMask);
-  quarterFolder.add(params, "quarterN4").name("North Q4").onChange(rebuildQuarterMask);
-  quarterFolder.add(params, "quarterS1").name("South Q1").onChange(rebuildQuarterMask);
-  quarterFolder.add(params, "quarterS2").name("South Q2").onChange(rebuildQuarterMask);
-  quarterFolder.add(params, "quarterS3").name("South Q3").onChange(rebuildQuarterMask);
-  quarterFolder.add(params, "quarterS4").name("South Q4").onChange(rebuildQuarterMask);
 
   const lighting = gui.addFolder("Lighting");
   lighting.add(params, "ambientIntensity", 0.0, 2.0, 0.01).name("Ambient").onChange(updateLighting);
@@ -8975,6 +8965,10 @@ function buildGui() {
   isoFolder.add(params, "isoField", volumeFields).name("Field").onChange(refreshIsosurfaces);
   isoFolder.add(params, "isoResolution", 16, 80, 2).name("Resolution").onFinishChange(refreshIsosurfaces);
   isoFolder.add(params, "isoClipWithMeridian").name("Clip with meridians").onChange(refreshIsosurfaces);
+  isoFolder.add(params, "cmbClipMode", { "Rear half": "rear-half", "Between meridional planes": "between-meridians-behind" })
+    .name("Clip mode").onChange(refreshIsosurfaces);
+  isoFolder.add(params, "cmbRearSide", { Rear: "positive", Front: "negative" })
+    .name("Clip side").onChange(refreshIsosurfaces);
   isoFolder.add(params, "isoClipOffsetMeridian1", -1.0, 1.0, 0.01).name("Clip offset M1").onFinishChange(refreshIsosurfaces);
   isoFolder.add(params, "isoClipOffsetMeridian2", -1.0, 1.0, 0.01).name("Clip offset M2").onFinishChange(refreshIsosurfaces);
   isoFolder.add(params, "showIsoPositive").name("Show positive").onChange(refreshIsosurfaces);
@@ -9001,7 +8995,6 @@ function buildGui() {
   if (earthFields.length > 0 && !earthFields.includes(params.earthField)) {
     params.earthField = chooseField(["Br_Earth_lmax13"], earthFields);
   }
-  addSurfaceAppearanceControls(earthFolder, "earth", rebuildEarth);
   earthFolder.add(params, "showEarthSurface").name("Show").onChange(rebuildEarth);
   earthFolder.add(params, "earthDisplayMode", earthModes).name("Display").onChange(rebuildEarth);
   earthFolder.add(params, "earthTextureBody", SURFACE_TEXTURE_OPTIONS).name("Image body").onChange(rebuildEarth);
@@ -9015,6 +9008,7 @@ function buildGui() {
   earthFolder.add(params, "earthLongitudeDeg", -180, 180, 1).name("Texture longitude").onFinishChange(rebuildEarth);
   earthFolder.add(params, "earthRadiusScale", 1.0, 2.5, 0.01).name("Image radius / outer").onFinishChange(rebuildEarth);
   earthFolder.add(params, "earthOpacity", 0.05, 1.0, 0.01).name("Opacity").onChange(updateOpacities);
+  addSurfaceAppearanceControls(earthFolder, "earth", rebuildEarth);
   earthFolder.add(params, "showSliceGapFiller").name("Slice gap filler")
     .onChange(viewerTaskCallback("Slice gap filler", rebuildGapFillers));
   earthFolder.addColor(params, "sliceGapFillerColor").name("Filler colour")
@@ -9037,7 +9031,6 @@ function buildGui() {
     eq2Folder,
     merFolder,
     mer2Folder,
-    quarterFolder,
     lighting,
     appearance,
     exportFolder,

@@ -647,3 +647,8 @@ body.command-applying .lil-gui { pointer-events: none; }
 #viewer-command-suggestions [role="option"]:hover, #viewer-command-suggestions [aria-selected="true"] { background: #284d70; }
 #viewer-command-suggestions small { display: block; color: #b3c9dc; font-size: 11px; }
 #viewer-command-box .command-completion-hint { display: block; margin-top: 4px; color: #b3c9dc; font-size: 11px; }
+
+/* Nested sector expansion must grow the surface panel after lil-gui's animation. */
+.lil-gui:not(.lil-closed):not(.lil-transition):is(.surface-appearance-controls, :has(.surface-appearance-controls)) > .lil-children {
+  height: auto !important;
+}
