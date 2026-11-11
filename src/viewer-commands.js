@@ -95,6 +95,7 @@ export function parseViewerCommand(input, { fields = {}, params = {}, cameraAzim
     }
     if (!hidden && /^(?:close (?:the )?(?:sphere|opening)|full sphere)$/.test(clause)) {
       if (opening) throw new Error('Choose either an open octant or a closed sphere in one command.');
+      patch.cmbFollowMeridians = false;
       patch.cmbClipWithMeridian = false; patch.cmbClipMode = 'none';
       for (const slot of ['cmb', 'earth']) for (const h of ['N', 'S'])
         for (let i = 1; i <= 4; i++) patch[`${slot}Sector${h}${i}`] = true;
@@ -215,6 +216,7 @@ export function parseViewerCommand(input, { fields = {}, params = {}, cameraAzim
       patch.showMeridian = true; patch.meridianPhiDeg = start;
       patch.meridian2PhiDeg = end;
     }
+    patch.cmbFollowMeridians = false;
     patch.cmbClipWithMeridian = true; patch.cmbClipMode = 'selected-eight-quarters';
     for (const slot of ['cmb', 'earth']) {
       patch[`${slot}CutLongitude`] = start;

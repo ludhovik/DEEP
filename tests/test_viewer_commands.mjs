@@ -224,6 +224,7 @@ test('completion does not split quoted text or the and in paired levels',()=>{
 
 test('open/close commands target independent surface-sector masks', () => {
   const opened = parse('open north octant between 270 and 360 degrees').patch;
+  assert.equal(opened.cmbFollowMeridians, false);
   for (const slot of ['cmb', 'earth']) {
     assert.equal(opened[`${slot}CutLongitude`], 270);
     assert.equal(opened[`${slot}SectorN1`], false);
@@ -233,6 +234,7 @@ test('open/close commands target independent surface-sector masks', () => {
     }
   }
   const closed = parse('close sphere').patch;
+  assert.equal(closed.cmbFollowMeridians, false);
   for (const slot of ['cmb', 'earth']) for (const h of ['N', 'S']) for (let i = 1; i <= 4; i++)
     assert.equal(closed[`${slot}Sector${h}${i}`], true);
 });

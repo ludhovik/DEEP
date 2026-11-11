@@ -11,6 +11,8 @@ import { createMollweideOverlay, sampleRadialSurface, surfaceRange as mollweideR
 import { createOverlayFloater, OVERLAY_POSITION_OPTIONS } from "./overlay-floater.js";
 import { LongitudeAverageCache, longitudeDisplayField,
   volumeDisplayValue, longitudeFieldLabel } from "./longitude-average.js";
+import { createSliceSampler, stencilValue, appendSliceStencil, cachedSliceValue } from "./slice-sampling.js";
+import { setSliceColours } from "./slice-colours.js";
 import { fieldRadialDomain } from "./volume-domain.js";
 import { isosurfaceLegendEntries, updateIsosurfaceLegend } from "./isosurface-legend.js";
 import { bindRecenterGesture } from "./recenter-gesture.js";
@@ -378,6 +380,9 @@ const params = {
   meridianPhiDeg: 0,
   meridian2PhiDeg: 90,
   equator2Z: 0.25,
+  cmbFollowMeridians: false,
+  cmbMeridianMode: "rear-half",
+  cmbMeridianSide: "positive",
   cmbClipWithMeridian: true,
   cmbClipMode: "rear-half",
   cmbRearSide: "positive",
@@ -844,6 +849,7 @@ function renderSignature(slot) {
     if (slot === "mollweide" && ["mollweidePosition", "mollweideWidth", "mollweideX", "mollweideY"].includes(key)) return false;
     const own = key.startsWith(prefix) && !key.startsWith(`${prefix}2`);
     return own || key === visibility || /^(primary|secondary)(Native|Physical)Radius$/.test(key) || key === "magneticVolumeDomain"
+      || (slot === "cmb" && params.cmbFollowMeridians && ["showMeridian", "showMeridian2", "meridianPhiDeg", "meridian2PhiDeg"].includes(key))
       || (slot.startsWith("meridian") && key.startsWith("phiAvg"));
   }));
 }
@@ -1537,7 +1543,20 @@ function updateSurfaceAttribution(body) {
 }
 
 function getSurfaceClipOptions(slot) {
-  // Surface sectors belong to the surface itself, never to a visible slice.
+  if (slot === "cmb" && params.cmbFollowMeridians) {
+    const first = params.showMeridian, second = params.showMeridian2;
+    if (!first && !second) return { enabled: false };
+    const radians = Math.PI / 180;
+    if (first && second && params.cmbMeridianMode === "between-meridians-behind") {
+      return { enabled: true, mode: "between-meridians-behind", hasTwoPlanes: true,
+        phiA: params.meridianPhiDeg * radians, phiB: params.meridian2PhiDeg * radians,
+        side: params.cmbMeridianSide };
+    }
+    return { enabled: true, mode: "rear-half",
+      phi0: (first ? params.meridianPhiDeg : params.meridian2PhiDeg) * radians,
+      side: params.cmbMeridianSide };
+  }
+  // Independent surface sectors remain the default for both surfaces.
   return {
     enabled: true, mode: "surface-sectors",
     longitude: Number(params[`${slot}CutLongitude`] || 0) * Math.PI / 180,
@@ -4526,17 +4545,9 @@ function meridianRange(...args) {
 }
 
 function meridianRangeOnGrid(field, phiDeg, slot) {
-  const domain = fieldDisplayDomain(field);
-  const phi0 = THREE.MathUtils.degToRad(phiDeg);
-  const ip0 = nearestPhiIndex(phi0);
-  const ip1 = nearestPhiIndex(phi0 + Math.PI);
-  const raw = rawMinMaxFromSamples(field, function* () {
-    for (const ip of [ip0, ip1]) {
-      for (let ir = domain.start; ir <= domain.end; ir++) {
-        for (let it = 0; it < metadata.ntheta; it++) yield [ir, it, ip];
-      }
-    }
-  });
+  const right = meridianHalfRangeOnGrid(field, phiDeg, "right", slot, true);
+  const left = meridianHalfRangeOnGrid(field, phiDeg, "left", slot, true);
+  const raw = sliceRange([...right, ...left]);
   return applyScale(slot, raw[0], raw[1]);
 }
 
@@ -4544,15 +4555,18 @@ function meridianHalfRange(...args) {
   return withFieldGrid(args[0], () => meridianHalfRangeOnGrid(...args));
 }
 
-function meridianHalfRangeOnGrid(field, phiDeg, side, slot) {
+function meridianHalfRangeOnGrid(field, phiDeg, side, slot, rawOnly = false) {
   const domain = fieldDisplayDomain(field);
-  const offset = side === "left" ? Math.PI : 0.0;
-  const ip = nearestPhiIndex(THREE.MathUtils.degToRad(phiDeg) + offset);
-  const raw = rawMinMaxFromSamples(field, function* () {
-    for (let ir = domain.start; ir <= domain.end; ir++) {
-      for (let it = 0; it < metadata.ntheta; it++) yield [ir, it, ip];
+  const sample = fieldSliceSampler(field);
+  const phi = THREE.MathUtils.degToRad(phiDeg) + (side === "left" ? Math.PI : 0);
+  const values = [];
+  for (let ir = domain.start; ir <= domain.end; ir++) {
+    for (let it = 0; it < metadata.ntheta; it++) {
+      values.push(stencilValue(sample(radiusAtIndex(ir), thetaAtIndex(it), phi), i => volumeDisplayValue(field, i)));
     }
-  });
+  }
+  if (rawOnly) return values;
+  const raw = sliceRange(values);
   return applyScale(slot, raw[0], raw[1]);
 }
 
@@ -6281,6 +6295,28 @@ function makeCmbSurfaceMeshOnGrid(fieldObject, radiusIndex, opacity, vmin, vmax,
   return mesh;
 }
 
+function fieldSliceSampler(field) {
+  return createSliceSampler(
+    Array.from({ length: metadata.nr }, (_, i) => radiusAtIndex(i)),
+    Array.from({ length: metadata.ntheta }, (_, i) => thetaAtIndex(i)),
+    Array.from({ length: metadata.nphi }, (_, i) => phiAtIndex(i)),
+    fieldDisplayDomain(field)
+  );
+}
+
+function sliceRange(values) {
+  let low = Infinity, high = -Infinity;
+  for (const value of values) if (Number.isFinite(value)) {
+    low = Math.min(low, value); high = Math.max(high, value);
+  }
+  if (!Number.isFinite(low)) return [-1, 1];
+  if (low === high) {
+    const pad = Math.max(Math.abs(low) * 0.01, 1e-12);
+    return [low - pad, high + pad];
+  }
+  return [low, high];
+}
+
 function sampleFieldNearest(field, radius, theta, phi) {
   const domain = fieldDisplayDomain(field);
   const rOuter = domain.rMax;
@@ -6306,6 +6342,7 @@ function horizontalSliceRawRange(field, z) {
   const sMin = zAbs < rInner ? Math.sqrt(Math.max(0.0, rInner * rInner - z * z)) : 0.0;
   const sMax = Math.sqrt(Math.max(0.0, rOuter * rOuter - z * z));
 
+  const sample = fieldSliceSampler(field);
   let vmin = Infinity;
   let vmax = -Infinity;
 
@@ -6316,7 +6353,7 @@ function horizontalSliceRawRange(field, z) {
 
     for (let ip = 0; ip < np; ip++) {
       const phi = phiAtIndex(ip);
-      const v = sampleFieldNearest(field, radius, theta, phi);
+      const v = stencilValue(sample(radius, theta, phi), i => volumeDisplayValue(field, i));
       if (!Number.isFinite(v)) continue;
       if (v < vmin) vmin = v;
       if (v > vmax) vmax = v;
@@ -6486,7 +6523,8 @@ function makeHorizontalSliceMeshOnGrid(field, z, opacity, vmin, vmax, colormap) 
   const positions = [];
   const colors = [];
   const indices = [];
-  const sampleIndices = [];
+  const sampleIndices = [], sampleWeights = [], values = [];
+  const sample = fieldSliceSampler(field);
 
   if (zAbs >= rOuter) {
     return new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial());
@@ -6504,12 +6542,10 @@ function makeHorizontalSliceMeshOnGrid(field, z, opacity, vmin, vmax, colormap) 
       const phi = phiAtIndex(ip);
       positions.push(s * Math.cos(phi), s * Math.sin(phi), z);
 
-      const irSample = nearestRadiusIndex(radius);
-      const itSample = nearestThetaIndex(theta);
-      const ipSample = nearestPhiIndex(phi);
-      const sampleIndex = (radius < rInner || radius > rOuter) ? -1 : idx(irSample, itSample, ipSample);
-      sampleIndices.push(sampleIndex);
-      const val = sampleIndex >= 0 ? field[sampleIndex] : NaN;
+      const stencil = sample(radius, theta, phi);
+      appendSliceStencil(sampleIndices, sampleWeights, stencil);
+      const val = stencilValue(stencil, i => volumeDisplayValue(field, i));
+      values.push(val);
       const col = colourMap(val, vmin, vmax, colormap);
       colors.push(col.r, col.g, col.b);
     }
@@ -6544,9 +6580,11 @@ function makeHorizontalSliceMeshOnGrid(field, z, opacity, vmin, vmax, colormap) 
     domainKey: JSON.stringify(fieldDisplayDomain(field)),
     kind: "horizontal",
     z,
-    sampleA: Int32Array.from(sampleIndices),
-    vertexCount: sampleIndices.length,
+    sampleIndices: Int32Array.from(sampleIndices),
+    sampleWeights: Float32Array.from(sampleWeights),
+    vertexCount: values.length,
   };
+  setSliceColours(mesh, values, vmin, vmax, getColourStops(colormap));
   return mesh;
 }
 
@@ -6559,14 +6597,12 @@ function makeMeridionalSliceMeshOnGrid(field, phiDeg, opacity, vmin, vmax, color
   const nr = Math.max(0, domain.end - domain.start + 1);
   const nt = metadata.ntheta;
   const requestedPhi = THREE.MathUtils.degToRad(phiDeg);
-  const ipFront = nearestPhiIndex(requestedPhi);
-  const ipBack = nearestPhiIndex(requestedPhi + Math.PI);
+  const sample = fieldSliceSampler(field);
 
   const positions = [];
   const colors = [];
   const indices = [];
-  const sampleA = [];
-  const sampleB = [];
+  const sampleIndices = [], sampleWeights = [], values = [];
 
   // The SHTns/Gauss theta grid usually does not include the exact poles.
   // Extend it to theta=0 and theta=pi, duplicating the nearest boundary values,
@@ -6595,7 +6631,7 @@ function makeMeridionalSliceMeshOnGrid(field, phiDeg, opacity, vmin, vmax, color
       columns.push({
         theta: thetaExt[j],
         it: thetaSampleIndex[j],
-        ip: ipFront,
+        phi: requestedPhi,
         sign: 1.0,
         pole: side === "both" && (j === 0 || j === thetaExt.length - 1),
       });
@@ -6612,7 +6648,7 @@ function makeMeridionalSliceMeshOnGrid(field, phiDeg, opacity, vmin, vmax, color
       columns.push({
         theta: thetaExt[j],
         it: thetaSampleIndex[j],
-        ip: ipBack,
+        phi: requestedPhi + Math.PI,
         sign: -1.0,
         pole: side === "both" && (j === 0 || j === thetaExt.length - 1),
       });
@@ -6636,12 +6672,14 @@ function makeMeridionalSliceMeshOnGrid(field, phiDeg, opacity, vmin, vmax, color
         r * Math.cos(theta)
       );
 
-      const ia = idx(ir, colInfo.it, colInfo.ip);
-      const ib = colInfo.pole ? idx(ir, colInfo.it, colInfo.ip === ipFront ? ipBack : ipFront) : -1;
-      sampleA.push(ia);
-      sampleB.push(ib);
-      const val = ib >= 0 ? 0.5 * (volumeDisplayValue(field, ia) + volumeDisplayValue(field, ib))
-        : volumeDisplayValue(field, ia);
+      let stencil = sample(r, theta, colInfo.phi);
+      if (colInfo.pole) {
+        const other = sample(r, theta, colInfo.phi + Math.PI);
+        stencil = [...stencil, ...other].map(([index, weight]) => [index, 0.5 * weight]);
+      }
+      appendSliceStencil(sampleIndices, sampleWeights, stencil);
+      const val = stencilValue(stencil, i => volumeDisplayValue(field, i));
+      values.push(val);
       const col = colourMap(val, vmin, vmax, colormap);
       colors.push(col.r, col.g, col.b);
     }
@@ -6681,10 +6719,11 @@ function makeMeridionalSliceMeshOnGrid(field, phiDeg, opacity, vmin, vmax, color
     kind: "meridian",
     phiDeg,
     side,
-    sampleA: Int32Array.from(sampleA),
-    sampleB: Int32Array.from(sampleB),
-    vertexCount: sampleA.length,
+    sampleIndices: Int32Array.from(sampleIndices),
+    sampleWeights: Float32Array.from(sampleWeights),
+    vertexCount: values.length,
   };
+  setSliceColours(mesh, values, vmin, vmax, getColourStops(colormap));
   return mesh;
 }
 
@@ -6783,17 +6822,15 @@ function updateSampledMeshColours(...args) {
 
 function updateSampledMeshColoursOnGrid(mesh, field, expectedKind, vmin, vmax, colormap) {
   const topology = mesh?.userData?.viewerTopology;
-  if (!topology || topology.kind !== expectedKind || !topology.sampleA) return false;
+  if (!topology || topology.kind !== expectedKind || !topology.sampleIndices) return false;
   if (topology.domainKey !== JSON.stringify(fieldDisplayDomain(field))) return false;
-  const a = topology.sampleA;
-  const b = topology.sampleB;
-  return updateMeshColourBuffer(mesh, (i) => {
-    const ia = a[i];
-    if (ia < 0) return NaN;
-    const ib = b ? b[i] : -1;
-    return ib >= 0 ? 0.5 * (volumeDisplayValue(field, ia) + volumeDisplayValue(field, ib)) : volumeDisplayValue(field, ia);
-  }, vmin, vmax, colormap);
+  const values = Float64Array.from({ length: topology.vertexCount }, (_, i) =>
+    cachedSliceValue(topology.sampleIndices, topology.sampleWeights, i, j => volumeDisplayValue(field, j)));
+  const updated = updateMeshColourBuffer(mesh, i => values[i], vmin, vmax, colormap);
+  if (updated) setSliceColours(mesh, values, vmin, vmax, getColourStops(colormap));
+  return updated;
 }
+
 
 function disposeObject(obj) {
   if (!obj) return;
@@ -7789,13 +7826,27 @@ function addDisplayControls(gui, slot, label, fieldParam, showParam, opacityPara
 
 function addSurfaceAppearanceControls(folder, slot, rebuild) {
   folder.domElement.classList.add("surface-appearance-controls");
+  const sectorControls = [], meridianControls = [];
+  const refreshCutControls = () => {
+    const linked = slot === "cmb" && params.cmbFollowMeridians;
+    sectorControls.forEach(control => control.disable(linked));
+    meridianControls.forEach(control => control.disable(!linked));
+  };
+  if (slot === "cmb") {
+    folder.add(params, "cmbFollowMeridians").name("Cut along meridians").onChange(() => { refreshCutControls(); rebuild(); })
+      .domElement.title = "Optional CMB cut following visible meridional planes. Off: use the independent sectors below. The planet map remains independent.";
+    meridianControls.push(folder.add(params, "cmbMeridianMode", { "Half sphere": "rear-half", "Between two meridians": "between-meridians-behind" })
+      .name("Meridian cut mode").onChange(rebuild));
+    meridianControls.push(folder.add(params, "cmbMeridianSide", { "Positive side": "positive", "Negative side": "negative" })
+      .name("Meridian cut side").onChange(rebuild));
+  }
   const sectors = folder.addFolder("Surface sectors (checked = shown)");
   sectors.domElement.classList.add("surface-appearance-controls");
-  sectors.add(params, `${slot}CutLongitude`, 0, 360, 1).name("Sector rotation (deg)").onFinishChange(rebuild);
+  sectorControls.push(sectors.add(params, `${slot}CutLongitude`, 0, 360, 1).name("Sector rotation (deg)").onFinishChange(rebuild));
   for (const [hemisphere, label] of [["N", "North"], ["S", "South"]]) {
     for (let i = 1; i <= 4; i++) {
-      sectors.add(params, `${slot}Sector${hemisphere}${i}`)
-        .name(`${label} ${i}: ${(i - 1) * 90}–${i * 90}°`).onChange(rebuild);
+      sectorControls.push(sectors.add(params, `${slot}Sector${hemisphere}${i}`)
+        .name(`${label} ${i}: ${(i - 1) * 90}–${i * 90}°`).onChange(rebuild));
     }
   }
   sectors.domElement.title = "Checked sectors are shown; unchecked sectors are removed. The angles are relative to Sector rotation. These eight choices do not depend on meridional or equatorial cuts.";
@@ -7811,7 +7862,8 @@ function addSurfaceAppearanceControls(folder, slot, rebuild) {
   folder.addColor(params, `${slot}UndersideColor`).name("Underside colour").onChange(activateCustom);
   folder.add(params, `${slot}UndersideLighting`).name("Light underside").onChange(activateCustom)
     .domElement.title = "On: respond to Lighting angle and intensity. Off: flat custom colour. Changing this enables the custom underside.";
-  closeGuiFolder(sectors);
+  refreshCutControls();
+  sectors.open();
 }
 
 function addMeridianSideControls(folder, label, slot, fieldParam, opacityParam, rebuildFn, availableFields) {
@@ -7833,6 +7885,7 @@ function addSplitMeridianControls(gui, slot, label, showParam, rebuildFn, availa
     if (params[showParam]) await rebuildFn();
     updateVisibility();
     await rebuildGapFillers();
+    if (params.cmbFollowMeridians) await rebuildCMB({ reuseGeometry: false });
     if (params.showIsosurfaces && !params.sequencePlaying) await rebuildIsosurfaces();
   }));
   const independentKey = `${slot}IndependentSides`;
@@ -7982,6 +8035,8 @@ function applySnapshotParam(key, value) {
   if (!validFieldForState(key, value)) return false;
   if (["linePositiveColor", "lineNegativeColor"].includes(key) && !/^#[0-9a-f]{6}$/i.test(value)) return false;
   if (["cmbSurfaceCut", "earthSurfaceCut"].includes(key) && !["follow", "none", "independent"].includes(value)) return false;
+  if (key === "cmbMeridianMode" && !["rear-half", "between-meridians-behind"].includes(value)) return false;
+  if (key === "cmbMeridianSide" && !["positive", "negative"].includes(value)) return false;
   if (["cmbCutHemisphere", "earthCutHemisphere"].includes(key) && !["north", "south", "both"].includes(value)) return false;
   if (["cmbUnderside", "earthUnderside"].includes(key) && !["original", "hidden", "custom"].includes(value)) return false;
   if (["cmbUndersideColor", "earthUndersideColor", "sliceGapFillerColor"].includes(key) && !/^#[0-9a-f]{6}$/i.test(value)) return false;
@@ -8037,7 +8092,7 @@ function applyViewStateParams(snapshot) {
   // Surface masks in current view codes are restored independently of slices.
   if (snapshot.params && snapshot.version) {
     for (const key of Object.keys(DEFAULT_VIEW_PARAMS)) {
-      if (/^(lineSeparateStrides|lineShellStride|lineExteriorStride|(?:cmb|earth)(?:SurfaceCut|Sector[NS][1-4]|CutLongitude|CutWidth|CutHemisphere|Underside.*)|sliceGapFiller(?:Color|Lighting))$/.test(key)
+      if (/^(lineSeparateStrides|lineShellStride|lineExteriorStride|cmbFollowMeridians|cmbMeridianMode|cmbMeridianSide|(?:cmb|earth)(?:SurfaceCut|Sector[NS][1-4]|CutLongitude|CutWidth|CutHemisphere|Underside.*)|sliceGapFiller(?:Color|Lighting))$/.test(key)
           && !Object.prototype.hasOwnProperty.call(snap.params, key)) params[key] = DEFAULT_VIEW_PARAMS[key];
     }
   }
@@ -8829,6 +8884,7 @@ function buildGui() {
   const merFolder = addSplitMeridianControls(gui, "meridian", "Meridional slice 1", "showMeridian", rebuildMeridian, meridianFields);
   const rebuildMeridianView = async () => {
     await rebuildMeridian();
+    if (params.cmbFollowMeridians) await rebuildCMB({ reuseGeometry: false });
     await rebuildIsosurfaces();
   };
   merFolder.add(params, "meridianPhiDeg", 0, 360, 1).name("Longitude phi")
@@ -8837,6 +8893,7 @@ function buildGui() {
   const mer2Folder = addSplitMeridianControls(gui, "meridian2", "Meridional slice 2", "showMeridian2", rebuildMeridian2, meridianFields);
   const rebuildMeridian2View = async () => {
     await rebuildMeridian2();
+    if (params.cmbFollowMeridians) await rebuildCMB({ reuseGeometry: false });
     await rebuildIsosurfaces();
   };
   mer2Folder.add(params, "meridian2PhiDeg", 0, 360, 1).name("Longitude phi")

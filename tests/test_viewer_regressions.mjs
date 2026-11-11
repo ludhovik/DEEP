@@ -8,6 +8,8 @@ import { datasetPlacement, placementSummary } from "../src/dataset-placement.js"
 import { SURFACE_TEXTURES } from "../src/surface-textures.js";
 import { LongitudeAverageCache, longitudeDisplayField, volumeDisplayValue,
   longitudeFieldLabel, computeLongitudeAverage } from "../src/longitude-average.js";
+import { createSliceSampler, stencilValue, appendSliceStencil, cachedSliceValue } from "../src/slice-sampling.js";
+import { setSliceColours } from "../src/slice-colours.js";
 import * as RealTHREE from "three";
 import { fieldRadialDomain } from "../src/volume-domain.js";
 import { isosurfaceLegendEntries, updateIsosurfaceLegend } from "../src/isosurface-legend.js";
@@ -64,6 +66,8 @@ class Mesh {
 
 function viewer() {
   const ctx = vm.createContext({
+    createSliceSampler, stencilValue, appendSliceStencil, cachedSliceValue, setSliceColours,
+    getColourStops: () => [[0, [0,0,0]], [1, [255,255,255]]],
     datasetPlacement, placementSummary, fieldSourceViews: new WeakMap(),
     simulationTimeLabel, TIME_BOX_POSITIONS, simulationTimeOverlay: { render() {} },
     syncOverlayFloaters() {},
@@ -183,6 +187,7 @@ function viewer() {
     "parseFolderSourcePath", "fileFromDirectoryHandle", "parseLocalFilesystemPath", "encodeLocalFilesystemPath",
     "captureDatasetState", "restoreDatasetState", "refreshRepositoryLookup", "loadDatasetFromParams",
   ]) vm.runInContext(definition(name), ctx);
+  for (const name of ["fieldSliceSampler", "sliceRange", "meridianHalfRange"]) vm.runInContext(definition(name), ctx);
   return ctx;
 }
 
@@ -3426,4 +3431,42 @@ test("legacy complete views restore shared density and whole surfaces; partial u
   assert.equal(ctx.params.cmbSectorS3, true);
   assert.equal(ctx.params.earthSectorN1, true);
   assert.equal(ctx.params.earthUnderside, "original");
+});
+
+test('offset equatorial mesh, range and cached recolouring all interpolate the same field', () => {
+  const ctx=viewer(); ctx.THREE=RealTHREE;
+  ctx.metadata={nr:4,ntheta:4,nphi:4,r_inner:.35,r_outer:1,fields:{T:'T.f32'}};
+  ctx.coords={r:[.35,.41,.7,1],theta:[.1,.8,1.7,3],phi:[0,Math.PI/2,Math.PI,3*Math.PI/2]};
+  ctx.colourMap=v=>({r:v,g:0,b:0});ctx.applyScale=(_,a,b)=>[a,b];
+  for(const name of ['radiusAtIndex','thetaAtIndex','phiAtIndex','horizontalSliceRawRange','horizontalSliceRange',
+    'makeHorizontalSliceMesh','updateMeshColourBuffer','updateSampledMeshColours']) vm.runInContext(definition(name),ctx);
+  const field=Float32Array.from(ctx.coords.r.flatMap(r=>ctx.coords.theta.flatMap(t=>ctx.coords.phi.map(()=>2*r+3*t))));
+  const z=.2, mesh=ctx.makeHorizontalSliceMesh(field,z,1,0,10,'viridis');
+  const positions=mesh.geometry.attributes.position, scalar=mesh.geometry.attributes.sliceSample;
+  const expected=[];
+  for(let i=0;i<positions.count;i++) {
+    const rr=Math.hypot(positions.getX(i),positions.getY(i),z);
+    const value=2*rr+3*Math.acos(z/rr); expected.push(value);
+    assert.ok(Math.abs(10*scalar.getX(i)-value)<1e-6);
+  }
+  const range=ctx.horizontalSliceRange(field,z,'equator2');
+  assert.ok(Math.abs(range[0]-Math.min(...expected))<1e-6);
+  assert.ok(Math.abs(range[1]-Math.max(...expected))<1e-6);
+  const next=Float32Array.from(field,v=>2*v+1);
+  assert.equal(ctx.updateSampledMeshColours(mesh,next,'horizontal',0,20,'viridis'),true);
+  for(let i=0;i<positions.count;i++) assert.ok(Math.abs(20*scalar.getX(i)-(2*expected[i]+1))<3e-6);
+});
+
+test('CMB linked clipping tracks meridian changes and survives saved views without affecting planet sectors', () => {
+  const ctx=viewer();ctx.params.cmbFollowMeridians=true;ctx.params.showMeridian=true;
+  const before=ctx.renderSignature('cmb'), earth=ctx.renderSignature('earth');
+  ctx.params.meridianPhiDeg=61;
+  assert.notEqual(ctx.renderSignature('cmb'),before);
+  assert.equal(ctx.renderSignature('earth'),earth);
+  const saved=ctx.collectViewState(false);
+  ctx.params.cmbFollowMeridians=false;ctx.applyViewStateParams(saved);
+  assert.equal(ctx.params.cmbFollowMeridians,true);
+  delete saved.params.cmbFollowMeridians;
+  ctx.applyViewStateParams(saved);
+  assert.equal(ctx.params.cmbFollowMeridians,false,'older views default to independent sectors');
 });

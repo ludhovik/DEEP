@@ -388,7 +388,7 @@ shared across outputs, and released with the source cache. Full derived
 volumes are not allocated; fluctuations are evaluated only where displayed.
 
 The CMB and planet surfaces each have their own eight-sector visibility mask,
-independent of meridional and equatorial slices. Open **Sun / planet / moon surface**, enable **Show**, choose
+independent of meridional and equatorial slices by default. Open **Sun / planet / moon surface**, enable **Show**, choose
 **Display → Surface image**, then select **Image body**: Sun, Earth, Mars, Ganymede,
 Jupiter, Saturn, Mercury, Venus (radar surface), Enceladus, Moon, Earth — Rodinia
 (1 billion years ago), Early Earth (NASA lava-world analogue), Super-Earth —
@@ -397,8 +397,23 @@ Proxima b (NASA artwork), or Asteroid — Bennu (NASA/OSIRIS-REx).
 radius / outer**, and **Opacity** adjust its placement and appearance. Images
 use the same closed sphere, polar caps and independent sector selection as the Earth image.
 
+Slices interpolate field values on the stored spherical grid (including nonuniform
+radial/Gauss grids and periodic longitude), then apply the colour map per pixel.
+This avoids nearest-neighbour jumps in the offset **Equatorial slice 2** and
+RGB triangle bands on coarse slices. Geometry reuse during sequences uses the
+same interpolation weights. `--spectral-lmax` still limits the physical angular
+content: viewer interpolation cannot restore removed harmonics. No reconversion
+is needed for these display improvements.
+
+To cut the CMB along a displayed meridional plane, open **Controls → CMB
+surface** (or its dataset-specific outer-boundary name) and enable **Cut along
+meridians**. Choose **Meridian cut mode → Half sphere** or **Between two
+meridians**, then **Meridian cut side**. This follows the visible meridian(s)
+without altering the planet map or isosurface clipping. With no visible meridian,
+the CMB remains whole. Turn it off to recover the independent sector selections.
+
 Both **CMB surface** (or the dataset's outer-boundary surface) and
-**Sun / planet / moon surface** have **Surface sectors (checked = shown)**:
+**Sun / planet / moon surface** have **Surface sectors (checked = shown)**, expanded when the surface panel opens:
 
 - Eight checkboxes select four northern and four southern sectors independently.
   Checked = shown, unchecked = removed. Each sector spans 90° of longitude and

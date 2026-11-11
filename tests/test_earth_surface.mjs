@@ -191,11 +191,11 @@ test("gap filler can use a custom colour either lit or flat", () => {
 
 test("all eight sector checkboxes and underside colour/lighting are accessible; colour enables custom mode", () => {
   const controls = [], children = [];
-  const folder = () => ({ domElement: { classList: { add() {} } }, addFolder() { const child = folder(); children.push(child); return child; },
+  const folder = () => ({ open() { this.opened = true; }, domElement: { classList: { add() {} } }, addFolder() { const child = folder(); children.push(child); return child; },
     add(object, key) {
       const c = { object, key, name(label) { this.label = label; return this; },
         onChange(fn) { this.change = fn; return this; }, onFinishChange(fn) { this.finish = fn; return this; },
-        updateDisplay() {}, domElement: {} };
+        updateDisplay() {}, disable(value) { this.disabled = value; return this; }, domElement: {} };
       controls.push(c); return c;
     }, addColor(object, key) { return this.add(object, key); } });
   ctx.closeGuiFolder = () => {};
@@ -214,4 +214,18 @@ test("all eight sector checkboxes and underside colour/lighting are accessible; 
   assert.equal(ctx.params.earthUnderside, "custom");
   assert.equal(ctx.params.earthUndersideLighting, false);
   assert.equal(builds, 2);
+});
+
+test('CMB can optionally follow meridians without coupling the planet map or sector selections', () => {
+  Object.assign(ctx.params, {cmbFollowMeridians:true, cmbMeridianMode:'rear-half', cmbMeridianSide:'positive',
+    showMeridian:true, showMeridian2:false, meridianPhiDeg:30, earthSectorN1:false});
+  assert.equal(ctx.getSurfaceClipOptions('cmb').mode,'rear-half');
+  assert.ok(Math.abs(ctx.getSurfaceClipOptions('cmb').phi0-Math.PI/6)<1e-10);
+  assert.equal(ctx.getSurfaceClipOptions('earth').mode,'surface-sectors');
+  ctx.params.showMeridian2=true; ctx.params.meridian2PhiDeg=100; ctx.params.cmbMeridianMode='between-meridians-behind';
+  assert.equal(ctx.getSurfaceClipOptions('cmb').hasTwoPlanes,true);
+  ctx.params.showMeridian=ctx.params.showMeridian2=false;
+  assert.equal(ctx.getSurfaceClipOptions('cmb').enabled,false);
+  ctx.params.cmbFollowMeridians=false;
+  assert.equal(ctx.getSurfaceClipOptions('cmb').mode,'surface-sectors');
 });
