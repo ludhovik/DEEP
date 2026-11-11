@@ -125,14 +125,14 @@ class RayleighTests(unittest.TestCase):
         self.convert(state=path);m=self.metadata();self.assertIsNone(m['time']);self.assertEqual(m['ntheta'],10)
         size=(self.root/'out/T_volume.f32').stat().st_size
         self.convert('--spectral-lmax','2',state=path);m=self.metadata()
-        self.assertEqual(m['spectral']['lmax'],2);self.assertEqual(m['ntheta'],4)
-        self.assertLess((self.root/'out/T_volume.f32').stat().st_size,size)
+        self.assertEqual(m['spectral']['lmax'],2);self.assertEqual(m['ntheta'],10)
+        self.assertEqual((self.root/'out/T_volume.f32').stat().st_size,size)
         c=self.volume('T');np.testing.assert_allclose(c,np.broadcast_to(c[:,:1,:1],c.shape),atol=1e-6)
         validate_bundle(self.root/'out')
     def test_checkpoint_spectral_truncation(self):
         self.convert();original=self.volume('T');self.assertEqual(original.shape,(12,8,16))
         self.convert('--spectral-lmax','1');m=self.metadata()
-        self.assertEqual(m['spectral']['lmax'],1);self.assertEqual(self.volume('T').shape,(12,4,8))
+        self.assertEqual(m['spectral']['lmax'],1);self.assertEqual(self.volume('T').shape,original.shape)
         np.testing.assert_allclose(self.volume('T')[:,0,0],original[:,0,0],atol=1e-6)
     def test_n2_is_explicit_and_requires_parameters(self):
         self.convert('--n2-convention','deepscope');m=self.metadata()

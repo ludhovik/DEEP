@@ -204,8 +204,7 @@ def convert_state(path, outdir, args, records, grid, control_files):
     info = cutoff_metadata(args.spectral_lmax, grid["lmax"], native_mmax)
     lmax = info["lmax_effective"]
     info["mmax_effective"] = lmax // grid["minc"] * grid["minc"]
-    nt = min(grid["ntheta"], max(4, lmax + 2)) if info["enabled"] else grid["ntheta"]
-    np_ = min(grid["nphi"], max(8, 2 * (lmax + 1))) if info["enabled"] else grid["nphi"]
+    nt, np_ = grid["ntheta"], grid["nphi"]
     theta = np.arccos(np.polynomial.legendre.leggauss(nt)[0][::-1])
     phi = np.arange(np_) * (2 * math.pi / np_)
     info.update(original_grid=[grid["ntheta"], grid["nphi"]], output_grid=[nt, np_],

@@ -794,6 +794,8 @@ def convert_adapted_snapshot(path, outdir, args, adapted, graph_parameters, *,
     sampling = ViewerSampling(r_master, theta, phi, dr, dt, dp, required_radii=[r_icb, r_cmb])
     fields = {name: sampling.volume(arr) for name, arr in fields.items()}
     r_out, theta_out, phi_out = sampling.r, sampling.theta, sampling.phi
+    spectral_truncation["synthesis_grid"] = [len(theta), len(phi)]
+    spectral_truncation["output_grid"] = [len(theta_out), len(phi_out)]
 
     clean_output_directory(outdir)
     field_files: dict[str, str] = {}
@@ -1034,7 +1036,7 @@ def add_viewer_arguments(p, default_output):
     add_output_argument(p)
     p.add_argument("--out", default=default_output)
     p.add_argument("--spectral-lmax", type=nonnegative_lmax, default=0,
-                   help="Maximum spherical-harmonic degree; 0 (default) retains all native samples. Positive cutoffs filter scalar/vector harmonics and reduce the angular grid.")
+                   help="Maximum spherical-harmonic degree; 0 (default) retains all native samples. Positive cutoffs filter scalar/vector harmonics; the original grid is retained. Use angular downsampling for smaller files.")
     p.add_argument("--downsample-r", type=int, default=1)
     p.add_argument("--downsample-theta", type=int, default=1)
     p.add_argument("--downsample-phi", type=int, default=1)

@@ -727,9 +727,13 @@ def truncate_lsd_coefficients(
     lmax_out: int,
     mmax_out: int,
     user_modules: Any,
+    preserve_layout: bool = False,
 ) -> np.ndarray | None:
     """
     Return LSD coefficients truncated to l <= lmax_out and m <= mmax_out.
+
+    preserve_layout zeros rejected modes in the original layout, so transforms
+    using the original lmax/mmax keep their no-cutoff synthesis grid.
 
     The Leeds modules.py helper lsd_to_shtns assumes the LSD coefficient ordering
     matches the SHTns (l,m) list for the chosen lmax/mmax. Therefore, reducing
@@ -751,6 +755,13 @@ def truncate_lsd_coefficients(
 
     shtns = user_modules.shtns
     sh_in = shtns.sht(int(lmax_in), int(mmax_in), 1, shtns.sht_schmidt | shtns.SHT_NO_CS_PHASE)
+    if arr.shape[1] != len(sh_in.l):
+        raise ValueError("LSD coefficient count does not match the source (l,m) layout.")
+    if preserve_layout:
+        out = np.array(arr, copy=True, order="C")
+        rejected = (np.asarray(sh_in.l) > lmax_out) | (np.asarray(sh_in.m) > mmax_out)
+        out[:, rejected, ...] = 0
+        return out
     sh_out = shtns.sht(int(lmax_out), int(mmax_out), 1, shtns.sht_schmidt | shtns.SHT_NO_CS_PHASE)
 
     in_map = {(int(l), int(m)): i for i, (l, m) in enumerate(zip(sh_in.l, sh_in.m))}
@@ -784,9 +795,14 @@ def apply_spectral_lmax_to_state(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None, np.ndarray, np.ndarray | None, int, int, dict[str, Any]]:
     """
     Apply an angular spectral cutoff before transforming to physical space.
+
+    Returned limits describe the transform layout; effective retained limits
+    are recorded separately in metadata. Always keep the original layout.
     """
+    grid_meta = {"grid_mode": "native", "lmax_transform": int(lmax), "mmax_transform": int(mmax)}
     if spectral_lmax is None or int(spectral_lmax) <= 0:
         return uP, uT, BP, BT, C, Comp, int(lmax), int(mmax), {
+            **grid_meta,
             "enabled": False,
             "requested_lmax": None if spectral_lmax is None else int(spectral_lmax),
             "lmax_original": int(lmax),
@@ -800,6 +816,7 @@ def apply_spectral_lmax_to_state(
 
     if l_eff == int(lmax) and m_eff == int(mmax):
         return uP, uT, BP, BT, C, Comp, int(lmax), int(mmax), {
+            **grid_meta,
             "enabled": False,
             "requested_lmax": int(spectral_lmax),
             "lmax_original": int(lmax),
@@ -808,28 +825,33 @@ def apply_spectral_lmax_to_state(
             "mmax_effective": int(mmax),
         }
 
+    l_transform, m_transform = int(lmax), int(mmax)
     print(
         f"Applying angular spectral truncation before spatial transform: "
-        f"lmax {int(lmax)} -> {l_eff}, mmax {int(mmax)} -> {m_eff}"
+        f"lmax {int(lmax)} -> {l_eff}, mmax {int(mmax)} -> {m_eff}; "
+        "original synthesis grid retained"
     )
 
     return (
-        truncate_lsd_coefficients(uP, lmax, mmax, l_eff, m_eff, user_modules),
-        truncate_lsd_coefficients(uT, lmax, mmax, l_eff, m_eff, user_modules),
-        truncate_lsd_coefficients(BP, lmax, mmax, l_eff, m_eff, user_modules),
-        truncate_lsd_coefficients(BT, lmax, mmax, l_eff, m_eff, user_modules),
-        truncate_lsd_coefficients(C, lmax, mmax, l_eff, m_eff, user_modules),
-        truncate_lsd_coefficients(Comp, lmax, mmax, l_eff, m_eff, user_modules),
-        l_eff,
-        m_eff,
+        truncate_lsd_coefficients(uP, lmax, mmax, l_eff, m_eff, user_modules, preserve_layout=True),
+        truncate_lsd_coefficients(uT, lmax, mmax, l_eff, m_eff, user_modules, preserve_layout=True),
+        truncate_lsd_coefficients(BP, lmax, mmax, l_eff, m_eff, user_modules, preserve_layout=True),
+        truncate_lsd_coefficients(BT, lmax, mmax, l_eff, m_eff, user_modules, preserve_layout=True),
+        truncate_lsd_coefficients(C, lmax, mmax, l_eff, m_eff, user_modules, preserve_layout=True),
+        truncate_lsd_coefficients(Comp, lmax, mmax, l_eff, m_eff, user_modules, preserve_layout=True),
+        l_transform,
+        m_transform,
         {
+            "grid_mode": "native",
+            "lmax_transform": l_transform,
+            "mmax_transform": m_transform,
             "enabled": True,
             "requested_lmax": int(spectral_lmax),
             "lmax_original": int(lmax),
             "mmax_original": int(mmax),
             "lmax_effective": int(l_eff),
             "mmax_effective": int(m_eff),
-            "method": "LSD coefficients remapped by (l,m) before physical-space synthesis",
+            "method": "LSD rejected (l,m) coefficients zeroed in original layout before physical-space synthesis",
         },
     )
 
@@ -2516,9 +2538,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=0,
         help=(
             "Angular spectral cutoff applied before physical-space synthesis. "
-            "Default is 0: retain all source degrees. A positive value reduces the angular output grid. "
-            "This is preferred over --downsample-theta/--downsample-phi because it removes high-l modes "
-            "before creating the theta/phi grid."
+            "Default is 0: retain all source degrees. The original angular grid is retained; use angular downsampling for smaller files. "
+            "Use --downsample-theta/--downsample-phi separately to reduce the exported grid."
         ),
     )
     p.add_argument("--downsample-r", type=int, default=1, help="Keep every Nth radial point, plus CMB/ICB and radial endpoints.")
@@ -3516,6 +3537,8 @@ def convert_state(args: argparse.Namespace) -> None:
     nr_out = len(r_out)
     ntheta_out = len(theta_out)
     nphi_out = len(phi_out)
+    spectral_meta["synthesis_grid"] = [len(theta), len(phi)]
+    spectral_meta["output_grid"] = [ntheta_out, nphi_out]
 
     outdir = Path(args.out)
     outdir.mkdir(parents=True, exist_ok=True)

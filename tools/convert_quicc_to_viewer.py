@@ -108,8 +108,8 @@ def convert_state(path, outdir, args):
     leff = info['lmax_effective']
     meff = info['mmax_effective'] // data['minc'] * data['minc']
     info['mmax_effective'] = meff
-    radius, theta, phi = grids(data['nmax'], leff, meff, interval)
-    _, old_theta, old_phi = grids(data['nmax'], data['lmax'], data['mmax'], interval)
+    radius, theta, phi = grids(data['nmax'], data['lmax'], data['mmax'], interval)
+    old_theta, old_phi = theta, phi
     info.update(original_grid=[len(old_theta),len(old_phi)], output_grid=[len(theta),len(phi)],
                 method='native spectral truncation before Worland/vector harmonic synthesis')
     pairs = modes(data['lmax'], data['mmax'], data['minc'], data['scheme'][-1])

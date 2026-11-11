@@ -33,7 +33,9 @@ class SpectralProjectionTests(unittest.TestCase):
         filtered = projector.project(field)[0]
         expected = 3 + self.r * self.harmonic(2, 1, projector.theta, projector.phi)
         np.testing.assert_allclose(filtered, expected, atol=5e-13)
-        self.assertLess(filtered.size, field.size)
+        self.assertEqual(filtered.shape, field.shape)
+        np.testing.assert_array_equal(projector.theta, self.theta)
+        np.testing.assert_array_equal(projector.phi, self.phi)
 
     def test_vector_projection_retains_dipole_and_removes_high_poloidal_and_toroidal_modes(self):
         low_q = 2 * np.cos(self.theta)[None, :, None] / self.r**3

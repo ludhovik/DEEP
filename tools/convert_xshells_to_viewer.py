@@ -244,7 +244,7 @@ def truncate_xshells_fields(loaded: dict[str, Any], reference_key: str, requeste
         return loaded, info
     lmax = info["lmax_effective"]
     mmax_index = min(int(reference.mmax), lmax // int(reference.mres))
-    sht = pyxshells.shtns.sht(lmax, mmax_index, int(reference.mres))
+    sht = reference.sht
     source_indices = {(int(ell), int(m)): index
                       for index, (ell, m) in enumerate(zip(reference.l, reference.m))}
     retained_indices = [source_indices[int(ell), int(m)] for ell, m in zip(sht.l, sht.m)]
@@ -257,12 +257,14 @@ def truncate_xshells_fields(loaded: dict[str, Any], reference_key: str, requeste
         # pyxshells 2.8 copy_data_from uses unqualified min after numpy import *,
         # which resolves to numpy.min and fails with NumPy 2.
         target.data[...] = source.data[..., retained_indices]
+        target.data[..., np.asarray(sht.l) > lmax] = 0
         target.BC = source.BC
         target.time = source.time
         target.curl = source.curl
         result[name] = target
     info.update(mmax_effective=mmax_index * int(reference.mres),
-                method="Native poloidal/toroidal and scalar coefficients remapped before SHTns synthesis")
+                lmax_transform=int(sht.lmax), mmax_transform=int(sht.mmax)*int(reference.mres),
+                method="Native poloidal/toroidal and scalar cutoff before SHTns synthesis")
     print(f"Angular spectral truncation: lmax {reference.lmax} -> {lmax}, "
           f"maximum order {reference.mmax * reference.mres} -> {info['mmax_effective']}")
     return result, info
@@ -521,7 +523,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     add_output_argument(p)
     p.add_argument("--out", default="public/data_xshells", help="Viewer output directory.")
     p.add_argument("--spectral-lmax", type=nonnegative_lmax, default=0,
-                   help="Maximum spherical-harmonic degree before synthesis; 0 (default) retains all source degrees. Positive cutoffs reduce the default angular grid.")
+                   help="Maximum spherical-harmonic degree before synthesis; 0 (default) retains all source degrees. The original grid is retained and downsampling is separate.")
     p.add_argument("--nlat", type=int, help="Requested SHTns latitude count. Must be used with --nphi.")
     p.add_argument("--nphi", type=int, help="Requested SHTns longitude count. Must be used with --nlat.")
     p.add_argument("--downsample-r", type=int, default=1)
@@ -682,6 +684,7 @@ def convert_xshells(args: argparse.Namespace) -> None:
     register_cache_object(angular_reference.sht, transform_signature)
     theta = np.asarray(angular_reference.theta_array(), dtype=np.float64)
     phi = np.asarray(angular_reference.phi_array(), dtype=np.float64)
+    spectral_truncation["synthesis_grid"] = [len(theta), len(phi)]
     time_values = [float(getattr(field, "time", np.nan)) for field in loaded.values()]
     time = next((v for v in time_values if np.isfinite(v)), float("nan"))
 
@@ -1000,6 +1003,7 @@ def convert_xshells(args: argparse.Namespace) -> None:
         }
 
     r_out, theta_out, phi_out = sampling.r, sampling.theta, sampling.phi
+    spectral_truncation["output_grid"] = [len(theta_out), len(phi_out)]
     icb_index = nearest_index(r_out, r_icb)
 
     outdir = Path(args.out)

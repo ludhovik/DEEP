@@ -163,7 +163,6 @@ def convert_state(path,outdir,args):
         nt=int(native.get('n_theta',len(theta)))
         if nt<=lmax:raise ValueError('main_input n_theta is inconsistent with checkpoint lmax.')
         original=[nt,2*nt]
-        if info['enabled']:nt=min(nt,max(4,leff+2))
         theta=np.arccos(np.polynomial.legendre.leggauss(nt)[0][::-1]);phi=np.arange(2*nt)*math.pi/nt
         info.update(original_grid=original,output_grid=[nt,2*nt],method='native angular truncation before checkpoint synthesis')
         density=None

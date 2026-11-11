@@ -18,7 +18,7 @@ def cutoff_metadata(requested, original, mmax=None):
     if requested < 0:
         raise ValueError("--spectral-lmax must be >= 0.")
     effective = min(requested, int(original)) if requested else int(original)
-    info = {"enabled": effective < original, "requested_lmax": requested,
+    info = {"grid_mode": "native", "enabled": effective < original, "requested_lmax": requested,
             "lmax_original": int(original), "lmax_effective": effective}
     if mmax is not None:
         info.update(mmax_original=int(mmax), mmax_effective=min(int(mmax), effective))
@@ -54,7 +54,7 @@ def harmonic_basis(lmax, m, theta):
 
 
 class GraphicProjector:
-    """Project a full-longitude Gauss grid, then synthesize a smaller grid.
+    """Project a full-longitude Gauss grid, then synthesize retained modes.
 
     Tangential vector components use vector spherical harmonics (Q,S,T),
     not independent scalar fits. Scalars retain their l=0 mean.
@@ -71,12 +71,9 @@ class GraphicProjector:
             raise ValueError("MagIC spectral truncation requires a full uniform longitude grid starting at zero.")
         if self.lmax >= len(theta) or 2 * self.lmax >= len(phi):
             raise ValueError("Requested degree is not resolved by the MagIC graphic grid.")
-        # Resolve the retained linear harmonics; further downsampling is handled
-        # by ViewerSampling. Never increase either angular dimension.
-        nt = min(len(theta), max(4, self.lmax + 2))
-        np_out = min(len(phi), max(8, 2 * (self.lmax + 1)))
-        self.theta = np.arccos(np.polynomial.legendre.leggauss(nt)[0][::-1])
-        self.phi = np.arange(np_out) * (2 * math.pi / np_out)
+        # Cutoff removes harmonics only. Output downsampling is a separate,
+        # filtered step in ViewerSampling after reconstruction/diagnostics.
+        self.theta, self.phi = self.theta_in.copy(), self.phi_in.copy()
         self.weights = 2 * math.pi * gw[::-1]
 
     def project(self, *components):

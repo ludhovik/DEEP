@@ -458,8 +458,69 @@ class ConverterPackageTests(unittest.TestCase):
         result = self.leeds.apply_spectral_lmax_to_state(
             *([coefficients]*6), 8, 8, 3, backend)
         for field in result[:6]:
-            np.testing.assert_array_equal(field, coefficients[:, layout.l <= 3])
-        self.assertEqual(result[6:8], (3, 3))
+            np.testing.assert_array_equal(field[:, layout.l <= 3], coefficients[:, layout.l <= 3])
+            np.testing.assert_array_equal(field[:, layout.l > 3], 0)
+            self.assertEqual(field.shape, coefficients.shape)
+        self.assertEqual(result[6:8], (8, 8))
+
+    def test_leeds_native_grid_zeros_modes_without_changing_layout_or_input(self):
+        backend = types.SimpleNamespace(shtns=types.SimpleNamespace(
+            sht=self.spectral_layout, sht_schmidt=0, SHT_NO_CS_PHASE=0))
+        layout = self.spectral_layout(64, 48)
+        source = np.arange(2*len(layout.l)*3, dtype=float).reshape(2, len(layout.l), 3) + 1
+        before = source.copy()
+        result = self.leeds.apply_spectral_lmax_to_state(
+            source, source, None, source, source, None, 64, 48, 40, backend)
+        kept = layout.l <= 40
+        for i in (0, 1, 3, 4):
+            self.assertEqual(result[i].shape, source.shape)
+            np.testing.assert_array_equal(result[i][:, kept], source[:, kept])
+            np.testing.assert_array_equal(result[i][:, ~kept], 0)
+        self.assertIsNone(result[2]); self.assertIsNone(result[5])
+        np.testing.assert_array_equal(source, before)
+        self.assertEqual(result[6:8], (64, 48))
+        self.assertEqual(result[8]['lmax_effective'], 40)
+        self.assertEqual(result[8]['mmax_effective'], 40)
+        self.assertEqual(result[8]['grid_mode'], 'native')
+        self.assertEqual(result[8]['lmax_transform'], 64)
+
+    def test_leeds_native_and_compact_m0_have_identical_continuous_fields(self):
+        # Independent Legendre evaluation of the m=0 scalar/radial basis and
+        # the sin(theta)*P_l' tangential basis, on a common fine grid.
+        from numpy.polynomial.legendre import legval, legder
+        backend = types.SimpleNamespace(shtns=types.SimpleNamespace(
+            sht=self.spectral_layout, sht_schmidt=0, SHT_NO_CS_PHASE=0))
+        layout = self.spectral_layout(64, 48)
+        coefficients = np.random.default_rng(42).normal(size=(2, len(layout.l), 3))
+        padded = self.leeds.truncate_lsd_coefficients(coefficients,64,48,40,40,backend,preserve_layout=True)
+        compact = self.leeds.truncate_lsd_coefficients(coefficients,64,48,40,40,backend)
+        x = np.linspace(-.999, .999, 513)
+        for radius in range(3):
+            full_m0 = padded[0, :65, radius]
+            small_m0 = compact[0, :41, radius]
+            np.testing.assert_allclose(legval(x,full_m0),legval(x,small_m0),rtol=0,atol=1e-12)
+            np.testing.assert_allclose(np.sqrt(1-x*x)*legval(x,legder(full_m0)),
+                                       np.sqrt(1-x*x)*legval(x,legder(small_m0)),rtol=0,atol=1e-11)
+
+    def test_leeds_cutoff_sequence_forwarding(self):
+        parser = self.leeds.build_arg_parser()
+        with tempfile.TemporaryDirectory() as folder:
+            root = pathlib.Path(folder)
+            for n in (1, 2): (root / f'state{n:05d}.cdf.dat').touch()
+            args = parser.parse_args(['--folder',str(root),'--out',str(root/'out'),
+                '--sequence-first','1','--sequence-last','2','--spectral-lmax','40',
+                '--skip-field-lines'])
+            args._parameter_sources = {}
+            children = []
+            def child(cmd, check):
+                opts = parser.parse_args(cmd[2:]); children.append(opts)
+                pathlib.Path(opts.out).mkdir(parents=True)
+                (pathlib.Path(opts.out)/'metadata.json').write_text('{"time":1}')
+            with mock.patch.object(self.leeds,'resolve_parameter_values',return_value={}), \
+                 mock.patch.object(self.leeds.subprocess,'run',side_effect=child):
+                self.leeds.run_sequence_conversion(args)
+            self.assertEqual(len(children),2)
+            self.assertTrue(all(c.spectral_lmax == 40 for c in children))
 
     def test_xshells_cutoff_preserves_radial_domains_ghost_data_and_boundary_conditions(self):
         layout_factory = self.spectral_layout
@@ -492,12 +553,15 @@ class ConverterPackageTests(unittest.TestCase):
             self.assertEqual(info["mmax_effective"], (4//mres)*mres)
             for name, target in result.items():
                 native = loaded[name]
-                np.testing.assert_array_equal(target.data, native.data[..., sht.l <= 4])
+                self.assertIs(target.sht, native.sht)
+                np.testing.assert_array_equal(target.data[..., sht.l <= 4], native.data[..., sht.l <= 4])
+                np.testing.assert_array_equal(target.data[..., sht.l > 4], 0)
+                self.assertEqual(target.data.shape, native.data.shape)
                 self.assertIs(target.grid, native.grid)
                 self.assertEqual((target.irs,target.ire,target.BC,target.time,target.curl),
                                  (native.irs,native.ire,native.BC,native.time,native.curl))
 
-    def test_magic_truncation_reduces_every_volume_file_and_retains_scalar_mean(self):
+    def test_magic_truncation_keeps_every_volume_shape_and_retains_scalar_mean(self):
         from scipy.special import sph_harm_y
         from tools.viewer_bundle import validate_bundle
         graph = self.fake_magic_graph()
@@ -525,9 +589,9 @@ class ConverterPackageTests(unittest.TestCase):
             native, cut = outputs
             self.assertEqual(set(native[1]["fields"]), set(cut[1]["fields"]))
             self.assertEqual(cut[1]["nr"], native[1]["nr"])
-            self.assertLess(cut[1]["ntheta"]*cut[1]["nphi"], native[1]["ntheta"]*native[1]["nphi"])
+            self.assertEqual(cut[1]["ntheta"]*cut[1]["nphi"], native[1]["ntheta"]*native[1]["nphi"])
             for name, file in cut[1]["fields"].items():
-                self.assertLess((cut[0]/file).stat().st_size, (native[0]/native[1]["fields"][name]).stat().st_size)
+                self.assertEqual((cut[0]/file).stat().st_size, (native[0]/native[1]["fields"][name]).stat().st_size)
             import json
             coordinates = json.loads((cut[0]/"coordinates.json").read_text())
             expected = 3 + np.asarray(coordinates["r"])[:,None,None]*np.cos(coordinates["theta"])[None,:,None]

@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased — separate spectral cutoff and sampling
+
+- Keep the no-cutoff reconstruction grid when applying `--spectral-lmax` in
+  Leeds, XSHELLS, MagIC, Calypso, QuICC and both Rayleigh input paths.
+- Use the existing `--downsample-r`, `--downsample-theta` and
+  `--downsample-phi` options for output-grid reduction. No new input option.
+- Record synthesis/output grid dimensions separately. Cutoff-only exports now
+  have the same volume byte count as no-cutoff exports. Reconvert to obtain
+  the new grid; changing a viewer setting cannot restore the lost samples.
+- Preserve QuICC radial sampling as well as its angular sampling during cutoff.
+
 ## 3.8.0
 
 - Add an explicit thermal-only policy for `--RaC 0`: avoid composition

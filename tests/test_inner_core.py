@@ -29,7 +29,12 @@ class CoreTransform:
     def __init__(self, *args):
         self.l = np.array([0, 1]); self.m = np.array([0, 0])
         self.cos_theta = np.array([0.8, 0., -0.8]); self.nphi = 4
-    def set_grid(self): return 3, self.nphi
+    def set_grid(self, nlat=None, nphi=None):
+        if nlat is not None:
+            if nlat != len(self.cos_theta):
+                self.cos_theta = np.polynomial.legendre.leggauss(nlat)[0][::-1]
+            self.nphi = nphi
+        return len(self.cos_theta), self.nphi
     def synth(self, q, s, t):
         cos = self.cos_theta[:, None] * np.ones((1, self.nphi))
         sin = np.sqrt(1 - cos*cos)
@@ -95,6 +100,22 @@ def manifest(root, source):
 
 
 class InnerCoreTests(unittest.TestCase):
+    def test_native_grid_inner_synthesis_uses_outer_synthesis_dimensions(self):
+        class SizedCore(CoreTransform):
+            def set_grid(self, nlat=3, nphi=4):
+                self.cos_theta=np.polynomial.legendre.leggauss(nlat)[0][::-1]
+                self.nphi=nphi
+                return nlat,nphi
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'state.cdf';state_file(path)
+            inner=ic.read_leeds_inner_core(path)
+            b=backend();b.shtns.sht=SizedCore
+            metadata={'spectral_truncation':{'lmax_effective':1,'mmax_effective':0,
+                'grid_mode':'native','synthesis_grid':[16,32]}}
+            fields,theta,phi=ic.synthesise_leeds_inner(inner,metadata,b)
+            self.assertEqual((len(theta),len(phi)),(16,32))
+            self.assertEqual(fields['Br'].shape,(len(inner['r']),16,32))
+
     @unittest.skipIf(h5py is None, "h5py optional in the test environment")
     def test_hdf5_reader_honours_markers_and_descending_coordinates(self):
         with tempfile.TemporaryDirectory() as folder:

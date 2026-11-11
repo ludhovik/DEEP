@@ -171,6 +171,16 @@ class CalypsoTests(unittest.TestCase):
         self.assertIn("No outer-core calculations",log)
         self.assertEqual(before,{p.name:p.read_bytes() for p in out.glob("*.f32")})
 
+    def test_cutoff_keeps_grid_and_volume_size(self):
+        out, _, _ = self.run_converter()
+        coordinates = (out / "coordinates.json").read_bytes()
+        sizes = {p.name: p.stat().st_size for p in out.glob("*_volume.f32")}
+        out, meta, _ = self.run_converter("--spectral-lmax", "2")
+        self.assertEqual((out / "coordinates.json").read_bytes(), coordinates)
+        self.assertEqual(sizes, {p.name: p.stat().st_size for p in out.glob("*_volume.f32")})
+        self.assertEqual(meta["spectral_truncation"]["synthesis_grid"], [8, 16])
+        self.assertEqual(meta["spectral_truncation"]["output_grid"], [8, 16])
+
     def test_cutoff_downsampling_and_optional_fields(self):
         _,meta,_=self.run_converter("--spectral-lmax","2","--downsample-r","2",
                                    "--downsample-theta","2","--downsample-phi","2",

@@ -195,10 +195,19 @@ class IOTests(unittest.TestCase):
         self.assertTrue((self.root/'sequence/frames/state00002/EMFr_volume.f32').exists())
         opts=build_arg_parser().parse_args(args+['--sequence-last','3'])
         with self.assertRaisesRegex(ValueError,'Missing requested'):discover_states(opts)
-    def test_small_grid_after_spectral_cutoff(self):
+    def test_cutoff_keeps_grid_until_explicit_downsampling(self):
+        self.convert()
+        out = self.root/'bundle'
+        coordinates = (out/'coordinates.json').read_bytes()
+        size = (out/'T_volume.f32').stat().st_size
         self.convert('--spectral-lmax','1')
-        m=json.loads((self.root/'bundle/metadata.json').read_text())
+        m=json.loads((out/'metadata.json').read_text())
         self.assertEqual(m['spectral']['lmax'],1)
+        self.assertEqual((out/'coordinates.json').read_bytes(), coordinates)
+        self.assertEqual((out/'T_volume.f32').stat().st_size, size)
+        self.convert('--spectral-lmax','1','--downsample-theta','2','--downsample-phi','2')
+        validate_bundle(out)
+        self.assertLess((out/'T_volume.f32').stat().st_size, size)
 
 
 @unittest.skipUnless(os.environ.get('QUICC_BENCHMARK_DIR'),'Set QUICC_BENCHMARK_DIR for upstream reference data')

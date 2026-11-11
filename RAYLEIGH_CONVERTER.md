@@ -175,7 +175,9 @@ The converter uses the existing export pipeline for:
 
 For checkpoints, angular modes above the requested cutoff are omitted before
 synthesis. For Spherical_3D, the full physical snapshot must first be read;
-scalar/vector harmonic projection then produces the reduced angular grid.
+scalar/vector harmonic projection then evaluates the retained modes on the
+original angular grid. Cutoff alone does not reduce `.f32` file size; use
+`--downsample-theta` and `--downsample-phi` for separate grid reduction.
 Native Gauss colatitudes are required for this projection. Radial samples remain
 unchanged unless explicitly downsampled. Derived nonlinear fields are computed
 from the retained source fields; compare cutoffs when assessing convergence.

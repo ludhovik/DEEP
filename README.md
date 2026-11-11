@@ -1096,33 +1096,56 @@ For example, add this to a Leeds, XSHELLS, MagIC, Calypso, QuICC or Rayleigh con
 --spectral-lmax 128
 ```
 
-When the input contains degrees above 128, this removes those modes and
-constructs a smaller angular grid. Radial samples are unchanged. A float32
-volume occupies `4 * nr * ntheta * nphi` bytes, so reducing the angular
-dimensions reduces every exported volume's size. A requested cutoff at or
-above the available degree leaves the original grid and fields unchanged.
-`metadata.json` records the requested and effective cutoff under
-`spectral_truncation`.
+When the input contains degrees above 128, this removes those modes while
+**keeping the same reconstruction grid as a no-cutoff conversion**. Spectral
+cutoff and grid reduction are independent in Leeds, XSHELLS, MagIC, Calypso,
+QuICC and Rayleigh. There is no additional grid-mode option.
 
-Leeds, XSHELLS, Calypso and QuICC truncate their native scalar and poloidal/toroidal
-coefficients before physical-space synthesis. Rayleigh checkpoints do the same. XSHELLS retains radial ghost
-coefficients and each field's radial domain. Omit explicit `--nlat`/`--nphi`
-when you want XSHELLS to choose its smaller grid automatically.
+- `--spectral-lmax L` filters angular content only. Radial and angular sampling
+  stay unchanged unless separate sampling options are supplied.
+- `--downsample-theta N` and `--downsample-phi N` reduce the exported angular
+  grid after reconstruction and diagnostics. Both default to 1 (no reduction).
+- `--downsample-r N` separately reduces radial samples while keeping boundaries.
 
-MagIC graphic files and Rayleigh Spherical_3D files contain physical samples. The converter first reads the
-native data, projects it onto scalar/vector spherical harmonics, and
-synthesizes the retained degrees on a smaller grid. Scalars keep their
-degree-zero mean; velocity and magnetic fields use the coupled vector
-components of the [Q/S/T formulation](https://nschaeff.bitbucket.io/shtns/vsh.html).
-This needs the native Gauss colatitude grid but adds no runtime dependency.
-It reduces output size, while the initial native-file read still needs its
-original memory allocation.
+A float32 volume occupies `4 * nr * ntheta * nphi` bytes. **Cutoff alone no
+longer makes these files smaller.** Using angular downsampling factors of 2
+in both directions gives roughly one quarter of the volume size (exact counts
+include retained endpoints). Downsampling is filtered and can change the
+remaining field; compare resolutions before choosing factors for a figure.
 
-Gradients, EMF, induction and field lines are then calculated from the
-truncated source fields. Nonlinear products can contain higher degrees than
-the input cutoff; reduced output grids do not preserve all native nonlinear
-detail. Check convergence for the quantities you use. CMB/Earth map cutoffs
-and MagIC/Calypso/QuICC/Rayleigh's `--external-lmax` (default 32) remain separate controls.
+For a controlled comparison of a low-degree mean flow with the unfiltered
+result, use the same input, radial settings, fields and colour limits, and add:
+
+```bash
+--spectral-lmax 40 --downsample-theta 1 --downsample-phi 1
+```
+
+To additionally request smaller exported files, change the angular downsampling
+factors, for example to `--downsample-theta 2 --downsample-phi 2`.
+`metadata.json` records the cutoff, synthesis grid and final output grid under
+`spectral_truncation`, with sampling factors under `sampling`.
+
+Leeds and XSHELLS zero rejected native scalar and poloidal/toroidal coefficients
+without shrinking their transform layouts. Calypso, QuICC and Rayleigh
+checkpoints omit higher-degree terms while evaluating on the unchanged grid.
+For spectral inputs, “original grid” means the converter's no-cutoff
+reconstruction grid; it need not be a spatial grid stored in the restart.
+XSHELLS `--nlat`/`--nphi` remain explicit reconstruction-grid overrides.
+
+MagIC graphic files and Rayleigh Spherical_3D files contain physical samples.
+The converter projects the native data onto scalar/vector spherical harmonics,
+then synthesizes the retained degrees at the original angular sample positions.
+Scalars keep their degree-zero mean; velocity and magnetic fields use the
+coupled components of the [Q/S/T formulation](https://nschaeff.bitbucket.io/shtns/vsh.html).
+Native Gauss colatitudes are required for this projection.
+
+Gradients, EMF, induction and field lines are calculated from the filtered
+source fields before output downsampling. Nonlinear products can contain higher
+degrees than the input cutoff; preserving the grid is not a general guarantee
+of nonlinear de-aliasing. Check convergence for the quantities you use.
+CMB/Earth map cutoffs and MagIC/Calypso/QuICC/Rayleigh's `--external-lmax`
+(default 32) remain separate controls. ASPECT and StagYY have no
+`--spectral-lmax` option; their existing resampling controls are unchanged.
 
 ## Leeds converter
 
@@ -1309,7 +1332,8 @@ python3 tools/convert_calypso_to_viewer.py \
 
 The latest restart is selected; `--state-number 0` selects the initial state.
 All source degrees are retained by default. For the supplied L=63 benchmark,
-`--spectral-lmax 32` reduces the angular output grid from 96 × 192 to 34 × 66.
+`--spectral-lmax 32` removes higher degrees while retaining the 96 × 192
+angular grid. Use explicit angular downsampling to reduce output size.
 Add `--sequence-first 0 --sequence-last 1 --sequence-step 1` to convert both
 supplied restarts. Temperature/codensity is `T`; composition, when present, is `C`.
 
@@ -1708,9 +1732,8 @@ period even when the requested stride does not divide the native sample count.
 Surface maps use the same angular sampling as volumes. These filters reduce
 aliasing; they are not a replacement for checking resolution convergence.
 Diagnostics and field lines use the working grid before these output strides
-are applied. That is the native grid when spectral truncation is disabled,
-or the grid synthesized at the retained degree when `--spectral-lmax` reduces
-the source. Leave the strides at 1 when no further viewer-grid filtering is
+are applied. That grid is unchanged by `--spectral-lmax`; the cutoff only changes
+the retained harmonics. Leave the strides at 1 when no further viewer-grid filtering is
 wanted.
 
 Scalar naming version 2 uses one unambiguous contract: temperature/codensity

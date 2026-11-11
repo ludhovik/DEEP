@@ -71,7 +71,8 @@ def selected_leeds(c):
     if inner is not None and any(np.any(inner[k]) for k in ('icBP','icBT')):
         geometry['has_conducting_inner_core']=True
     ricb=float(geometry['r_icb']);extends=selection.needs('Br') and master[0]<ricb
-    info=dict(c['spectral_meta']);info.setdefault('original_grid',[len(theta),len(phi)]);info.setdefault('output_grid',[len(theta),len(phi)])
+    info=dict(c['spectral_meta']);info['synthesis_grid']=[len(theta),len(phi)]
+    info.setdefault('original_grid',[len(theta),len(phi)]);info.setdefault('output_grid',[len(theta),len(phi)])
     params={'_resolved_parameters':c['params_resolved'],'_parameter_sources':dict(args._parameter_sources),
             'l_max':lmax,'time':c['time'],'radratio':ricb/r[-1]}
     meta=dict(source_code='Leeds',source_state=str(c['path']),state_number=c['state_number'],

@@ -121,6 +121,30 @@ class SelectionTests(unittest.TestCase):
         meta=self.meta(self.root/'selected');self.assertTrue(meta['full_sphere']);self.assertEqual(meta['r_inner'],0.)
         self.assertEqual(meta['time'],1.)
         self.assertTrue(all(v['pol_regular_coefficients'] and v['tor_regular_coefficients'] for v in calls))
+        # Native-grid truncation must reach both the normal and selected paths.
+        backend.shtns=types.SimpleNamespace(sht=fixtures.ConverterPackageTests.spectral_layout,sht_schmidt=0,SHT_NO_CS_PHASE=0)
+        original_vector=vector
+        def filtered_vector(pol,tor,radius,lmax,mmax,**kwargs):
+            self.assertEqual((lmax,mmax),(2,2))
+            keep=fixtures.ConverterPackageTests.spectral_layout(2,2).l<=1
+            np.testing.assert_array_equal(pol[:,keep],1)
+            np.testing.assert_array_equal(pol[:,~keep],0)
+            return original_vector(pol,tor,radius,lmax,mmax,**kwargs)
+        backend.PolTor_to_spat=backend.PolTor_to_spat_fullsphere=filtered_vector
+        args.spectral_lmax=1;names=args.output
+        with contextlib.redirect_stdout(io.StringIO()),mock.patch.dict(sys.modules,{'modules':backend}), \
+             mock.patch.object(leeds,'read_state_radial_representations',return_value=reps), \
+             mock.patch.object(leeds,'read_netcdf_attributes',return_value={}):
+            args.out=str(self.root/'native-full');args.output=None;leeds.run_leeds_conversion(args)
+            args.out=str(self.root/'native-selected');args.output=names;leeds.run_leeds_conversion(args)
+        self.compare(self.root/'native-full',self.root/'native-selected',names)
+        for out in ('native-full','native-selected'):
+            meta=self.meta(self.root/out)
+            self.assertEqual([meta['ntheta'],meta['nphi']],[len(theta),len(phi)])
+            self.assertEqual(meta['spectral_truncation']['lmax_effective'],1)
+            self.assertEqual(meta['spectral_truncation']['lmax_transform'],2)
+            self.assertEqual(meta['spectral_truncation']['synthesis_grid'],[len(theta),len(phi)])
+
 
     def test_unavailable_field_preserves_previous_bundle(self):
         out=self.root/'selected';self.magic_run(out,['ur']);before=(out/'metadata.json').read_bytes()

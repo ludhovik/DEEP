@@ -162,7 +162,12 @@ def synthesise_leeds_inner(inner, metadata, backend):
         raise ValueError("Inner-core angular truncation is smaller than the existing outer-core grid.")
     shtns = backend.shtns
     sh = shtns.sht(lmax, mmax, 1, shtns.sht_schmidt | shtns.SHT_NO_CS_PHASE)
-    _, nphi = sh.set_grid()
+    # Match the outer-core native synthesis grid even though the independent
+    # inner-core coefficient array can use a different spectral layout.
+    if spectral.get("grid_mode") == "native" and spectral.get("synthesis_grid"):
+        _, nphi = sh.set_grid(*map(int, spectral["synthesis_grid"]))
+    else:
+        _, nphi = sh.set_grid()
     pol, tor = [backend.lsd_to_shtns(truncate_lsd_coefficients(inner[name], inner["lmax"], inner["mmax"],
                    lmax, mmax, backend), sh) for name in ("icBP", "icBT")]
     qst = leeds_inner_qst(pol, tor, sh.l, inner["r"], inner["representations"], backend)

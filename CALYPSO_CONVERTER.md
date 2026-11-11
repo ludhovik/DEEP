@@ -33,8 +33,9 @@ benchmark, or give an explicit `--state /path/to/rst.1.fst --control
 /path/to/control_MHD`.
 
 The default retains all source degrees and the native angular resolution.
-For this L=63 example, `--spectral-lmax 32` reduces the angular grid from
-96 × 192 to 34 × 66. A cutoff of 128 would not reduce this dataset.
+For this L=63 example, `--spectral-lmax 32` filters the field while retaining
+the 96 × 192 angular grid. A cutoff of 128 leaves this dataset unchanged.
+Use `--downsample-theta` and `--downsample-phi` to reduce file size separately.
 
 To export both supplied steps as a sequence, use the same command with:
 

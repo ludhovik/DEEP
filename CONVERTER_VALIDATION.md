@@ -41,10 +41,13 @@ tracing tests and six spectral projection tests.
   including non-axisymmetric modes and azimuthal symmetry. The normalized
   harmonic recurrence agrees with SciPy through degree/order 128 without
   high-order overflow.
-- An end-to-end synthetic MagIC conversion with EMF and induction writes 60
-  valid volume fields. A cutoff of 4 reduces its angular grid from 32 by 64
-  to 6 by 10 while keeping all five radial samples. Every volume is smaller;
-  this particular size ratio is a test case, not a promise for other inputs.
+- An end-to-end synthetic MagIC conversion with EMF and induction checks that
+  a cutoff of 4 removes high-degree content while retaining its 32 by 64
+  angular grid and all five radial samples. Every volume keeps the same byte
+  count. Separate downsampling tests verify filtered reduction and boundary
+  preservation. Leeds tests check zeroed high-degree coefficients, unchanged
+  retained coefficients, and equal continuous m=0 reconstructions in compact
+  and original layouts; native SHTns execution is not emulated by these tests.
 - Analytic dipole tests trace an inward branch from the exact returning
   exterior endpoint to the ICB. Its direction matches the exterior arc and
   variation in the dipole invariant `r/sin(theta)^2` is below `2e-5`.

@@ -59,8 +59,9 @@ paired internal/exterior lines with return branches. View files, viewer line
 stride pairing and B² tubes use the ordinary DEEPscope bundle format.
 
 `--spectral-lmax 0` (default) retains every native mode. A positive cutoff
-removes higher degrees before vector/scalar synthesis and reduces the grid.
-Sampling factors apply afterward. Full-sphere radius includes both 0 and 1; shell radius includes both native
+removes higher degrees before vector/scalar synthesis and keeps the original
+radial and angular reconstruction grids. Cutoff alone does not reduce file
+size; explicit sampling factors apply afterward. Full-sphere radius includes both 0 and 1; shell radius includes both native
 boundaries and no points below the ICB. The angular
 grid uses Gauss colatitudes and a full uniform longitude period, without a
 duplicate seam. No arbitrary centre extrapolation is used.
