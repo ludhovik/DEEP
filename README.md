@@ -313,9 +313,29 @@ service configured for CORS.
 
 ## Viewer controls
 
+**Visible layers** provides linked show/hide checkboxes for boundary surfaces,
+slices, magnetic field lines, isosurfaces, the planet image and Mollweide map.
+Use **Edit** beside a layer to open its settings. Controls follow visibility,
+field, position and colour scale; opacity and less-used styling/detail controls
+are in a collapsed **Advanced** section. Independent surface sectors remain
+accessible in their own section.
+
+Field selectors include a search box that filters names and dataset prefixes.
+Filtering does not change the selected field. Select a result, or use Up/Down
+and Enter; Escape closes the selector. Colour-map selectors show gradient
+previews beside every palette and beside the current selection.
+
+**Reset layer** restores just that layer's settings from the initial dataset
+view (`view.DTV2` when present, otherwise the default view). It retains the
+camera, current frame, other layer settings, phi-calculator definitions and
+shared clipping settings. Dependent geometry, such as a CMB cut linked to a
+reset meridional plane, follows the restored plane. A field unavailable in the
+current dataset uses the layer's current-build fallback when possible.
+
 ### Numeric controls
 
-Sliders show their editable value above the track, including slice height
+Sliders show their editable value beside the track on desktop and above it on
+mobile, including slice height
 `z / r_o`, radius and longitude. Drag the track, type a value, or use **− / +**.
 Click or Tab to a slider, then use the arrow keys or mouse wheel; **Shift**
 changes ten steps at a time. **Home / End** selects a slider's minimum / maximum.

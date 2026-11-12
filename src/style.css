@@ -664,8 +664,8 @@ body.command-applying .lil-gui { pointer-events: none; }
   --focus-color: #3c5874;
   --number-color: #a7d8ff;
   --font-family: system-ui, sans-serif;
-  --font-size: 12px;
-  --title-height: 29px;
+  --font-size: 11px;
+  --title-height: 24px;
 }
 .lil-gui.main-controls-gui, .lil-gui.point-of-view-gui {
   border: 1px solid #52687c;
@@ -747,3 +747,76 @@ body.command-applying .lil-gui { pointer-events: none; }
 .mobile-layout .lil-gui .lil-controller.numeric-enhanced.lil-has-slider input { height: 38px; }
 .mobile-layout .lil-gui .lil-controller.numeric-enhanced .numeric-step { width: 44px; height: 44px; }
 .mobile-layout .lil-gui .lil-controller.numeric-enhanced .lil-slider { height: 44px; }
+
+/* Compact desktop rows; mobile keeps its separate value/track rows above. */
+:root:not(.mobile-layout) .lil-gui .lil-controller.numeric-enhanced.lil-has-slider {
+  grid-template-columns: minmax(0, 1.4fr) 18px minmax(0, 1fr) 18px 5.5em;
+  gap: 4px;
+  padding-top: 2px;
+  padding-bottom: 2px;
+  align-items: center;
+}
+:root:not(.mobile-layout) .lil-gui .lil-controller.numeric-enhanced.lil-has-slider > .lil-name {
+  grid-column: 1;
+  grid-row: 1;
+  min-height: 20px;
+  line-height: 1.25;
+}
+:root:not(.mobile-layout) .lil-gui .lil-controller.numeric-enhanced.lil-has-slider input {
+  grid-column: 5;
+  grid-row: 1;
+  height: 20px;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+:root:not(.mobile-layout) .lil-gui .lil-controller.numeric-enhanced .lil-slider {
+  grid-column: 3;
+  grid-row: 1;
+  height: 18px;
+  border-radius: 3px;
+}
+:root:not(.mobile-layout) .lil-gui .lil-controller.numeric-enhanced .numeric-step {
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  font-size: 13px;
+  grid-row: 1;
+}
+:root:not(.mobile-layout) .lil-gui .numeric-decrease { grid-column: 2; }
+:root:not(.mobile-layout) .lil-gui .numeric-increase { grid-column: 4; }
+
+/* Search stays inside each field/palette selector and never changes the value
+   until a choice is selected. Expanded menus participate in normal layout. */
+.lil-gui .lil-controller.choice-enhanced { display: grid; grid-template-columns: minmax(0, .7fr) minmax(0, 1.3fr); align-items: center; gap: 4px; padding-top: 2px; padding-bottom: 2px; }
+.lil-gui .choice-enhanced > .lil-name { min-width: 0; white-space: normal; line-height: 1.4; }
+.lil-gui .choice-enhanced > .lil-widget { display: block; min-width: 0; }
+.lil-gui .choice-enhanced:has(.layer-picker[open]) > .lil-name,
+.lil-gui .choice-enhanced:has(.layer-picker[open]) > .lil-widget { grid-column: 1 / -1; }
+.lil-gui .choice-enhanced > .lil-widget > select,
+.lil-gui .choice-enhanced > .lil-widget > .lil-display { display: none !important; }
+.lil-gui .layer-picker { width: 100%; min-width: 0; }
+.lil-gui .layer-picker summary {
+  display: flex; align-items: center; gap: 6px; min-height: 24px;
+  padding: 3px 6px; border: 1px solid #668199; border-radius: 4px;
+  background: #0c1722; color: #e3f3ff; cursor: pointer; list-style: none;
+}
+.lil-gui .layer-picker summary::-webkit-details-marker { display: none; }
+.lil-gui .layer-picker summary > span:not(.palette-swatch) { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.lil-gui .layer-picker summary::after { content: "▾"; margin-left: auto; }
+.lil-gui .layer-picker[open] summary::after { content: "▴"; }
+.lil-gui .layer-picker input[type="search"] { width: 100%; height: 28px; margin: 5px 0; padding: 3px 6px; background: #0c1722; color: #e3f3ff; border: 1px solid #668199; border-radius: 4px; }
+.lil-gui .layer-picker-options { max-height: 180px; overflow-y: auto; overscroll-behavior: contain; border: 1px solid #52687c; border-radius: 4px; }
+.lil-gui .layer-picker-options button {
+  display: flex; align-items: center; gap: 7px; width: 100%; min-height: 26px;
+  padding: 5px 7px; border: 0; border-radius: 0; text-align: left; overflow-wrap: anywhere;
+  background: #16212d; color: #edf3fa; font: inherit; cursor: pointer;
+}
+.lil-gui .layer-picker-options button:hover, .lil-gui .layer-picker-options button[aria-pressed="true"] { background: #34536e; }
+.lil-gui .layer-picker-options p { padding: 8px; line-height: 1.4; }
+.lil-gui .palette-swatch { display: inline-block; width: 46px; height: 12px; flex: 0 0 46px; border: 1px solid #ffffff70; border-radius: 2px; }
+.lil-gui .layer-picker :focus-visible, .lil-gui .layer-edit:focus-visible { outline: 2px solid #9ad7ff; outline-offset: -2px; }
+.lil-gui .lil-controller .layer-edit { padding: 2px 6px; margin-left: 4px; border: 1px solid #52687c; border-radius: 3px; background: #293a4b; color: #dcefff; font: inherit; cursor: pointer; }
+.lil-gui:not(.lil-closed):not(.lil-transition):has(.layer-picker) > .lil-children { height: auto !important; }
+.mobile-layout .lil-gui .layer-picker summary, .mobile-layout .lil-gui .layer-picker-options button { min-height: 44px; }
+.mobile-layout .lil-gui .layer-picker input[type="search"] { height: 40px; }
+.mobile-layout .lil-gui .lil-controller .layer-edit { min-height: 44px; }

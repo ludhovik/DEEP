@@ -22,6 +22,7 @@ import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import GUI from "lil-gui";
 import { enhanceNumericControls } from "./numeric-controls.js";
+import { addLayerOverview, enhanceChoice, moveControl, organiseLayer, restoreLayerValues } from "./layer-controls.js";
 import { makeMagneticTubeGeometry, peakLineStrength, estimateTubeBytes } from "./field-line-tubes.js";
 import { GeometryClient } from "./geometry-client.js";
 import { unpackGeometry } from "./geometry-jobs.js";
@@ -1314,6 +1315,7 @@ function refreshColourbarGradients() {
 
 let customColourRefreshTimer = null;
 function scheduleCustomColourRefresh() {
+  guiRoot?.controllersRecursive().filter(c => c.property.endsWith("Colormap")).forEach(c => c.updateDisplay());
   // Keep the displayed legend until the matching geometry has been recoloured.
   if (customColourRefreshTimer) window.clearTimeout(customColourRefreshTimer);
   customColourRefreshTimer = window.setTimeout(() => {
@@ -7864,6 +7866,7 @@ function addSurfaceAppearanceControls(folder, slot, rebuild) {
   folder.add(params, `${slot}UndersideLighting`).name("Light underside").onChange(activateCustom)
     .domElement.title = "On: respond to Lighting angle and intensity. Off: flat custom colour. Changing this enables the custom underside.";
   refreshCutControls();
+  folder.refreshControlState = refreshCutControls;
   sectors.open();
 }
 
@@ -7890,8 +7893,11 @@ function addSplitMeridianControls(gui, slot, label, showParam, rebuildFn, availa
     if (params.showIsosurfaces && !params.sequencePlaying) await rebuildIsosurfaces();
   }));
   const independentKey = `${slot}IndependentSides`;
-  addMeridianSideControls(folder, "Both sides / right (+s)", slot,
+  const rightFolder = addMeridianSideControls(folder, "Both sides / right (+s)", slot,
     `${slot}Field`, `${slot}Opacity`, rebuildFn, availableFields);
+  // The main field and colour controls should not require opening a side folder.
+  for (const controller of [...rightFolder.controllers]) moveControl(controller, folder);
+  rightFolder.destroy();
   const leftFolder = addMeridianSideControls(folder, "Independent left (-s, phi + 180°)", `${slot}Left`,
     `${slot}LeftField`, `${slot}LeftOpacity`, rebuildFn, availableFields);
   const showIndependentControls = () => {
@@ -7908,6 +7914,7 @@ function addSplitMeridianControls(gui, slot, label, showParam, rebuildFn, availa
     })
   );
   showIndependentControls();
+  folder.refreshControlState = showIndependentControls;
   return folder;
 }
 
@@ -8743,6 +8750,7 @@ function addTubeMemoryControls(lineFolder, refreshFieldLines) {
   custom.domElement.title = `Off uses the default ${TUBE_MEMORY_LIMITS.defaultMiB} MiB tube geometry limit.`;
   limit.domElement.title = "Estimated tube geometry per view, after stride and simplification. Total browser and graphics memory can be higher.";
   limit.enable(params.lineTubeCustomMemoryLimit);
+  memoryFolder.refreshControlState = () => limit.enable(params.lineTubeCustomMemoryLimit);
   custom.onChange(() => {
     limit.enable(params.lineTubeCustomMemoryLimit);
     setStatusSummary();
@@ -8754,6 +8762,45 @@ function addTubeMemoryControls(lineFolder, refreshFieldLines) {
     setStatusSummary();
     refreshFieldLines();
   });
+}
+
+function installLayerControls(gui, specs) {
+  for (const spec of specs) {
+    const controllers = spec.folder.controllersRecursive().filter(c => c.object === params);
+    if (!controllers.some(c => c.property === spec.show)) continue;
+    // These legacy clipping settings are shared; a layer reset must not alter
+    // another layer's clipping configuration or the phi calculator definitions.
+    const keys = [...new Set(controllers.map(c => c.property))]
+      .filter(key => !["cmbClipMode", "cmbRearSide"].includes(key));
+    const fallback = Object.fromEntries(keys.map(key => [key, params[key]]));
+    const sectors = spec.folder.folders.filter(f => f._title.startsWith("Surface sectors"));
+    const left = spec.folder.folders.filter(f => f._title.startsWith("Independent left"));
+    for (const side of left) {
+      const prefix = `${spec.meridian}Left`;
+      organiseLayer(side, ["Field", "Scale", "Colormap", "Min", "Max"].map(s => prefix + s));
+    }
+    organiseLayer(spec.folder, spec.primary, sectors, left);
+    sectors.forEach(folder => folder.close());
+    const reset = viewerTaskCallback(`Reset ${spec.label}`, async () => {
+      restoreLayerValues(params, initialDatasetView?.snapshot?.params, fallback, keys, validFieldForState);
+      if (spec.meridian) syncLinkedMeridianSide(spec.meridian);
+      [spec.folder, ...spec.folder.foldersRecursive()].forEach(folder => folder.refreshControlState?.());
+      gui.controllersRecursive().forEach(c => c.updateDisplay());
+      await spec.rebuild();
+      if (spec.meridian || spec.show === "showEarthSurface") await rebuildGapFillers();
+      updateOpacities();
+      updateFieldLineVisuals();
+      updateVisibility();
+      setStatus(`${spec.label} restored to its initial dataset view; other layer settings retained.`);
+    });
+    spec.folder.add({ reset }, "reset").name("Reset layer")
+      .domElement.title = "Restore this layer from the dataset's initial view.DTV2 or default view. Camera, frame, other layers and shared clipping settings are retained.";
+  }
+  addLayerOverview(gui, params, specs);
+  for (const controller of gui.controllersRecursive()) {
+    if (controller.property.endsWith("Field")) enhanceChoice(controller);
+    if (controller.property.endsWith("Colormap")) enhanceChoice(controller, name => colourbarCssGradient(name));
+  }
 }
 
 function buildGui() {
@@ -8802,6 +8849,7 @@ function buildGui() {
     mapRadius.disable(Boolean(ref.meta.surface_fields?.[ref.rawName]));
   };
   syncMapRadius();
+  mapFolder.refreshControlState = syncMapRadius;
   mapRadius.domElement.title = "Volume fields: interpolate at this radius. Stored surface maps use their fixed surface.";
   mapFolder.add(params, "mollweideLongitude", -180, 180, 1).name("Central longitude °").onChange(refreshMap);
   mapFolder.add(params, "mollweideScale", ["symmetric", "minmax", "manual"]).name("Colour scale").onChange(refreshMap);
@@ -8982,6 +9030,7 @@ function buildGui() {
       refreshFieldLines();
     }).domElement.title = "Choose independent internal and exterior densities. Stride 1 shows all available line groups, 2 every second group, etc. Shared stride preserves paired internal/exterior selections.";
     updateStrideControls();
+    lineFolder.refreshControlState = updateStrideControls;
     lineFolder.add(params, "lineColourMode", { Strength: "strength", "Starting CMB Br (whole line)": "polarity", "Local Br (along line)": "radial-polarity" }).name("Colour by").onChange(refreshFieldLines);
     lineFolder.addColor(params, "linePositiveColor").name("Br > 0 colour").onChange(refreshFieldLines);
     lineFolder.addColor(params, "lineNegativeColor").name("Br < 0 colour").onChange(refreshFieldLines);
@@ -9104,6 +9153,30 @@ function buildGui() {
     [icbFolder, radialFolder, eqFolder, eq2Folder, merFolder, mer2Folder,
       phiAverageFolder, isoFolder].filter(Boolean).forEach(folder => folder.hide());
   }
+  installLayerControls(gui, [
+    { folder: cmbFolder, label: displayBoundaryName("cmb"), show: "showCMB", rebuild: () => rebuildCMB({ reuseGeometry: false }),
+      primary: ["showCMB", "cmbField", "cmbFollowMeridians", "cmbMeridianMode", "cmbMeridianSide", "cmbScale", "cmbColormap", "cmbMin", "cmbMax"] },
+    { folder: icbFolder, label: displayBoundaryName("icb"), show: "showICB", rebuild: rebuildICB,
+      primary: ["showICB", "icbField", "icbScale", "icbColormap", "icbMin", "icbMax"] },
+    { folder: radialFolder, label: "Radial surface", show: "showRadialSurface", rebuild: () => rebuildRadialSurface({ reuseGeometry: false }),
+      primary: ["showRadialSurface", "radialField", "radialSurfaceRadiusRo", "radialScale", "radialColormap", "radialMin", "radialMax"] },
+    { folder: eqFolder, label: "Equatorial slice 1", show: "showEquator", rebuild: rebuildEquator,
+      primary: ["showEquator", "equatorField", "equatorScale", "equatorColormap", "equatorMin", "equatorMax"] },
+    { folder: eq2Folder, label: "Equatorial slice 2", show: "showEquator2", rebuild: rebuildEquator2,
+      primary: ["showEquator2", "equator2Field", "equator2Z", "equator2Scale", "equator2Colormap", "equator2Min", "equator2Max"] },
+    { folder: merFolder, label: "Meridional slice 1", show: "showMeridian", rebuild: rebuildMeridianView, meridian: "meridian",
+      primary: ["showMeridian", "meridianField", "meridianPhiDeg", "meridianIndependentSides", "meridianScale", "meridianColormap", "meridianMin", "meridianMax"] },
+    { folder: mer2Folder, label: "Meridional slice 2", show: "showMeridian2", rebuild: rebuildMeridian2View, meridian: "meridian2",
+      primary: ["showMeridian2", "meridian2Field", "meridian2PhiDeg", "meridian2IndependentSides", "meridian2Scale", "meridian2Colormap", "meridian2Min", "meridian2Max"] },
+    { folder: lineFolder, label: "Magnetic field lines", show: "showFieldLines", rebuild: onFieldLineVisibilityChanged,
+      primary: ["showFieldLines", "fieldLineDisplay", "lineSeparateStrides", "lineStride", "lineShellStride", "lineExteriorStride", "lineColourMode", "lineColormap", "lineScale", "lineMin", "lineMax", "linePositiveColor", "lineNegativeColor"] },
+    { folder: isoFolder, label: "Isosurfaces", show: "showIsosurfaces", rebuild: rebuildIsosurfaces,
+      primary: ["showIsosurfaces", "isoField", "showIsoPositive", "isoPositiveValue", "showIsoNegative", "isoNegativeValue", "isoPositiveColor", "isoNegativeColor"] },
+    { folder: earthFolder, label: "Planet / star surface", show: "showEarthSurface", rebuild: () => updateEarthSurface({ reuseGeometry: false }),
+      primary: ["showEarthSurface", "earthDisplayMode", "earthTextureBody", "earthField", "earthLongitudeDeg", "earthRadiusScale", "earthScale", "earthColormap", "earthMin", "earthMax"] },
+    { folder: mapFolder, label: "Mollweide map", show: "showMollweide", rebuild: rebuildMollweide,
+      primary: ["showMollweide", "mollweideField", "mollweideRadius", "mollweideLongitude", "mollweideScale", "mollweideColormap", "mollweideMin", "mollweideMax"] },
+  ]);
   enhanceNumericControls(gui);
   gui.close();
 
