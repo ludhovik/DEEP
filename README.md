@@ -313,6 +313,18 @@ service configured for CORS.
 
 ## Viewer controls
 
+### Numeric controls
+
+Sliders show their editable value above the track, including slice height
+`z / r_o`, radius and longitude. Drag the track, type a value, or use **− / +**.
+Click or Tab to a slider, then use the arrow keys or mouse wheel; **Shift**
+changes ten steps at a time. **Home / End** selects a slider's minimum / maximum.
+In the value box, **Up / Down** adjusts the number while Left / Right moves the
+text cursor. Arrow and wheel edits update the view without clicking away
+(expensive operations finish on key release or a short wheel pause).
+Scrolling over an unfocused control scrolls the panel without changing values.
+Hover over a slider or value box for the interaction reminder.
+
 ### Camera and keyboard
 
 Mouse controls:

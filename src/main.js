@@ -21,6 +21,7 @@ import { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import GUI from "lil-gui";
+import { enhanceNumericControls } from "./numeric-controls.js";
 import { makeMagneticTubeGeometry, peakLineStrength, estimateTubeBytes } from "./field-line-tubes.js";
 import { GeometryClient } from "./geometry-client.js";
 import { unpackGeometry } from "./geometry-jobs.js";
@@ -8730,6 +8731,7 @@ function buildPointOfViewGui() {
   povGui.add(params, "applyCameraView").name("Apply view");
 
   // Start collapsed so the viewer opens with controls out of the way.
+  enhanceNumericControls(povGui);
   povGui.close();
 }
 
@@ -9102,6 +9104,7 @@ function buildGui() {
     [icbFolder, radialFolder, eqFolder, eq2Folder, merFolder, mer2Folder,
       phiAverageFolder, isoFolder].filter(Boolean).forEach(folder => folder.hide());
   }
+  enhanceNumericControls(gui);
   gui.close();
 
   buildPointOfViewGui();
