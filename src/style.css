@@ -674,33 +674,37 @@ body.command-applying .lil-gui { pointer-events: none; }
   max-width: calc(100vw - 24px);
 }
 .lil-gui .lil-controller.numeric-enhanced.lil-has-slider {
-  display: block;
-  position: relative;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) minmax(0, 5em) 28px;
+  gap: 5px 7px;
   padding-top: 5px;
   padding-bottom: 7px;
   border-bottom: 1px solid #ffffff0a;
 }
 .lil-gui .lil-controller.numeric-enhanced.lil-has-slider > .lil-name {
+  grid-column: 1 / 3;
+  grid-row: 1;
   width: auto;
+  min-width: 0;
   min-height: 26px;
-  margin-right: 7.8em;
+  margin: 0;
+  overflow-wrap: anywhere;
   white-space: normal;
   line-height: 1.4;
   display: flex;
   align-items: center;
 }
 .lil-gui .lil-controller.numeric-enhanced.lil-has-slider > .lil-widget {
-  display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) 28px;
-  gap: 7px;
-  width: 100%;
-  margin-top: 4px;
+  /* The library positions this wrapper relatively. Keep all its controls in
+     the row's grid instead of anchoring the value box over the slider. */
+  display: contents;
 }
 .lil-gui .lil-controller.numeric-enhanced.lil-has-slider input {
-  position: absolute;
-  top: 5px;
-  right: 4px;
-  width: 7em;
+  grid-column: 3 / 5;
+  grid-row: 1;
+  position: static;
+  width: 100%;
+  min-width: 0;
   height: 26px;
   margin: 0;
   padding: 3px 7px;
@@ -712,8 +716,9 @@ body.command-applying .lil-gui { pointer-events: none; }
   text-align: right;
 }
 .lil-gui .lil-controller.numeric-enhanced .lil-slider {
-  grid-column: 2;
-  grid-row: 1;
+  grid-column: 2 / 4;
+  grid-row: 2;
+  min-width: 0;
   width: auto;
   height: 28px;
   border-radius: 5px;
@@ -731,14 +736,14 @@ body.command-applying .lil-gui { pointer-events: none; }
   font: 18px system-ui, sans-serif;
   cursor: pointer;
 }
-.lil-gui .numeric-decrease { grid-column: 1; grid-row: 1; }
-.lil-gui .numeric-increase { grid-column: 3; grid-row: 1; }
+.lil-gui .numeric-decrease { grid-column: 1; grid-row: 2; }
+.lil-gui .numeric-increase { grid-column: 4; grid-row: 2; }
 .lil-gui .lil-controller.numeric-enhanced:focus-within { background: #23394e; border-radius: 5px; }
 .lil-gui .lil-controller.numeric-enhanced :focus-visible { outline: 2px solid #9ad7ff; outline-offset: 2px; }
 .lil-gui .numeric-step:hover:not(:disabled) { background: #3c5874; }
 .lil-gui .numeric-step:disabled { opacity: .4; cursor: default; }
-.mobile-layout .lil-gui .lil-controller.numeric-enhanced.lil-has-slider > .lil-name { min-height: 38px; margin-right: 8.5em; }
-.mobile-layout .lil-gui .lil-controller.numeric-enhanced.lil-has-slider input { height: 38px; width: 6.5em; }
-.mobile-layout .lil-gui .lil-controller.numeric-enhanced.lil-has-slider > .lil-widget { grid-template-columns: 44px minmax(0, 1fr) 44px; }
+.mobile-layout .lil-gui .lil-controller.numeric-enhanced.lil-has-slider { grid-template-columns: 44px minmax(0, 1fr) minmax(0, 5em) 44px; }
+.mobile-layout .lil-gui .lil-controller.numeric-enhanced.lil-has-slider > .lil-name { min-height: 38px; }
+.mobile-layout .lil-gui .lil-controller.numeric-enhanced.lil-has-slider input { height: 38px; }
 .mobile-layout .lil-gui .lil-controller.numeric-enhanced .numeric-step { width: 44px; height: 44px; }
 .mobile-layout .lil-gui .lil-controller.numeric-enhanced .lil-slider { height: 44px; }

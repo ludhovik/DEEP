@@ -55,7 +55,7 @@ ba4c8b44c48aa86946e4c7cfda47025d393bbf420f77fe76ca33d12bf068d93b  ./src/overlay-
 67cad42d85a7f849e2e534c347c093e52d1c1d3f638f393ee0ebceac800eb333  ./src/simulation-time.js
 c6adac0cc3e196e4112128d1952f673f61a3bba56ea1c5704e422ae1789c3cad  ./src/slice-colours.js
 158892435e0c2191763dd20c326c9302222dda50966e576745ba4f5eeb313fcd  ./src/slice-sampling.js
-db6402b3a40bc4a3401c1940ec092e2710c292ac8062a3136c417e6b1399ae6b  ./src/style.css
+8172fa7eb29fdbb88eeb0785e05b4e074121ba8f9cad22114117d8ace78ffc4c  ./src/style.css
 f1a288565b9c49a75dff9d7f0e65705bc74181b80d5323bb80976065f1b413fa  ./src/surface-textures.js
 143f1ebcd26d13105e2c5bc2e5be7a328307448e7b4ee9945e1e0fd34748fa26  ./src/viewer-commands.js
 05a61920143e5cbbb45629b8f9a6dae91e14d59771c094dfcdbf663d261b33b8  ./tests/test_aspect_converter.py
