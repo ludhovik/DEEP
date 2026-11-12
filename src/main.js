@@ -11,7 +11,7 @@ import { createMollweideOverlay, sampleRadialSurface, surfaceRange as mollweideR
 import { createOverlayFloater, OVERLAY_POSITION_OPTIONS } from "./overlay-floater.js";
 import { LongitudeAverageCache, longitudeDisplayField,
   volumeDisplayValue, longitudeFieldLabel } from "./longitude-average.js";
-import { createSliceSampler, stencilValue, appendSliceStencil, cachedSliceValue } from "./slice-sampling.js";
+import { createPolarSliceSampler, regularPoleField, stencilValue, appendSliceStencil, cachedSliceValue } from "./slice-sampling.js";
 import { setSliceColours } from "./slice-colours.js";
 import { fieldRadialDomain } from "./volume-domain.js";
 import { isosurfaceLegendEntries, updateIsosurfaceLegend } from "./isosurface-legend.js";
@@ -4564,8 +4564,8 @@ function meridianHalfRangeOnGrid(field, phiDeg, side, slot, rawOnly = false) {
   const phi = THREE.MathUtils.degToRad(phiDeg) + (side === "left" ? Math.PI : 0);
   const values = [];
   for (let ir = domain.start; ir <= domain.end; ir++) {
-    for (let it = 0; it < metadata.ntheta; it++) {
-      values.push(stencilValue(sample(radiusAtIndex(ir), thetaAtIndex(it), phi), i => volumeDisplayValue(field, i)));
+    for (const theta of [0, ...Array.from({ length: metadata.ntheta }, (_, it) => thetaAtIndex(it)), Math.PI]) {
+      values.push(stencilValue(sample(radiusAtIndex(ir), theta, phi), sample.valueAt));
     }
   }
   if (rawOnly) return values;
@@ -6299,11 +6299,13 @@ function makeCmbSurfaceMeshOnGrid(fieldObject, radiusIndex, opacity, vmin, vmax,
 }
 
 function fieldSliceSampler(field) {
-  return createSliceSampler(
+  return createPolarSliceSampler(
     Array.from({ length: metadata.nr }, (_, i) => radiusAtIndex(i)),
     Array.from({ length: metadata.ntheta }, (_, i) => thetaAtIndex(i)),
     Array.from({ length: metadata.nphi }, (_, i) => phiAtIndex(i)),
-    fieldDisplayDomain(field)
+    fieldDisplayDomain(field),
+    i => volumeDisplayValue(field, i),
+    regularPoleField(fieldSourceGrid(field).rawName)
   );
 }
 
@@ -6356,7 +6358,7 @@ function horizontalSliceRawRange(field, z) {
 
     for (let ip = 0; ip < np; ip++) {
       const phi = phiAtIndex(ip);
-      const v = stencilValue(sample(radius, theta, phi), i => volumeDisplayValue(field, i));
+      const v = stencilValue(sample(radius, theta, phi), sample.valueAt);
       if (!Number.isFinite(v)) continue;
       if (v < vmin) vmin = v;
       if (v > vmax) vmax = v;
@@ -6547,7 +6549,7 @@ function makeHorizontalSliceMeshOnGrid(field, z, opacity, vmin, vmax, colormap) 
 
       const stencil = sample(radius, theta, phi);
       appendSliceStencil(sampleIndices, sampleWeights, stencil);
-      const val = stencilValue(stencil, i => volumeDisplayValue(field, i));
+      const val = stencilValue(stencil, sample.valueAt);
       values.push(val);
       const col = colourMap(val, vmin, vmax, colormap);
       colors.push(col.r, col.g, col.b);
@@ -6582,6 +6584,7 @@ function makeHorizontalSliceMeshOnGrid(field, z, opacity, vmin, vmax, colormap) 
   mesh.userData.viewerTopology = {
     domainKey: JSON.stringify(fieldDisplayDomain(field)),
     kind: "horizontal",
+    polePolicy: sample.polePolicy,
     z,
     sampleIndices: Int32Array.from(sampleIndices),
     sampleWeights: Float32Array.from(sampleWeights),
@@ -6607,24 +6610,10 @@ function makeMeridionalSliceMeshOnGrid(field, phiDeg, opacity, vmin, vmax, color
   const indices = [];
   const sampleIndices = [], sampleWeights = [], values = [];
 
-  // The SHTns/Gauss theta grid usually does not include the exact poles.
-  // Extend it to theta=0 and theta=pi, duplicating the nearest boundary values,
-  // equivalent to the RegularGridInterpolator extension used in the Python plots.
-  const thetaExt = [];
-  const thetaSampleIndex = [];
-
-  for (let j = 0; j < nt + 2; j++) {
-    if (j === 0) {
-      thetaExt.push(0.0);
-      thetaSampleIndex.push(0);
-    } else if (j === nt + 1) {
-      thetaExt.push(Math.PI);
-      thetaSampleIndex.push(nt - 1);
-    } else {
-      thetaExt.push(thetaAtIndex(j - 1));
-      thetaSampleIndex.push(j - 1);
-    }
-  }
+  // Geometry reaches the axis even on Gauss grids. The sampler supplies a
+  // common scalar/radial pole limit, without averaging tangential components.
+  const thetaExt = [0, ...Array.from({ length: nt }, (_, j) => thetaAtIndex(j))
+    .filter(theta => theta > 0 && theta < Math.PI), Math.PI];
 
   const columns = [];
 
@@ -6633,10 +6622,8 @@ function makeMeridionalSliceMeshOnGrid(field, phiDeg, opacity, vmin, vmax, color
     for (let j = 0; j < thetaExt.length; j++) {
       columns.push({
         theta: thetaExt[j],
-        it: thetaSampleIndex[j],
         phi: requestedPhi,
         sign: 1.0,
-        pole: side === "both" && (j === 0 || j === thetaExt.length - 1),
       });
     }
   }
@@ -6650,10 +6637,8 @@ function makeMeridionalSliceMeshOnGrid(field, phiDeg, opacity, vmin, vmax, color
     for (const j of order) {
       columns.push({
         theta: thetaExt[j],
-        it: thetaSampleIndex[j],
         phi: requestedPhi + Math.PI,
         sign: -1.0,
-        pole: side === "both" && (j === 0 || j === thetaExt.length - 1),
       });
     }
   }
@@ -6667,7 +6652,7 @@ function makeMeridionalSliceMeshOnGrid(field, phiDeg, opacity, vmin, vmax, color
 
     for (const colInfo of columns) {
       const theta = colInfo.theta;
-      const signedS = colInfo.sign * r * Math.sin(theta);
+      const signedS = theta === 0 || theta === Math.PI ? 0 : colInfo.sign * r * Math.sin(theta);
 
       positions.push(
         signedS * cosPhi,
@@ -6675,13 +6660,9 @@ function makeMeridionalSliceMeshOnGrid(field, phiDeg, opacity, vmin, vmax, color
         r * Math.cos(theta)
       );
 
-      let stencil = sample(r, theta, colInfo.phi);
-      if (colInfo.pole) {
-        const other = sample(r, theta, colInfo.phi + Math.PI);
-        stencil = [...stencil, ...other].map(([index, weight]) => [index, 0.5 * weight]);
-      }
+      const stencil = sample(r, theta, colInfo.phi);
       appendSliceStencil(sampleIndices, sampleWeights, stencil);
-      const val = stencilValue(stencil, i => volumeDisplayValue(field, i));
+      const val = stencilValue(stencil, sample.valueAt);
       values.push(val);
       const col = colourMap(val, vmin, vmax, colormap);
       colors.push(col.r, col.g, col.b);
@@ -6720,6 +6701,7 @@ function makeMeridionalSliceMeshOnGrid(field, phiDeg, opacity, vmin, vmax, color
   mesh.userData.viewerTopology = {
     domainKey: JSON.stringify(domain),
     kind: "meridian",
+    polePolicy: sample.polePolicy,
     phiDeg,
     side,
     sampleIndices: Int32Array.from(sampleIndices),
@@ -6827,8 +6809,10 @@ function updateSampledMeshColoursOnGrid(mesh, field, expectedKind, vmin, vmax, c
   const topology = mesh?.userData?.viewerTopology;
   if (!topology || topology.kind !== expectedKind || !topology.sampleIndices) return false;
   if (topology.domainKey !== JSON.stringify(fieldDisplayDomain(field))) return false;
+  const sample = fieldSliceSampler(field);
+  if (topology.polePolicy !== sample.polePolicy) return false;
   const values = Float64Array.from({ length: topology.vertexCount }, (_, i) =>
-    cachedSliceValue(topology.sampleIndices, topology.sampleWeights, i, j => volumeDisplayValue(field, j)));
+    cachedSliceValue(topology.sampleIndices, topology.sampleWeights, i, sample.valueAt));
   const updated = updateMeshColourBuffer(mesh, i => values[i], vmin, vmax, colormap);
   if (updated) setSliceColours(mesh, values, vmin, vmax, getColourStops(colormap));
   return updated;

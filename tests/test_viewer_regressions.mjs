@@ -8,7 +8,7 @@ import { datasetPlacement, placementSummary } from "../src/dataset-placement.js"
 import { SURFACE_TEXTURES } from "../src/surface-textures.js";
 import { LongitudeAverageCache, longitudeDisplayField, volumeDisplayValue,
   longitudeFieldLabel, computeLongitudeAverage } from "../src/longitude-average.js";
-import { createSliceSampler, stencilValue, appendSliceStencil, cachedSliceValue } from "../src/slice-sampling.js";
+import { createSliceSampler, createPolarSliceSampler, regularPoleField, stencilValue, appendSliceStencil, cachedSliceValue } from "../src/slice-sampling.js";
 import { setSliceColours } from "../src/slice-colours.js";
 import * as RealTHREE from "three";
 import { fieldRadialDomain } from "../src/volume-domain.js";
@@ -66,7 +66,7 @@ class Mesh {
 
 function viewer() {
   const ctx = vm.createContext({
-    createSliceSampler, stencilValue, appendSliceStencil, cachedSliceValue, setSliceColours,
+    createSliceSampler, createPolarSliceSampler, regularPoleField, stencilValue, appendSliceStencil, cachedSliceValue, setSliceColours,
     getColourStops: () => [[0, [0,0,0]], [1, [255,255,255]]],
     datasetPlacement, placementSummary, fieldSourceViews: new WeakMap(),
     simulationTimeLabel, TIME_BOX_POSITIONS, simulationTimeOverlay: { render() {} },
@@ -2882,6 +2882,45 @@ test("split meridian uses independent fields and radial domains on its two sides
   assert.equal(right.material.opacity,.8);assert.equal(left.material.opacity,.3);
   assert.ok(right.geometry.attributes.position.array[0]>=0);
   assert.ok(left.geometry.attributes.position.array[0]<=0);
+});
+
+test("real split meridian meshes join ur at both poles while preserving up basis signs", () => {
+  const ctx=viewer();ctx.THREE=RealTHREE;
+  ctx.metadata={nr:2,ntheta:4,nphi:16,r_inner:.5,r_outer:1,fields:{ur:'ur.f32',up:'up.f32'}};
+  ctx.coords={r:[.5,1],theta:[.1,.4,2.7,3.04],phi:Array.from({length:16},(_,i)=>i*Math.PI/8)};
+  const source=name=>({source:'primary',rawName:name,meta:ctx.metadata,coords:ctx.coords,primaryMeta:ctx.metadata});
+  const radial=Float32Array.from(ctx.coords.r.flatMap(r=>ctx.coords.theta.flatMap(t=>ctx.coords.phi.map(p=>
+    r*(Math.sin(t)*Math.cos(p)+.3*Math.cos(t))))));
+  radial.viewerSource=source('ur');
+  const tangential=Float32Array.from(ctx.coords.r.flatMap(()=>ctx.coords.theta.flatMap(()=>ctx.coords.phi.map(p=>-.2*Math.cos(p)))));
+  tangential.viewerSource=source('up');
+  ctx.colourMap=v=>({r:v,g:0,b:0});
+  for(const name of ['idx','radiusAtIndex','thetaAtIndex','phiAtIndex','makeMeridionalSliceMesh','updateMeshColourBuffer','updateSampledMeshColours'])
+    vm.runInContext(definition(name),ctx);
+  const ncol=ctx.metadata.ntheta+2;
+  const check=(field,opposite=false)=>{
+    const meshes=['right','left'].map(side=>ctx.makeMeridionalSliceMesh(field,0,1,-2,2,'viridis',side));
+    for(let ir=0;ir<2;ir++) for(const col of [0,ncol-1]) {
+      const vertex=ir*ncol+col;
+      const [a,b]=meshes.map(m=>m.geometry.getAttribute('color').getX(vertex));
+      assert.ok(Math.abs(a-(opposite?-b:b))<1e-6);
+      assert.equal(meshes[0].geometry.getAttribute('position').getX(vertex),0);
+      assert.equal(meshes[1].geometry.getAttribute('position').getX(vertex),0);
+    }
+    return meshes;
+  };
+  const radialMeshes=check(radial),tangentialMeshes=check(tangential,true);
+  const mean=computeLongitudeAverage({field:radial,metadata:ctx.metadata,phi:ctx.coords.phi});
+  const averaged=longitudeDisplayField(radial,mean,'mean',16);
+  const averagedMeshes=check(averaged);
+  const next=Float32Array.from(radial,x=>2*x);next.viewerSource=source('ur');
+  assert.equal(ctx.updateSampledMeshColours(radialMeshes[0],next,'meridian',-2,2,'viridis'),true);
+  const fresh=ctx.makeMeridionalSliceMesh(next,0,1,-2,2,'viridis','right');
+  const cached=radialMeshes[0].geometry.getAttribute('color').array,rebuilt=fresh.geometry.getAttribute('color').array;
+  for(let i=0;i<cached.length;i++) assert.ok(Math.abs(cached[i]-rebuilt[i])<1e-6);
+  assert.equal(ctx.updateSampledMeshColours(radialMeshes[0],tangential,'meridian',-2,2,'viridis'),false,
+    'switching component basis must rebuild its polar stencils');
+  for(const mesh of [...radialMeshes,...tangentialMeshes,...averagedMeshes,fresh]) {mesh.geometry.dispose();mesh.material.dispose();}
 });
 
 test("real meridional geometry and ranges sample compact means and fluctuations within the field domain", () => {

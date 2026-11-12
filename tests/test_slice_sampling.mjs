@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { createSliceSampler, stencilValue, appendSliceStencil, cachedSliceValue } from '../src/slice-sampling.js';
+import { createSliceSampler, createPolarSliceSampler, regularPoleField, stencilValue, appendSliceStencil, cachedSliceValue } from '../src/slice-sampling.js';
 import { setSliceColours } from '../src/slice-colours.js';
 
 const r = [.2, .23, .55, 1], theta = [.1, .45, 1.1, 1.8, 2.8, 3.05], phi = [0, .6, 2, 3.5, 5.8];
@@ -9,6 +9,51 @@ const domain = {start: 0, end: 3, rMin: .2, rMax: 1};
 const sample = createSliceSampler(r, theta, phi, domain);
 const volume = formula => Float64Array.from(r.flatMap(x => theta.flatMap(t => phi.map(p => formula(x,t,p)))));
 const near = (a, b, tol = 1e-10) => assert.ok(Math.abs(a-b) < tol, `${a} ≈ ${b}`);
+
+test('radial velocity of a uniform Cartesian vector has a unique north/south pole limit', () => {
+  const ph = Array.from({length:32},(_,i)=>2*Math.PI*i/32);
+  const values=Float64Array.from(r.flatMap(rr=>theta.flatMap(t=>ph.map(p=>
+    rr*(.7*Math.sin(t)*Math.cos(p)-.2*Math.sin(t)*Math.sin(p)+1.3*Math.cos(t))))));
+  const native=createSliceSampler(r,theta,ph,domain);
+  const corrected=createPolarSliceSampler(r,theta,ph,domain,i=>values[i],true);
+  const read=(sampler,rr,t,p)=>stencilValue(sampler(rr,t,p),sampler.valueAt || (i=>values[i]));
+  assert.ok(Math.abs(read(native,.55,0,0)-read(native,.55,0,Math.PI))>.05,'old clamping creates a radial seam');
+  for(const rr of [.2,.4,1]) for(const p of [0,.37,2.1,5.6]) {
+    near(read(corrected,rr,0,p),1.3*rr);
+    near(read(corrected,rr,Math.PI,p),-1.3*rr);
+    for(const t of [1e-9,Math.PI-1e-9]) near(read(corrected,rr,t,p),read(corrected,rr,t,p+Math.PI),1e-8);
+  }
+  for(const t of theta) for(const p of [.37,3.2]) near(read(corrected,.4,t,p),read(native,.4,t,p));
+  for(const boundary of [theta[0],theta.at(-1)]) near(read(corrected,.4,boundary-1e-9,.37),read(corrected,.4,boundary+1e-9,.37),1e-8);
+});
+
+test('tangential basis sign changes are retained instead of averaged across the axis', () => {
+  const ph=Array.from({length:16},(_,i)=>i*2*Math.PI/16);
+  const up=Float64Array.from(r.flatMap(()=>theta.flatMap(()=>ph.map(p=>-.7*Math.sin(p)-.2*Math.cos(p)))));
+  assert.equal(regularPoleField('ur'),true);assert.equal(regularPoleField('ur_phiavg'),true);
+  for(const name of ['up','ut','Bp','Bt','grad_thetaT']) assert.equal(regularPoleField(name),false);
+  const sampler=createPolarSliceSampler(r,theta,ph,domain,i=>up[i],regularPoleField('up'));
+  for(const t of [0,Math.PI]) {
+    near(stencilValue(sampler(.55,t,0),sampler.valueAt),-.2);
+    near(stencilValue(sampler(.55,t,Math.PI),sampler.valueAt),.2);
+  }
+});
+
+test('virtual polar stencils survive field/frame updates, explicit poles and field domains', () => {
+  const ph=Array.from({length:8},(_,i)=>i*Math.PI/4);
+  for(const th of [theta,[0,...theta,Math.PI]]) {
+    const field=Float64Array.from(r.flatMap(rr=>th.flatMap(t=>ph.map(p=>rr+Math.cos(t)+Math.sin(t)*Math.cos(p)))));
+    const sampler=createPolarSliceSampler(r,th,ph,{...domain,start:2,rMin:.55},i=>field[i],true);
+    assert.equal(sampler(.3,0,.3).length,0);
+    for(const t of [0,.05,Math.PI-.03,Math.PI]) {
+      const entries=sampler(.7,t,.3),indices=[],weights=[];
+      appendSliceStencil(indices,weights,entries);
+      near(cachedSliceValue(indices,weights,0,sampler.valueAt),stencilValue(entries,sampler.valueAt));
+      const next=createPolarSliceSampler(r,th,ph,domain,i=>2*field[i]+3,true);
+      near(cachedSliceValue(indices,weights,0,next.valueAt),2*stencilValue(entries,sampler.valueAt)+3);
+    }
+  }
+});
 
 test('nonuniform spherical interpolation reproduces affine fields between grid points', () => {
   const field = volume((r,t,p) => 2*r - 3*t + p);

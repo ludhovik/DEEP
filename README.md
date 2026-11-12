@@ -437,6 +437,20 @@ same interpolation weights. `--spectral-lmax` still limits the physical angular
 content: viewer interpolation cannot restore removed harmonics. No reconversion
 is needed for these display improvements.
 
+At the rotation axis, the meridian halves now share a single polar value for
+`ur`, `Br`, `T`, `C`, `Comp`, `Tanomaly`, `Canomaly` and their mean/fluctuation
+variants. On grids without polar nodes, the viewer estimates that value from
+the longitude means of the nearest two latitude rings, extrapolated linearly
+in `cos(theta)`, and interpolates across the unsampled cap. This is an
+approximation from the stored volume, not a spectral reconstruction; native
+interior samples are unchanged. Explicit polar nodes are averaged in longitude.
+Tangential components (`up`, `ut`, `Bp`, `Bt`) retain their local basis and can
+reverse sign between opposite meridians. A smooth axisymmetric mean tangential
+component should approach zero at the axis. To compare colours across halves,
+use the same field, dataset and colour scale; a longitude-averaged radial field
+should agree on both halves at every latitude. This correction also applies to
+offset equatorial slices at the axis and to cached sequence recolouring.
+
 To cut the CMB along a displayed meridional plane, open **Controls → CMB
 surface** (or its dataset-specific outer-boundary name) and enable **Cut along
 meridians**. Choose **Meridian cut mode → Half sphere** or **Between two
