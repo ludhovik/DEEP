@@ -20,6 +20,7 @@ import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { prepareTubeLines, executeGeometryJob, unpackGeometry } from "../src/geometry-jobs.js";
 import { readResponseWithProgress } from "../src/work-progress.js";
 import { simulationTimeLabel, TIME_BOX_POSITIONS } from "../src/simulation-time.js";
+import { captureGuiFolders, restoreGuiFolders } from "../src/view-workspace.js";
 import { sampleRadialSurface, surfaceRange } from "../src/mollweide.js";
 
 const source = fs.readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
@@ -1257,6 +1258,43 @@ function writableFolder(permission = "granted") {
   }
   return { source: { type: "handle", handle: directory() }, state };
 }
+
+test("comparison copies local datasets under fresh keys and restores fields on the selected frame", async () => {
+  const ctx = viewer(), source = {type:'files',files:new Map([['metadata.json',new Blob(['{}'])]])};
+  const oldSource={type:'files',files:new Map()};ctx.datasetFolderSources.set('primary-1',oldSource);
+  const calls=[];ctx.sequenceIndex={frames:[{},{},{}]};ctx.params.sequenceFrame=0;
+  Object.assign(ctx,{
+    pauseSequence(){},viewWorkspace:null,videoState:{active:false},sequencePngExportActive:false,
+    loadDatasetFromParams:async()=>{ctx.datasetRootPath=ctx.params.datasetPath;calls.push(['primary',ctx.params.datasetPath]);return true;},
+    loadSecondaryDatasetFromParams:async()=>{ctx.secondaryDataset={rootPath:ctx.params.secondaryDatasetPath};calls.push(['secondary',ctx.params.secondaryDatasetPath]);return true;},
+    restoreWorkspaceView:async snapshot=>{calls.push(['view',snapshot.params.meridianField]);},
+    loadFrameByIndex:async index=>{assert.equal(ctx.params.showCMB,false);calls.push(['frame',index]);return true;},
+  });
+  vm.runInContext(definition('loadComparisonDataset'),ctx);
+  await ctx.loadComparisonDataset({root:'fsdir:primary-1/subfolder',secondaryRoot:'fsdir:secondary-2',secondaryLabel:'Mantle',
+    folders:[['primary-1',source],['secondary-2',source]],frame:2,snapshot:{params:{meridianField:'ur'}}});
+  assert.deepEqual(calls,[['primary','fsdir:comparison-1/subfolder'],['secondary','fsdir:comparison-2'],['frame',2],['view','ur']]);
+  assert.equal(ctx.datasetFolderSources.has('primary-1'),false,'release unused local folder references');
+  assert.equal(ctx.datasetFolderSources.get('comparison-1'),source);
+});
+
+test("restoring workspace views checks requested fields before rendering and retains the current radius mapping",async()=>{
+  const ctx=viewer();Object.assign(ctx.params,{showEquator:true,equatorField:'ur',primaryNativeRadius:1.53,primaryPhysicalRadius:3480});
+  let applied=null,pose=null;
+  Object.assign(ctx,{
+    controls:{enabled:true},videoState:{active:false},document:{body:{classList:{add(){},remove(){}}}},
+    guiRoot:null,povGuiRoot:null,captureGuiFolders,restoreGuiFolders,
+    applyViewState:async value=>{applied=value;},restoreCameraPose:value=>{pose=value;},refreshDatasetRadiusSummary(){},
+  });
+  vm.runInContext(definition('restoreWorkspaceView'),ctx);
+  await assert.rejects(ctx.restoreWorkspaceView({params:{equatorField:'missing'}}),/missing selected fields/);
+  assert.equal(applied,null);
+  const snapshot={params:{equatorField:'T'},cameraPose:{position:[0,-3,1],target:[0,0,0],up:[0,0,1],fov:45}};
+  await ctx.restoreWorkspaceView(snapshot);
+  assert.equal(applied,snapshot);assert.equal(pose,snapshot.cameraPose);
+  assert.equal(ctx.params.primaryNativeRadius,1.53);assert.equal(ctx.params.primaryPhysicalRadius,3480);
+  assert.equal(ctx.controls.enabled,true);
+});
 
 test("newer isosurface selection wins even when older fetch finishes last", async () => {
   const ctx = viewer(), old = deferred(), newer = deferred();

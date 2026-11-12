@@ -51,6 +51,7 @@ test('radial depth, visibility, minmax and closing the opening', () => {
   assert.equal(parse('close sphere').patch.cmbClipMode,'none');
 });
 test('help/undo do not require fields',()=>{
+  assert.equal(parseViewerCommand('redo').action,'redo');
   assert.equal(parseViewerCommand('help').action,'help');
   assert.equal(parseViewerCommand('undo').action,'undo');
   assert.throws(()=>parseViewerCommand('show equatorial Br'));

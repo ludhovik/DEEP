@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DEEPscope — Compare spherical datasets</title>
+  <script type="module" src="./src/comparison.js"></script>
+</head>
+<body>
+  <header>
+    <a href="./" target="_blank" rel="noopener">DEEPscope</a><strong>Compare</strong>
+    <label><input type="checkbox" id="link-cameras" checked> Link cameras</label>
+    <label title="Match frame indices, not physical time. Both panes must contain sequences."><input type="checkbox" id="link-frames"> Link frame index</label>
+    <label title="Copy palette, range mode and manual limits between corresponding layers. Automatic ranges still depend on each dataset."><input type="checkbox" id="link-colours"> Link colour settings</label>
+    <label>Layout <select id="comparison-layout"><option value="columns">Side by side</option><option value="rows">Stacked</option></select></label>
+    <button id="copy-a">Copy A → B</button><button id="copy-b">Copy B → A</button>
+    <button id="align-a">Align cameras to A</button>
+  </header>
+  <p class="comparison-hint">Open a dataset in each pane, or copy a view to compare fields or frames. Cameras use each dataset’s outer radius. Frame linking matches indices, not physical times. Use matching manual limits to compare colours quantitatively.</p>
+  <main id="comparison-panes">
+    <section><h1><span>A</span><input aria-label="Pane A label" value="View A" maxlength="80"></h1><iframe title="DEEPscope comparison view A" src="./?comparison=1&amp;pane=A" allow="fullscreen"></iframe></section>
+    <section><h1><span>B</span><input aria-label="Pane B label" value="View B" maxlength="80"></h1><iframe title="DEEPscope comparison view B" src="./?comparison=1&amp;pane=B" allow="fullscreen"></iframe></section>
+  </main>
+  <output id="comparison-status" role="status" aria-live="polite">Preparing viewers…</output>
+</body>
+</html>

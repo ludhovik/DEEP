@@ -23,6 +23,14 @@ export class TouchTrackballControls extends TrackballControls {
     this.update();
   }
 
+  // A restored/linked view must not inherit an unfinished rotation or zoom.
+  stopMotion() {
+    this._panStart.copy(this._panEnd);
+    this._zoomStart.copy(this._zoomEnd);
+    this._touchZoomDistanceStart = this._touchZoomDistanceEnd = this._touchZoomDistanceEnd || 1;
+    this._settleTouchRotation();
+  }
+
   _settleTouchRotation() {
     this._movePrev.copy(this._moveCurr);
     this._lastAngle = 0;

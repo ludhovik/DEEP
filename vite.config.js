@@ -98,6 +98,7 @@ function localFilesystemPlugin() {
 
 export default defineConfig({
   base: "./",
+  build: { rollupOptions: { input: { viewer: path.resolve('index.html'), comparison: path.resolve('compare.html') } } },
   plugins: [localFilesystemPlugin()],
   server: { host: "127.0.0.1" },
   preview: { host: "127.0.0.1" },

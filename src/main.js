@@ -1,4 +1,7 @@
 import "./style.css";
+import "./view-workspace.css";
+import { createViewWorkspace, validCameraPose, captureGuiFolders, restoreGuiFolders } from "./view-workspace.js";
+import { createComparisonBridge } from "./comparison-bridge.js";
 import { parseViewerCommand, createCommandHistory } from "./viewer-commands.js";
 import { createCommandBox } from "./command-box.js";
 import { datasetPlacement, placementSummary } from "./dataset-placement.js";
@@ -699,6 +702,8 @@ let deferredSequenceObjectsHidden = false;
 let datasetLoadInProgress = false;
 let lastDatasetLoadError = "";
 let datasetRequestSignal = null;
+let viewWorkspace = null;
+let comparisonBridge = null;
 const sequenceControllers = [];
 const panelLayoutControllers = [];
 
@@ -8282,7 +8287,7 @@ function bindViewerCommands() {
     controls.enabled = false;
     document.body.classList.add("command-applying");
     try {
-      await history.run(command);
+      await (viewWorkspace ? viewWorkspace.runCommand(command) : history.run(command));
       if (command.patch?.showIsosurfaces && command.patch.isoField) {
         for (const [enabled, mesh, value] of [
           [command.patch.showIsoPositive, isoPositiveMesh, command.patch.isoPositiveValue],
@@ -8294,6 +8299,7 @@ function bindViewerCommands() {
         }
       }
       const message = command.action === "undo" ? "Previous view restored."
+        : command.action === "redo" ? "Next view restored."
         : command.action === "reset" ? `Initial ${initialDatasetView.source} restored; current dataset and sequence frame retained.`
         : command.descriptions.join("\n");
       setStatus(command.action === "apply" ? "View command applied." : message);
@@ -8826,6 +8832,11 @@ function buildGui() {
   guiRoot = gui;
 
   gui.add(params, "resetCamera").name("Reset camera view");
+  if (viewWorkspace) {
+    const viewsFolder = gui.addFolder("Views & comparison");
+    viewWorkspace.mount(viewsFolder.$children);
+    closeGuiFolder(viewsFolder);
+  }
 
   const datasetFolder = gui.addFolder("Dataset");
   datasetFolder.add(params, "chooseDatasetSource").name("Choose data source…");
@@ -10768,6 +10779,153 @@ function bindExportPanelButtons() {
   document.getElementById("export-video-button")?.addEventListener("click", () => startFullRotationRecording());
 }
 
+function captureCameraPose() {
+  return { position: camera.position.toArray(), target: controls.target.toArray(), up: camera.up.toArray(), fov: camera.fov };
+}
+
+function restoreCameraPose(pose) {
+  if (!validCameraPose(pose)) throw new Error("Invalid camera pose.");
+  controls.stopMotion();
+  camera.position.fromArray(pose.position);
+  controls.target.fromArray(pose.target);
+  camera.up.fromArray(pose.up).normalize();
+  camera.fov = pose.fov;
+  camera.lookAt(controls.target);
+  camera.updateProjectionMatrix();
+  controls.update();
+  syncCameraParamsFromCamera(true);
+}
+
+function captureWorkspaceView() {
+  return { ...collectViewState(), cameraPose: captureCameraPose() };
+}
+
+function comparisonColourSettings() {
+  return Object.fromEntries(Object.entries(params).filter(([key]) =>
+    /^(?:cmb|icb|radial|equator2?|meridian2?(?:Left)?|mollweide|earth|line)(?:Scale|Min|Max|Colormap)$/.test(key)
+    || /^customColour(?:Low|High)$/.test(key)));
+}
+
+function workspaceIsReady() {
+  return Boolean(metadata) && !datasetLoadInProgress && !sequenceFrameLoading && !params.sequencePlaying
+    && !videoState.active && !sequencePngExportActive && !comparisonBridge?.busy;
+}
+
+async function restoreWorkspaceView(snapshot) {
+  // Preflight the displayed fields on this dataset; never silently replace a
+  // requested diagnostic with another variable when transferring named views.
+  const context = captureRenderContext();
+  context.params = { ...params, ...snapshot.params };
+  withCapturedRenderContext(context, () => assertVisibleFrameFields(params.sequenceFrame + 1));
+  datasetPlacement(metadata, secondaryDataset?.metadata, context.params);
+  if (["primaryNativeRadius", "primaryPhysicalRadius", "secondaryNativeRadius", "secondaryPhysicalRadius"]
+    .some(key => context.params[key] !== params[key])) disposeHeavyPlaybackCaches();
+  const enabled = controls.enabled;
+  const guiState = captureGuiFolders(guiRoot), povState = captureGuiFolders(povGuiRoot);
+  controls.enabled = false;
+  document.body.classList.add("command-applying");
+  try {
+    await applyViewState(snapshot);
+    if (renderContextIsCurrent(context) && snapshot.cameraPose) restoreCameraPose(snapshot.cameraPose);
+    refreshDatasetRadiusSummary();
+  } finally {
+    restoreGuiFolders(guiRoot, guiState);
+    restoreGuiFolders(povGuiRoot, povState);
+    document.body.classList.remove("command-applying");
+    if (!datasetLoadInProgress && !videoState.active) controls.enabled = enabled;
+  }
+}
+
+function captureComparisonDataset() {
+  if (!workspaceIsReady()) throw new Error("Pause playback and wait for loading before copying a comparison view.");
+  const roots = [datasetRootPath, secondaryDataset?.rootPath].filter(Boolean);
+  const folders = roots.map(root => parseFolderSourcePath(root)?.role).filter(Boolean)
+    .map(key => [key, datasetFolderSources.get(key)]);
+  return { root: datasetRootPath, secondaryRoot: secondaryDataset?.rootPath || "",
+    secondaryLabel: params.secondaryDatasetLabel, frame: params.sequenceFrame,
+    folders, snapshot: captureWorkspaceView() };
+}
+
+async function loadComparisonDataset(bundle) {
+  if (datasetLoadInProgress || sequenceFrameLoading || videoState.active || sequencePngExportActive) {
+    throw new Error("Wait for this pane to finish loading or exporting.");
+  }
+  if (!bundle || typeof bundle.root !== "string" || !bundle.snapshot?.params) throw new Error("Invalid comparison view.");
+  pauseSequence(false);
+  try {
+    const copiedRoots = new Map();
+    for (const [key, source] of bundle.folders || []) {
+      if (typeof key !== "string" || !["files", "handle"].includes(source?.type)) throw new Error("Invalid comparison folder.");
+      const unique = `comparison-${++datasetFolderSourceCounter}`;
+      datasetFolderSources.set(unique, source);
+      copiedRoots.set(key, unique);
+    }
+    const remap = root => {
+      const folder = parseFolderSourcePath(root);
+      return folder && copiedRoots.has(folder.role) ? root.replace(`fsdir:${folder.role}`, `fsdir:${copiedRoots.get(folder.role)}`) : root;
+    };
+    params.datasetPath = remap(bundle.root);
+    if (!await loadDatasetFromParams()) throw new Error("Could not open the copied dataset. Select its folder in this pane.");
+    if (bundle.secondaryRoot) {
+      params.secondaryDatasetPath = remap(bundle.secondaryRoot);
+      params.secondaryDatasetLabel = bundle.secondaryLabel || "Dataset 2";
+      if (!await loadSecondaryDatasetFromParams()) throw new Error("Could not open the copied secondary dataset.");
+    } else if (secondaryDataset) {
+      await clearSecondaryDataset();
+    }
+    if (sequenceIndex?.frames?.length && Number.isInteger(bundle.frame) && bundle.frame !== params.sequenceFrame) {
+      // Stage the target frame without assuming that its fields also exist in
+      // frame zero. Restore the selected layers only after its metadata is active.
+      const visibility = Object.fromEntries(Object.entries(params).filter(([key,value]) => key.startsWith("show") && typeof value === "boolean"));
+      try {
+        for (const key of Object.keys(visibility)) params[key] = false;
+        if (!await loadFrameByIndex(bundle.frame, {includeHeavy:false})) throw new Error("Could not open the copied sequence frame.");
+      } finally { Object.assign(params, visibility); updateVisibility(); }
+    }
+    await restoreWorkspaceView(bundle.snapshot);
+    viewWorkspace?.journal.sync();
+    viewWorkspace?.journal.record();
+  } finally {
+    const active = new Set([datasetRootPath, secondaryDataset?.rootPath]
+      .map(root => parseFolderSourcePath(root)?.role).filter(Boolean));
+    for (const key of datasetFolderSources.keys()) if (!active.has(key)) datasetFolderSources.delete(key);
+  }
+}
+
+function bindViewWorkspace() {
+  let identityParts = [], identityToken = {};
+  viewWorkspace = createViewWorkspace({
+    capture: captureWorkspaceView, apply: restoreWorkspaceView, ready: workspaceIsReady,
+    identity: () => {
+      const parts = [datasetRootPath, secondaryDataset?.rootPath, params.secondaryDatasetLabel, initialDatasetView];
+      if (parts.some((value, i) => value !== identityParts[i])) { identityParts = parts; identityToken = {}; }
+      return identityToken;
+    },
+    initial: () => initialDatasetView?.snapshot,
+    storage: {getItem: key => window.localStorage.getItem(key), setItem: (key, value) => window.localStorage.setItem(key, value)},
+    openComparison: () => comparisonBridge.open(),
+    onError: message => setStatus(message, {level:"error", scope:"Views"}),
+  });
+  comparisonBridge = createComparisonBridge({
+    captureCamera: captureCameraPose, applyCamera: restoreCameraPose,
+    captureDataset: captureComparisonDataset, applyDataset: loadComparisonDataset,
+    ready: () => Boolean(metadata) && !datasetLoadInProgress && !sequenceFrameLoading && !videoState.active && !sequencePngExportActive,
+    captureFrame: () => sequenceIndex?.frames?.length ? Math.round(params.sequenceFrame) : null,
+    applyFrame: async index => {
+      if (!sequenceIndex?.frames?.length || index >= sequenceIndex.frames.length) throw new Error(`This pane has no sequence frame ${index}. Unlink frame indices to compare independently.`);
+      if (index === params.sequenceFrame) return;
+      pauseSequence(false);
+      if (!await loadFrameByIndex(index, {includeHeavy:true})) throw new Error(`Linked frame ${index} could not be loaded. Check this pane's selected fields and files.`);
+    },
+    captureColours: comparisonColourSettings,
+    applyColours: async values => {
+      const allowed = comparisonColourSettings(), selected = Object.fromEntries(Object.entries(values).filter(([key]) => Object.hasOwn(allowed, key)));
+      await restoreWorkspaceView({...captureWorkspaceView(),params:{...params,...selected}});
+    },
+    onError: message => setStatus(message, {level:"error", scope:"Comparison"}),
+  });
+}
+
 function animate(now = performance.now()) {
   requestAnimationFrame(animate);
   try {
@@ -10789,6 +10947,7 @@ function animate(now = performance.now()) {
 
 async function init() {
   syncCameraParamsFromCamera(false);
+  bindViewWorkspace();
   bindExportPanelButtons();
   bindViewerCommands();
   bindDatasetLauncher();

@@ -15,6 +15,15 @@ function down(c,p) {c._addPointer(p);c._onTouchStart(p);}
 function up(c,p) {c._onTouchEnd(p);c._removePointer(p);}
 function near(a,b) {assert.ok(a.distanceTo(b)<1e-12,`${a.toArray()} vs ${b.toArray()}`);}
 
+test('restoring a camera discards residual rotation, pan and zoom',()=>{
+  const {camera,controls:c}=setup();
+  c._lastAngle=.4;c._lastAxis.set(0,1,0);c._panEnd.set(.2,.1);c._zoomEnd.set(0,.3);
+  c.stopMotion();camera.position.set(1,-3,2);c.target.set(.1,.2,0);camera.up.set(1,0,0);
+  const position=camera.position.clone(),target=c.target.clone(),up=camera.up.clone();
+  for(let i=0;i<20;i++)c.update();
+  near(camera.position,position);near(c.target,target);near(camera.up,up);
+});
+
 test('off-centre pinch zooms without translating or rotating, including release',()=>{
   const {camera,controls:c}=setup();
   down(c,finger(1,150,300));

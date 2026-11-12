@@ -134,7 +134,7 @@ export function createMobileLayout() {
         const label = folder._title;
         folder.domElement.dataset.mobileSection = label === 'Dataset' || label === 'Sequence playback' ? 'dataset'
           : /Export|PNG|Video/i.test(label) ? 'export'
-          : /View state|Lighting|Appearance|Other visualisation/i.test(label) ? 'view' : 'fields';
+          : /View state|Views & comparison|Lighting|Appearance|Other visualisation/i.test(label) ? 'view' : 'fields';
       }
       if (mobile) show(active, false);
       syncInfo();

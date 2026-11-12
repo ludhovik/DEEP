@@ -144,9 +144,10 @@ sphere** disables surface clipping without hiding cuts.
 Unknown instructions or unavailable fields reject the entire command before
 changing the view. Commands refresh cuts and colourbars through the saved-view
 loading path; a failed update attempts to restore the previous view. **Undo**
-restores the previous view (up to 20 commands) and pauses sequence playback.
-Undo history resets after changing a dataset/frame or the secondary dataset
-label. Manual control edits made since a command are also replaced by Undo.
+and **Redo** share the view history with the GUI, camera and named views (up to
+50 states). Pause playback before using history. History survives frame changes
+and keeps the current frame; it resets when opening/reloading a dataset or
+changing the secondary dataset/label. A new edit after Undo clears the redo path.
 **Reset view** (button or command) restores the view actually applied when the
 primary dataset was opened: its `view.DTV2` when successfully loaded, otherwise
 the default dataset view. It restores camera and display/radius settings,
@@ -154,6 +155,52 @@ retains the currently loaded datasets and sequence frame, and pauses playback.
 Undo can reverse a reset. Reloading a dataset captures a new initial view.
 The command box is not part of PNG/PDF/video exports. Free-form conversation is
 not supported: use display shortcuts or the generated setting commands.
+
+## Named views, undo/redo and comparison
+
+Open **Controls → Views & comparison**. These tools use the existing field
+selectors and normalised camera coordinates; they do not assume an Earth core,
+a magnetic field, a particular converter, or a specific spherical grid.
+
+- **Undo / Redo** restores camera (including roll), field choices, cuts,
+  palettes, limits and other view settings. A drag is grouped after it settles.
+  Use **Ctrl/Cmd+Z**, **Ctrl/Cmd+Shift+Z**, or **Ctrl+Y** when focus is outside
+  a text/number input. Native text undo is preserved. Dataset sources and the
+  current sequence frame are not changed. Open control folders stay open.
+- **Save new view** stores a named appearance in this browser. **Update selected**,
+  **Rename**, **Delete**, **Export views** and **Import views** manage it. Export
+  a JSON backup for another browser/computer; clearing site storage removes local
+  presets. Import merges names without overwriting existing views. No data
+  volumes, folder paths or physical radius mappings are stored in named views.
+- **Restore field selections** is optional when loading a preset. Leave it on
+  to restore the saved variables/φ-calculator definitions; an unavailable
+  displayed variable rejects the restore rather than silently substituting
+  another field. Turn it off to reuse the appearance with the current fields
+  and φ calculations—for example, when switching between a mantle, core or
+  gas-giant dataset. Numerical colour limits retain their saved values, so use
+  limits appropriate to the new field's units.
+- **Side-by-side comparison** opens `compare.html` in a new tab. Pane **A**
+  receives the current dataset, frame and appearance. Open another dataset in
+  **B**, or choose **Copy A → B** and change its fields or frame. Each pane has
+  independent controls, history, grids, φ calculations, caches and named-view
+  access. Each can also contain its own primary/secondary dataset pair.
+
+The comparison toolbar provides editable pane labels, side-by-side/stacked
+layouts and these independent linking options:
+
+| Link | Behaviour |
+|---|---|
+| Cameras (on initially) | Match position, target, orientation/roll and field of view in units of each primary dataset's outer radius. This compares orientation and relative geometry, not absolute planetary size. |
+| Frame index (off initially) | Match the zero-based frame index. Both panes need sequences with that index. This does **not** equate physical times or interpolate between timesteps. Play one pane to drive the other. |
+| Colour settings (off initially) | Match palettes, range modes, manual limits and custom palette colours for corresponding layers; field selections remain independent. Automatic min/max still depends on each pane's data. Choose matching **manual** limits when comparing the same physical quantity and units. |
+
+Local files remain local: copying a pane shares browser file/handle references
+with the same-origin comparison viewer and reloads its selected data. If the
+browser cannot transfer a directory handle, select that folder directly in the
+destination pane. Two viewers use separate data/GPU caches, so reduce preload
+counts for large datasets. PNG/PDF/video export remains available **per pane**;
+the comparison page itself is not a combined figure/video exporter. Camera,
+frame and colour links do not resample one dataset onto the other's grid.
 
 ## Quick start
 

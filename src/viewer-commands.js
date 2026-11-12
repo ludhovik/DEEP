@@ -52,7 +52,7 @@ export function parseViewerCommand(input, { fields = {}, params = {}, cameraAzim
   let text = norm(protectedInput).replace(/[.!?]+$/, '').replace(/^please\s+/, '');
   if (!text || String(input).length > 1200) throw new Error('Enter a command of 1–1200 characters.');
   if (/^reset(?: (?:the )?view)?$/.test(text)) return { action: 'reset' };
-  if (/^(undo|help|examples)$/.test(text)) return { action: text === 'undo' ? 'undo' : 'help' };
+  if (/^(undo|redo|help|examples)$/.test(text)) return { action: ['undo','redo'].includes(text) ? text : 'help' };
   // Preserve the "and" in an explicit longitude interval before splitting clauses.
   text = text.replace(new RegExp(`between ${number} and ${number}`, 'g'), 'between $1 to $2');
   text = text.replace(/\bwith (?:a )?(?:sphere )?open\b/g, '; open');

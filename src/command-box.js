@@ -9,7 +9,7 @@ export function createCommandBox({ execute, getSettings = () => [], document: do
     <textarea id="viewer-command-input" aria-autocomplete="list" aria-controls="viewer-command-suggestions" aria-expanded="false" rows="3" maxlength="1200" placeholder="Show meridional ur, equatorial Br and CMB Br"></textarea>
     <div id="viewer-command-suggestions" role="listbox" aria-label="Command suggestions" hidden></div>
     <small class="command-completion-hint">↑/↓ choose · Tab completes · Enter accepts or applies</small>
-    <div class="command-actions"><button type="submit">Apply</button><button type="button" data-action="undo">Undo</button><button type="button" data-action="reset">Reset view</button><button type="button" data-action="examples">Examples</button><button type="button" data-action="settings">All settings</button></div></form>
+    <div class="command-actions"><button type="submit">Apply</button><button type="button" data-action="undo">Undo</button><button type="button" data-action="redo">Redo</button><button type="button" data-action="reset">Reset view</button><button type="button" data-action="examples">Examples</button><button type="button" data-action="settings">All settings</button></div></form>
     <div class="command-feedback" role="status" aria-live="polite">Commands run in your browser. Open Examples to see supported phrases.</div>
     <div class="command-examples" hidden></div>
     <div class="command-settings" hidden>
@@ -147,6 +147,7 @@ export function createCommandBox({ execute, getSettings = () => [], document: do
   });
   box.querySelector('[data-action="reset"]').addEventListener('click', () => void run('reset view'));
   box.querySelector('[data-action="undo"]').addEventListener('click', () => void run('undo'));
+  box.querySelector('[data-action="redo"]').addEventListener('click', () => void run('redo'));
   box.querySelector('[data-action="examples"]').addEventListener('click', () => { examples.hidden = !examples.hidden; });
   return { element: box };
 }

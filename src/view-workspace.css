@@ -1,0 +1,14 @@
+.view-workspace { display:grid; gap:7px; padding:10px; font:12px/1.45 system-ui,sans-serif; color:#e5eaf1; }
+.view-workspace label { display:grid; gap:4px; }
+.view-workspace input:not([type=checkbox]), .view-workspace select { box-sizing:border-box; width:100%; min-width:0; color:inherit; background:#111922; border:1px solid #566678; border-radius:4px; padding:6px; font:inherit; }
+.view-workspace input[type=checkbox] { width:14px; height:14px; margin:0; }
+.view-workspace .view-check { display:flex; align-items:center; gap:7px; }
+.view-workspace button { font:inherit; padding:5px 7px; color:inherit; background:#253648; border:1px solid #566678; border-radius:5px; cursor:pointer; }
+.view-workspace button:hover { background:#34516b; }
+.view-workspace button:disabled { opacity:.45; cursor:default; }
+.view-workspace .view-actions { display:flex; flex-wrap:wrap; gap:6px; }
+.view-workspace .view-actions button { flex:1; }
+.view-workspace small { color:#b1bdcb; }
+.view-workspace output { overflow-wrap:anywhere; color:#a7dbc7; }
+.view-workspace :focus-visible { outline:2px solid #94d0ff; outline-offset:2px; }
+.mobile-layout .view-workspace button { min-height:36px; }
