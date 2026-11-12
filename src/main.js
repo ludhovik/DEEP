@@ -3494,6 +3494,31 @@ async function refreshDeferredSequenceObjects() {
   updateVisibility();
 }
 
+function assertVisibleFrameFields(frameNumber) {
+  const selected = [
+    [params.showCMB, "cmbField", "CMB"],
+    [params.showICB && metadata.has_inner_core !== false, "icbField", "ICB"],
+    [params.showRadialSurface, "radialField", "Radial surface"],
+    [params.showEquator, "equatorField", "Equatorial slice 1"],
+    [params.showEquator2, "equator2Field", "Equatorial slice 2"],
+    [params.showMeridian, "meridianField", "Meridional slice 1"],
+    [params.showMeridian && params.meridianIndependentSides, "meridianLeftField", "Meridional slice 1 left"],
+    [params.showMeridian2, "meridian2Field", "Meridional slice 2"],
+    [params.showMeridian2 && params.meridian2IndependentSides, "meridian2LeftField", "Meridional slice 2 left"],
+    [params.showIsosurfaces, "isoField", "Isosurfaces"],
+    [params.showMollweide, "mollweideField", "Mollweide map"],
+    [params.showEarthSurface && params.earthDisplayMode === "magnetic", "earthField", "Planet magnetic surface"],
+  ];
+  const missing = selected.filter(([visible, key]) => visible && !validFieldForState(key, params[key]))
+    .map(([, key, label]) => {
+      const value = params[key], calculator = /^PHI:([1-4])$/.exec(value);
+      const source = calculator ? ` (${params[`phiAvg${calculator[1]}Field`]})` : "";
+      return `${label}: ${value}${source}`;
+    });
+  if (missing.length) throw new Error(`Frame ${frameNumber} is missing selected fields: ${missing.join("; ")}. `
+    + "The previous frame and field selections were kept. Choose an available field or hide the affected layer.");
+}
+
 async function loadFrameByIndex(index, options = {}) {
   if (sequenceFrameLoading) return false;
   sequenceFrameLoading = true;
@@ -3503,7 +3528,6 @@ async function loadFrameByIndex(index, options = {}) {
     metadata,
     coords,
     sequenceFrame: params.sequenceFrame,
-    fields: Object.fromEntries(DATASET_FIELD_PARAM_KEYS.map((key) => [key, params[key]])),
   };
   let committed = false;
 
@@ -3513,6 +3537,8 @@ async function loadFrameByIndex(index, options = {}) {
     }
     if (!sequenceIndex || !Array.isArray(sequenceIndex.frames) || sequenceIndex.frames.length === 0) return false;
 
+    const displayedFrame = sequenceIndex.frames.findIndex(frame => sequenceFrameBasePath(frame) === dataBasePath);
+    if (displayedFrame >= 0) previous.sequenceFrame = displayedFrame;
     const n = sequenceIndex.frames.length;
     const i = clamp(Math.round(index), 0, n - 1);
     const frame = sequenceIndex.frames[i];
@@ -3522,6 +3548,10 @@ async function loadFrameByIndex(index, options = {}) {
     const candidateCoords = await loadCoordinatesForBase(candidateBasePath, candidateMetadata);
     validateDatasetCoordinates(candidateCoords, candidateMetadata, `coordinates for frame ${i}`);
     if (operationEpoch !== renderEpoch) return false;
+    // Validate only displayed layers, before changing the active dataset. A
+    // stale hidden selection must never reset unrelated fields to defaults.
+    withCapturedRenderContext(captureRenderContext(candidateBasePath, candidateMetadata, candidateCoords),
+      () => assertVisibleFrameFields(i + 1));
     const gridUnchanged = previous.metadata
       && samePlaybackGrid(previous.metadata, candidateMetadata, previous.coords, candidateCoords);
 
@@ -3533,14 +3563,6 @@ async function loadFrameByIndex(index, options = {}) {
     params.sequenceFrame = i;
     refreshSequenceControllers();
     committed = true;
-
-    // Keep the current selected fields when available; otherwise fall back safely.
-    for (const key of DATASET_FIELD_PARAM_KEYS) {
-      if (!validFieldForState(key, params[key])) {
-        applyDefaultFields();
-        break;
-      }
-    }
 
     const playbackUpdate = options.playback === true || (params.sequencePlaying && !options.forceHeavy);
     const includeHeavy = options.includeHeavy !== undefined
@@ -3578,12 +3600,13 @@ async function loadFrameByIndex(index, options = {}) {
   } catch (err) {
     if (operationEpoch !== renderEpoch || err?.name === "AbortError") return false;
     console.error("Could not load sequence frame", err);
+    params.sequenceFrame = previous.sequenceFrame;
     if (committed) {
       dataBasePath = previous.dataBasePath;
       metadata = previous.metadata;
       coords = previous.coords;
-      params.sequenceFrame = previous.sequenceFrame;
-      for (const [key, value] of Object.entries(previous.fields)) params[key] = value;
+      // Frame loading never changes field selections. Do not overwrite a
+      // newer user selection made while the failed frame was loading.
       try {
         await rebuildAllMeshes({ visibleOnly: true, reuseGeometry: false, includeHeavy: true });
         await loadFieldLines();
@@ -3615,7 +3638,7 @@ function scheduleNextSequenceFrame() {
     const loaded = await loadFrameByIndex(next, { playback: true, skipEarthUpdate: true });
     if (!loaded) {
       pauseSequence(false);
-      setStatus("Sequence playback stopped because a frame could not be loaded.", { level: "error" });
+      // Keep loadFrameByIndex's specific missing-field/read error visible.
       return;
     }
     scheduleNextSequenceFrame();
@@ -3631,7 +3654,7 @@ async function playSequence(options = {}) {
   if (range.count <= 0) return;
 
   if (!sequenceFrameInPlaybackRange(params.sequenceFrame)) {
-    await loadFrameByIndex(range.first, { playback: true, skipEarthUpdate: true });
+    if (!await loadFrameByIndex(range.first, { playback: true, skipEarthUpdate: true })) return;
   }
 
   if (!options.skipPreload) {

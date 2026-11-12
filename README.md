@@ -962,6 +962,16 @@ Playback controls select the first and last frame, frame rate, preload count,
 and cache limit. Isosurfaces and field lines can be deferred during playback to
 keep interaction responsive.
 
+Changing frames preserves field selections, including independent meridian
+halves, φ-calculator outputs, Mollweide maps and secondary-dataset fields.
+Unavailable selections in hidden layers or unused calculator slots do not reset
+the view. If a displayed field is missing from the requested frame, the viewer
+keeps the preceding frame and reports the affected layer and field; select an
+available field or hide that layer to continue. A failed load also retains field
+choices made while the frame was loading. Colour maps and scale modes are kept;
+automatic min/max limits still follow the values in each frame. Use manual
+limits for a fixed numerical colour scale throughout a sequence.
+
 Loading is transactional: metadata, coordinates, and a complete field are
 validated before a new dataset replaces the current scene. Requests time out,
 binary lengths must match the declared grid, a broken sequence frame stops

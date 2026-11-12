@@ -177,7 +177,7 @@ function viewer() {
     "uniformDatasetCoordinates", "validateDatasetCoordinates", "validateDatasetMetadata", "loadCoordinatesForBase",
     "validFieldForState", "applySnapshotParam", "collectViewState", "encodeViewState", "decodeViewState",
     "getAvailableFieldLineModes", "updateOpacities", "preloadHeavyObjectsForFrame",
-    "loadFrameByIndex", "rebuildEquator", "disposeObject", "fetchFieldLineFile",
+    "assertVisibleFrameFields", "loadFrameByIndex", "rebuildEquator", "disposeObject", "fetchFieldLineFile",
     "getFieldLineFilename", "loadLinesForMode", "inferLineType", "fieldLinePairKey", "selectFieldLinesByStride",
     "buildFieldLineObjectCacheEntry", "ensureFieldLineObjectCacheEntry", "loadFieldLines", "updateFieldLineVisuals",
     "tubeGeometryLimitMiB", "checkTubeGeometryBudget", "checkFieldLineEntryBudget", "addTubeMemoryControls",
@@ -1114,12 +1114,15 @@ test("a shell-to-full-sphere switch removes the preceding inner boundary", async
   assert.equal(ctx.scene.objects.has(original), false);
 });
 
-test("changing frames replaces an unavailable isosurface field before rendering", async () => {
+test("a frame missing a displayed field is rejected without substituting fields or changing the scene", async () => {
   const ctx = viewer(), nextMetadata = structuredClone(ctx.metadata), nextCoords = structuredClone(ctx.coords);
   ctx.metadata.fields.Comp = "Comp.f32";
   ctx.params.isoField = "Comp";
+  ctx.params.showIsosurfaces = true;
+  ctx.params.sequenceFrame = 1; // GUI slider already moved; displayed data is still frame zero.
+  let status = "", renders = 0;
   Object.assign(ctx, {
-    sequenceIndex: { frames: [{ path: "frames/second" }] },
+    sequenceIndex: { frames: [{ path: "demo" }, { path: "frames/second" }] },
     sequenceFrameBasePath: frame => frame.path,
     loadMetadataForBase: async () => nextMetadata, loadCoordinatesForBase: async () => nextCoords,
     refreshSequenceControllers: () => {}, setDeferredSequenceObjectVisibility: () => {}, formatBytes: String,
@@ -1127,13 +1130,109 @@ test("changing frames replaces an unavailable isosurface field before rendering"
       if (!ctx.metadata.fields[name]) throw new Error(`Unavailable field ${name}`);
       return { name };
     },
-    rebuildAllMeshes: async () => ctx.rebuildIsosurfaces(),
+    rebuildAllMeshes: async () => { renders++; },
+    setStatus: message => { status = message; },
+    console: { error() {} },
   });
-  for (const name of ["chooseField", "applyDefaultFields"]) vm.runInContext(definition(name), ctx);
   ctx.params.showFieldLines = false;
-  assert.equal(await ctx.loadFrameByIndex(0), true);
-  assert.equal(ctx.params.isoField, "ur");
-  assert.equal(ctx.isoPositiveMesh.geometry.field.name, "ur");
+  const previousMetadata = ctx.metadata, previousCoords = ctx.coords;
+  assert.equal(await ctx.loadFrameByIndex(1), false);
+  assert.equal(ctx.params.isoField, "Comp");
+  assert.equal(ctx.metadata, previousMetadata);
+  assert.equal(ctx.coords, previousCoords);
+  assert.equal(ctx.dataBasePath, "demo");
+  assert.equal(ctx.params.sequenceFrame, 0);
+  assert.equal(renders, 0);
+  assert.match(status, /Frame 2.*Isosurfaces: Comp.*previous frame/);
+  assert.equal(ctx.sequenceFrameLoading, false);
+});
+
+test("manual and playback frame changes retain fields, phi calculators and scales despite unavailable hidden selections", async () => {
+  const ctx = viewer();
+  ctx.secondaryDataset = { label: "Mantle", metadata: { fields: { T: "T.f32" } } };
+  const mantle = ctx.prefixedSecondaryFieldName("T");
+  Object.assign(ctx.params, {
+    showFieldLines: false, showEarthSurface: true, earthDisplayMode: "texture", earthField: "missing-earth",
+    showIsosurfaces: false, isoField: "missing-iso", phiAvgCount: 2,
+    phiAvg1Field: "ur", phiAvg1Mode: "mean", phiAvg2Field: "C", phiAvg2Mode: "fluctuation",
+    phiAvg3Field: "missing-disabled", phiAvg4Field: "also-missing",
+    showMeridian: true, meridianField: "PHI:1", meridianIndependentSides: true, meridianLeftField: "PHI:2",
+    showMeridian2: true, meridian2Field: mantle, meridian2IndependentSides: false, meridian2LeftField: mantle,
+    equatorField: "ur", showEquator2: true, equator2Field: "C",
+    showMollweide: true, mollweideField: "ur", cmbField: "T",
+    meridianScale: "manual", meridianMin: -12, meridianMax: 34, meridianColormap: "viridis",
+  });
+  const selected = JSON.parse(JSON.stringify(ctx.params));
+  const rendered = [];
+  Object.assign(ctx, {
+    sequenceIndex: { frames: [{ path: "frames/one" }, { path: "frames/two" }] },
+    sequenceFrameBasePath: frame => frame.path,
+    loadMetadataForBase: async () => structuredClone(ctx.metadata),
+    loadCoordinatesForBase: async () => structuredClone(ctx.coords),
+    refreshSequenceControllers() {}, setDeferredSequenceObjectVisibility() {},
+    applyDefaultFields: () => assert.fail("Frame changes must not reset fields"),
+    rebuildAllMeshes: async () => { rendered.push([ctx.params.equatorField, ctx.params.meridianField, ctx.params.meridianLeftField]); },
+  });
+  for (const [index, options] of [[0, {}], [1, {playback:true}], [0, {}]]) {
+    assert.equal(await ctx.loadFrameByIndex(index, options), true);
+    for (const [key, value] of Object.entries(selected)) {
+      if (key.endsWith("Field") || key.startsWith("phiAvg") || /meridian(?:Scale|Min|Max|Colormap)$/.test(key))
+        assert.equal(ctx.params[key], value, key);
+    }
+  }
+  assert.deepEqual(rendered, Array.from({length:3}, () => ["ur", "PHI:1", "PHI:2"]));
+  delete ctx.metadata.fields.ur;
+  assert.throws(() => ctx.assertVisibleFrameFields(4), /Meridional slice 1: PHI:1 \(ur\)/);
+});
+
+test("a failed frame rebuild retains field choices made while it was loading", async () => {
+  const ctx = viewer(), pending = deferred();
+  Object.assign(ctx.params, {showFieldLines:false, equatorField:"ur"});
+  let renders = 0;
+  Object.assign(ctx, {
+    sequenceIndex: { frames: [{path:"demo"}, {path:"frames/second"}] },
+    sequenceFrameBasePath: frame => frame.path,
+    loadMetadataForBase: async () => structuredClone(ctx.metadata),
+    loadCoordinatesForBase: async () => structuredClone(ctx.coords),
+    refreshSequenceControllers() {}, loadFieldLines: async () => {},
+    rebuildAllMeshes: async () => { if (++renders === 1) await pending.promise; },
+    console: {error() {}},
+  });
+  const loading = ctx.loadFrameByIndex(1);
+  while (!renders) await new Promise(resolve => setImmediate(resolve));
+  ctx.params.equatorField = "C";
+  pending.reject(new Error("broken field file"));
+  assert.equal(await loading, false);
+  assert.equal(ctx.params.equatorField, "C");
+  assert.equal(ctx.dataBasePath, "demo");
+  assert.equal(ctx.params.sequenceFrame, 0);
+  assert.equal(renders, 2);
+});
+
+test("playback stops on a rejected frame without replacing its specific error", async () => {
+  const ctx = viewer();
+  let callback, notice = "", preloads = 0;
+  Object.assign(ctx, {
+    sequencePngExportActive: false, sequenceTimer: null, sequenceIndex: {frames:[{},{}]},
+    window: {setTimeout: fn => { callback = fn; return 1; }},
+    normaliseSequencePlaybackRange: () => ({count:2,first:0,last:1}),
+    sequenceFrameInPlaybackRange: () => true, sequenceFrameAtRangeOffset: () => 1,
+    pauseSequence: () => { ctx.params.sequencePlaying = false; },
+    loadFrameByIndex: async () => { notice = "Frame 2: missing ur"; return false; },
+    setStatus: message => { notice = message; },
+    preloadSequenceFrames: async () => { preloads++; },
+  });
+  for (const name of ["scheduleNextSequenceFrame", "playSequence"]) vm.runInContext(definition(name), ctx);
+  ctx.params.sequencePlaying = true;
+  ctx.scheduleNextSequenceFrame();
+  await callback();
+  assert.equal(ctx.params.sequencePlaying, false);
+  assert.equal(notice, "Frame 2: missing ur");
+  ctx.sequenceFrameInPlaybackRange = () => false;
+  await ctx.playSequence();
+  assert.equal(ctx.params.sequencePlaying, false);
+  assert.equal(preloads, 0);
+  assert.equal(notice, "Frame 2: missing ur");
 });
 
 function writableFolder(permission = "granted") {
