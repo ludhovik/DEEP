@@ -20,7 +20,7 @@ import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { prepareTubeLines, executeGeometryJob, unpackGeometry } from "../src/geometry-jobs.js";
 import { readResponseWithProgress } from "../src/work-progress.js";
 import { simulationTimeLabel, TIME_BOX_POSITIONS } from "../src/simulation-time.js";
-import { captureGuiFolders, restoreGuiFolders } from "../src/view-workspace.js";
+import { captureGuiFolders, restoreGuiFolders, mergeNamedView, validateView, validCameraPose, ViewJournal } from "../src/view-workspace.js";
 import { sampleRadialSurface, surfaceRange } from "../src/mollweide.js";
 
 const source = fs.readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
@@ -1259,7 +1259,7 @@ function writableFolder(permission = "granted") {
   return { source: { type: "handle", handle: directory() }, state };
 }
 
-test("comparison copies local datasets under fresh keys and restores fields on the selected frame", async () => {
+test("comparison bootstrap opens local datasets under fresh keys and restores fields on the selected frame", async () => {
   const ctx = viewer(), source = {type:'files',files:new Map([['metadata.json',new Blob(['{}'])]])};
   const oldSource={type:'files',files:new Map()};ctx.datasetFolderSources.set('primary-1',oldSource);
   const calls=[];ctx.sequenceIndex={frames:[{},{},{}]};ctx.params.sequenceFrame=0;
@@ -1276,6 +1276,31 @@ test("comparison copies local datasets under fresh keys and restores fields on t
   assert.deepEqual(calls,[['primary','fsdir:comparison-1/subfolder'],['secondary','fsdir:comparison-2'],['frame',2],['view','ur']]);
   assert.equal(ctx.datasetFolderSources.has('primary-1'),false,'release unused local folder references');
   assert.equal(ctx.datasetFolderSources.get('comparison-1'),source);
+});
+
+test("comparison DTV2 appearance transfer keeps data, fields, frames and radius references and can be undone",async()=>{
+  const ctx=viewer(), pose={position:[2,-4,1],target:[0,0,0],up:[0,0,1],fov:40};
+  let current={version:2,params:{datasetPath:'mantle',secondaryDatasetPath:'core',sequenceFrame:8,
+    primaryNativeRadius:1.2,primaryPhysicalRadius:3480,secondaryNativeRadius:1.53,secondaryPhysicalRadius:3480,
+    placementUnit:'km',meridianField:'PHI:2',phiAvgCount:2,phiAvg2Field:'T',equatorField:'ur',equatorColormap:'old',equatorMin:0,showEquator:false}};
+  const before=structuredClone(current);
+  const journal=new ViewJournal({capture:()=>current,apply:async value=>{current=value;},identity:()=>1,ready:()=>true});
+  Object.assign(ctx,{mergeNamedView,validateView,validCameraPose,captureWorkspaceView:()=>current,
+    viewWorkspace:{journal},VIEW_STATE_PREFIX:'DTV2:',LEGACY_VIEW_STATE_PREFIX:'DTV1:',
+    atob:value=>Buffer.from(value,'base64').toString('binary')});
+  for(const name of ['decodeViewState','applyComparisonViewCode'])vm.runInContext(definition(name),ctx);
+  const source={version:2,cameraPose:pose,params:{datasetPath:'other',secondaryDatasetPath:'different',sequenceFrame:42,
+    primaryNativeRadius:9,primaryPhysicalRadius:60000,secondaryNativeRadius:3,secondaryPhysicalRadius:999,
+    placementUnit:'m',meridianField:'Br',phiAvgCount:0,phiAvg2Field:'C',equatorField:'Br',equatorColormap:'new',equatorMin:-2,showEquator:true}};
+  const encode=value=>'DTV2:'+Buffer.from(JSON.stringify(value)).toString('base64');
+  await ctx.applyComparisonViewCode(encode(source));
+  for(const key of Object.keys(before.params).filter(key=>!['equatorColormap','equatorMin','showEquator'].includes(key)))assert.equal(current.params[key],before.params[key],key);
+  assert.deepEqual(current.cameraPose,pose);assert.equal(current.params.equatorColormap,'new');
+  assert.equal(current.params.equatorMin,-2);assert.equal(current.params.showEquator,true);
+  await journal.step(-1);assert.deepEqual(current,before);
+  await journal.step(1);assert.equal(current.params.equatorColormap,'new');
+  await assert.rejects(ctx.applyComparisonViewCode(encode({...source,cameraPose:{...pose,fov:0}})),/camera pose/);
+  await assert.rejects(ctx.applyComparisonViewCode(encode({version:2,params:{bad:[]}})),/Invalid view/);
 });
 
 test("restoring workspace views checks requested fields before rendering and retains the current radius mapping",async()=>{

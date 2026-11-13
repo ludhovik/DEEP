@@ -32,11 +32,15 @@ export function mountComparison(document, window) {
       send(1-index,'frame',{frame:data.frame});
     } else if (data.type === 'colours' && colourLink.checked && ready[1-index] && data.colours && typeof data.colours === 'object') {
       send(1-index,'colours',{colours:data.colours});
-    } else if (data.type === 'dataset' && requests.get(data.request)?.from === index) {
+    } else if (data.type === 'view' && requests.get(data.request)?.from === index) {
       const request = requests.get(data.request); requests.delete(data.request);
-      load(request.to, data.bundle);
+      if (typeof data.code !== 'string' || data.code.length > 2_000_000) { notice('Invalid comparison view code.',true); return; }
+      send(request.to, 'load-view', {code:data.code});
+      notice(`Applying view code to ${request.to ? 'B' : 'A'}…`);
     } else if (data.type === 'error') {
       notice(`View ${index ? 'B' : 'A'}: ${String(data.message).slice(0,2000)}`, true);
+    } else if (data.type === 'view-applied') {
+      notice(`View code applied to ${index ? 'B' : 'A'}. Its datasets, fields, frame and radius mapping are unchanged.`);
     } else if (data.type === 'loaded') {
       notice(`View ${index ? 'B' : 'A'} loaded. Fields and grids remain independent.`);
       if (link.checked) send(0, 'request-camera');
@@ -45,7 +49,7 @@ export function mountComparison(document, window) {
   for (const [id,from,to] of [['copy-a',0,1],['copy-b',1,0]]) document.getElementById(id).addEventListener('click', () => {
     if (!ready[from] || !ready[to]) { notice('Wait for both viewers to finish starting.',true); return; }
     const request = ++nextRequest; requests.set(request,{from,to});
-    send(from,'request-dataset',{request});
+    send(from,'request-view',{request});
   });
   const align = () => { if (ready[0] && ready[1]) { link.checked = true; send(0,'request-camera'); } };
   document.getElementById('align-a').addEventListener('click',align);

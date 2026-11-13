@@ -5,10 +5,10 @@ const cameraSignature = pose => JSON.stringify(pose, (_, value) => typeof value 
 // Same-origin, explicitly known window peers only. Never accept arbitrary URLs
 // or messages from other tabs/sites. Files/handles stay in the browser.
 export function createComparisonBridge({captureCamera, applyCamera, captureDataset, applyDataset, ready, onError,
-  captureFrame = () => null, applyFrame = async () => {}, captureColours = () => null, applyColours = async () => {}}) {
+  captureView, applyView, captureFrame = () => null, applyFrame = async () => {}, captureColours = () => null, applyColours = async () => {}}) {
   const origin = window.location.origin, embedded = window.parent !== window;
   const opened = new Map();
-  let lastCamera = cameraSignature(captureCamera()), applying = false;
+  let lastCamera = cameraSignature(captureCamera()), applying = false, applyingView = false;
   let lastFrame = captureFrame(), lastColours = JSON.stringify(captureColours()), colourCandidate = lastColours, colourSince = 0;
   const pending = new Map();
   const send = (target, type, payload = {}) => target.postMessage({channel:COMPARISON_CHANNEL,type,...payload}, origin);
@@ -24,7 +24,7 @@ export function createComparisonBridge({captureCamera, applyCamera, captureDatas
       if (!embedded || event.source !== window.parent) return;
       if (message.type === 'hello') {
         send(window.parent, 'viewer-ready');
-      } else if (message.type === 'camera' && validCameraPose(message.pose) && ready() && !applying) {
+      } else if (message.type === 'camera' && validCameraPose(message.pose) && ready() && !applying && !applyingView) {
         applyCamera(message.pose);
         lastCamera = cameraSignature(captureCamera()); // suppress echo to peer
       } else if (message.type === 'request-camera' && ready()) {
@@ -39,10 +39,23 @@ export function createComparisonBridge({captureCamera, applyCamera, captureDatas
         pending.set('colours',message.colours);
       } else if (message.type === 'unlink') {
         pending.delete(message.kind);
-      } else if (message.type === 'request-dataset') {
-        send(window.parent, 'dataset', {bundle:captureDataset(), request:message.request});
+      } else if (message.type === 'request-view') {
+        if (!ready() || applying || applyingView) throw new Error('Wait for this pane to finish loading or restoring its view.');
+        send(window.parent, 'view', {code:captureView(), request:message.request});
+      } else if (message.type === 'load-view') {
+        if (!ready() || applying || applyingView) throw new Error('Load a dataset in this pane and wait for loading or restoring to finish.');
+        if (typeof message.code !== 'string' || message.code.length > 2_000_000) throw new Error('Invalid comparison view code.');
+        // The workspace journal owns the view transaction and its undo/rollback.
+        // Keep link events out, without blocking that journal's readiness check.
+        applyingView = true;
+        try {
+          await applyView(message.code);
+          lastCamera = cameraSignature(captureCamera());
+          lastFrame = captureFrame(); lastColours = colourCandidate = JSON.stringify(captureColours());
+          send(window.parent, 'view-applied');
+        } finally { applyingView = false; }
       } else if (message.type === 'load-dataset') {
-        if (applying) throw new Error('This pane is already loading a comparison dataset.');
+        if (applying || applyingView) throw new Error('This pane is already loading or restoring a comparison view.');
         applying = true;
         try {
           await applyDataset(message.bundle);
@@ -59,7 +72,7 @@ export function createComparisonBridge({captureCamera, applyCamera, captureDatas
   });
   if (embedded) {
     const timer = window.setInterval(async () => {
-      if (!ready() || applying) return;
+      if (!ready() || applying || applyingView) return;
       if (pending.size) {
         const [kind,value] = pending.entries().next().value; pending.delete(kind); applying = true;
         try {

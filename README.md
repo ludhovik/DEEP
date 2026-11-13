@@ -158,7 +158,8 @@ not supported: use display shortcuts or the generated setting commands.
 
 ## Named views, undo/redo and comparison
 
-Open **Controls → Views & comparison**. These tools use the existing field
+Undo/Redo sits at the top of **Controls**, outside all folders. Named views and
+comparison are under **Controls → Views & comparison**. These tools use the existing field
 selectors and normalised camera coordinates; they do not assume an Earth core,
 a magnetic field, a particular converter, or a specific spherical grid.
 
@@ -181,7 +182,7 @@ a magnetic field, a particular converter, or a specific spherical grid.
   limits appropriate to the new field's units.
 - **Side-by-side comparison** opens `compare.html` in a new tab. Pane **A**
   receives the current dataset, frame and appearance. Open another dataset in
-  **B**, or choose **Copy A → B** and change its fields or frame. Each pane has
+  **B** using its dataset chooser (select the same source to compare frames). Each pane has
   independent controls, history, grids, φ calculations, caches and named-view
   access. Each can also contain its own primary/secondary dataset pair.
 
@@ -194,8 +195,19 @@ layouts and these independent linking options:
 | Frame index (off initially) | Match the zero-based frame index. Both panes need sequences with that index. This does **not** equate physical times or interpolate between timesteps. Play one pane to drive the other. |
 | Colour settings (off initially) | Match palettes, range modes, manual limits and custom palette colours for corresponding layers; field selections remain independent. Automatic min/max still depends on each pane's data. Choose matching **manual** limits when comparing the same physical quantity and units. |
 
-Local files remain local: copying a pane shares browser file/handle references
-with the same-origin comparison viewer and reloads its selected data. If the
+**View code A → B / B → A** transfers a DTV2 view code for the camera, cuts,
+visibility, palettes, limits and other appearance settings. It keeps the receiving
+pane's datasets, frame, selected fields, φ calculations and physical radius mapping.
+There are no dataset-copy buttons. The receiving pane's Undo reverses the transfer.
+Manual limits retain their numerical values; check that they suit the receiving
+field's units. Pause playback before transferring a view.
+
+Comparison panes use smaller fonts, narrower panels and compact desktop controls;
+narrow panes retain the drawer layout, and touch devices keep larger input targets.
+The standalone viewer and exported figure sizes are unchanged.
+
+Local files remain local: initially opening comparison shares browser file/handle
+references with pane A in the same-origin comparison viewer. If the
 browser cannot transfer a directory handle, select that folder directly in the
 destination pane. Two viewers use separate data/GPU caches, so reduce preload
 counts for large datasets. PNG/PDF/video export remains available **per pane**;

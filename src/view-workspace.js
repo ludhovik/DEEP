@@ -167,14 +167,14 @@ export function restoreGuiFolders(gui, state, path = '') {
 
 export function createViewWorkspace({capture, apply, identity, ready, initial, openComparison, storage, onError}) {
   const journal = new ViewJournal({capture, apply, identity, ready}), presets = new NamedViews(storage);
-  let last = '', since = 0, interacting = false, panel = null;
+  let last = '', since = 0, interacting = false, panel = null, historyPanel = null;
   const report = error => onError(error?.message || String(error));
   const run = async action => { try { await action(); refresh(); } catch (error) { report(error); } };
   const refresh = () => {
-    if (!panel?.isConnected) return;
+    if (!historyPanel?.isConnected) return;
     const available = ready(), changed = available && journal.index >= 0 && signature(capture()) !== signature(journal.states[journal.index]);
-    panel.querySelector('[data-action="undo"]').disabled = journal.busy || !available || (journal.index < 1 && !changed);
-    panel.querySelector('[data-action="redo"]').disabled = journal.busy || !available || changed || journal.index >= journal.states.length - 1;
+    historyPanel.querySelector('[data-action="undo"]').disabled = journal.busy || !available || (journal.index < 1 && !changed);
+    historyPanel.querySelector('[data-action="redo"]').disabled = journal.busy || !available || changed || journal.index >= journal.states.length - 1;
   };
   document.addEventListener('pointerdown', () => { journal.record(); interacting = true; }, true);
   for (const event of ['pointerup','pointercancel','blur']) window.addEventListener(event, () => { interacting = false; since = performance.now(); });
@@ -215,12 +215,25 @@ export function createViewWorkspace({capture, apply, identity, ready, initial, o
       if (command.action === 'apply' && Object.keys(command.patch || {}).some(key => key.startsWith('camera'))) delete target.cameraPose;
       await journal.restore(target);
     },
+    mountHistory(parent) {
+      historyPanel?.remove();
+      historyPanel = document.createElement('div');
+      historyPanel.className = 'view-history';
+      historyPanel.setAttribute('role', 'group');
+      historyPanel.setAttribute('aria-label', 'View history');
+      historyPanel.innerHTML = `<button data-action="undo" title="Undo view change (Ctrl/Cmd+Z)">↶ Undo</button><button data-action="redo" title="Redo view change (Ctrl/Cmd+Shift+Z)">↷ Redo</button>`;
+      historyPanel.addEventListener('click', event => {
+        const action = event.target.closest('[data-action]')?.dataset.action;
+        if (action) void run(() => journal.step(action === 'undo' ? -1 : 1));
+      });
+      parent.append(historyPanel);
+      refresh();
+    },
     mount(parent) {
       const previous = panel ? {name:panel.querySelector('[data-name]').value,
         selected:panel.querySelector('select').value, fields:panel.querySelector('[data-fields]').checked} : null;
       panel = document.createElement('div'); panel.className = 'view-workspace';
-      panel.innerHTML = `<div class="view-actions"><button data-action="undo" title="Undo view change (Ctrl/Cmd+Z)">↶ Undo</button><button data-action="redo" title="Redo view change (Ctrl/Cmd+Shift+Z)">↷ Redo</button></div>
-        <button data-action="compare">Side-by-side comparison ↗</button>
+      panel.innerHTML = `<button data-action="compare">Side-by-side comparison ↗</button>
         <label>View name<input data-name maxlength="80" placeholder="e.g. Temperature sections"></label>
         <button data-action="save">Save new view</button>
         <label>Saved views<select aria-label="Saved views" size="4"></select></label>
@@ -244,7 +257,6 @@ export function createViewWorkspace({capture, apply, identity, ready, initial, o
       panel.addEventListener('click', event => {
         const action = event.target.closest('[data-action]')?.dataset.action; if (!action) return;
         void run(async () => {
-          if (action === 'undo' || action === 'redo') { await journal.step(action === 'undo' ? -1 : 1); return; }
           if (action === 'compare') { openComparison(); return; }
           if (action === 'import') { ownPanel.querySelector('[data-file]').click(); return; }
           if (action === 'export') {

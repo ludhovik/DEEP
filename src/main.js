@@ -1,11 +1,12 @@
 import "./style.css";
 import "./view-workspace.css";
-import { createViewWorkspace, validCameraPose, captureGuiFolders, restoreGuiFolders } from "./view-workspace.js";
+import { createViewWorkspace, mergeNamedView, portableView, validateView, validCameraPose, captureGuiFolders, restoreGuiFolders } from "./view-workspace.js";
 import { createComparisonBridge } from "./comparison-bridge.js";
 import { parseViewerCommand, createCommandHistory } from "./viewer-commands.js";
 import { createCommandBox } from "./command-box.js";
 import { datasetPlacement, placementSummary } from "./dataset-placement.js";
 import "./mobile-layout.css";
+import "./comparison-viewer.css";
 import { createMobileLayout } from "./mobile-layout.js";
 
 import * as THREE from "three";
@@ -33,6 +34,7 @@ import { createWorkProgress, readResponseWithProgress } from "./work-progress.js
 import { createViewerStatus } from "./viewer-status.js";
 import { SURFACE_TEXTURES, SURFACE_TEXTURE_OPTIONS } from "./surface-textures.js";
 
+document.documentElement.classList.toggle("comparison-view", new URLSearchParams(window.location.search).get("comparison") === "1");
 const mobileLayout = createMobileLayout();
 
 const APP_BASE_URL = new URL(import.meta.env.BASE_URL || "./", window.location.href);
@@ -8831,6 +8833,7 @@ function buildGui() {
   gui.domElement.classList.add("main-controls-gui");
   guiRoot = gui;
 
+  viewWorkspace?.mountHistory(gui.$children);
   gui.add(params, "resetCamera").name("Reset camera view");
   if (viewWorkspace) {
     const viewsFolder = gui.addFolder("Views & comparison");
@@ -10892,6 +10895,12 @@ async function loadComparisonDataset(bundle) {
   }
 }
 
+async function applyComparisonViewCode(code) {
+  const snapshot = validateView(decodeViewState(code));
+  if (snapshot.cameraPose && !validCameraPose(snapshot.cameraPose)) throw new Error("Invalid comparison camera pose.");
+  await viewWorkspace.journal.restore(mergeNamedView(captureWorkspaceView(), snapshot, false));
+}
+
 function bindViewWorkspace() {
   let identityParts = [], identityToken = {};
   viewWorkspace = createViewWorkspace({
@@ -10909,6 +10918,8 @@ function bindViewWorkspace() {
   comparisonBridge = createComparisonBridge({
     captureCamera: captureCameraPose, applyCamera: restoreCameraPose,
     captureDataset: captureComparisonDataset, applyDataset: loadComparisonDataset,
+    captureView: () => encodeViewState(portableView(captureWorkspaceView(), false)),
+    applyView: applyComparisonViewCode,
     ready: () => Boolean(metadata) && !datasetLoadInProgress && !sequenceFrameLoading && !videoState.active && !sequencePngExportActive,
     captureFrame: () => sequenceIndex?.frames?.length ? Math.round(params.sequenceFrame) : null,
     applyFrame: async index => {

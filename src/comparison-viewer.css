@@ -1,0 +1,58 @@
+/* Scoped to comparison panes: full-size standalone viewers are unchanged.
+   Text and controls shrink, never the WebGL canvas or exported figure. */
+:root.comparison-view .lil-gui {
+  --width: 260px; --font-size: 10.5px; --input-font-size: 11px;
+  --widget-height: 20px; --title-height: 23px;
+}
+:root.comparison-view:not(.mobile-layout) .main-controls-gui,
+:root.comparison-view:not(.mobile-layout) .point-of-view-gui { max-width: min(260px, calc(50vw - 12px)); }
+:root.comparison-view .lil-gui .lil-name { overflow-wrap:anywhere; }
+:root.comparison-view .view-workspace,
+:root.comparison-view .view-history { font-size:11px; gap:5px; padding:6px; }
+:root.comparison-view #info-panel,
+:root.comparison-view #legend-panel,
+:root.comparison-view #export-panel { font-size:11px; }
+:root.comparison-view:not(.mobile-layout) #info-panel,
+:root.comparison-view:not(.mobile-layout) #legend-panel,
+:root.comparison-view:not(.mobile-layout) #export-panel { max-width: min(280px, calc(50vw - 20px)); }
+:root.comparison-view #info-header .title { font-size:12px; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+:root.comparison-view .panel-header-hint,
+:root.comparison-view .legend-header-hint { display:none; }
+:root.comparison-view #layout-choice { font-size:10px; padding:3px 5px; }
+:root.comparison-view #viewer-command-box { width:min(340px, calc(100vw - 24px)); font-size:11px; }
+:root.comparison-view #viewer-command-box summary { padding:6px 8px; }
+:root.comparison-view #viewer-command-box summary span { float:none; display:block; font-size:10px; }
+:root.comparison-view #viewer-command-box .command-actions { flex-wrap:wrap; }
+:root.comparison-view .dataset-launcher-card { padding:16px; }
+:root.comparison-view .dataset-launcher h1 { font-size:22px; }
+:root.comparison-view .dataset-launcher p { font-size:12px; }
+:root.comparison-view .dataset-launcher-actions,
+:root.comparison-view .dataset-url-controls { grid-template-columns:1fr; }
+:root.comparison-view #mobile-sheet { font-size:12px; }
+:root.comparison-view #mobile-nav button,
+:root.comparison-view #mobile-sheet header button { font-size:12px; }
+/* A narrow desktop iframe uses the drawer layout without phone-sized rows.
+   Keep large touch targets and 16px inputs on actual touch devices. */
+@media (pointer:fine) {
+  :root.comparison-view.mobile-layout .lil-gui .lil-controller { min-height:28px; }
+  :root.comparison-view.mobile-layout .lil-gui input,
+  :root.comparison-view.mobile-layout .lil-gui select { font-size:12px !important; }
+  :root.comparison-view.mobile-layout .lil-gui .layer-picker summary,
+  :root.comparison-view.mobile-layout .lil-gui .layer-picker-options button,
+  :root.comparison-view.mobile-layout .lil-gui .layer-edit { min-height:28px; }
+  :root.comparison-view.mobile-layout .lil-gui .layer-picker input[type=search] { height:28px; }
+  :root.comparison-view.mobile-layout .lil-gui .numeric-enhanced.lil-has-slider { grid-template-columns:28px minmax(0,1fr) minmax(0,5em) 28px; }
+  :root.comparison-view.mobile-layout .lil-gui .numeric-enhanced.lil-has-slider > .lil-name { min-height:24px; }
+  :root.comparison-view.mobile-layout .lil-gui .numeric-enhanced.lil-has-slider input { height:28px; }
+  :root.comparison-view.mobile-layout .lil-gui .numeric-enhanced .numeric-step { width:28px; height:28px; }
+  :root.comparison-view.mobile-layout .lil-gui .numeric-enhanced .lil-slider { height:28px; }
+  :root.comparison-view.mobile-layout .view-workspace button,
+  :root.comparison-view.mobile-layout .view-history button { min-height:28px; }
+  :root.comparison-view.mobile-layout #viewer-command-box textarea { font-size:12px; }
+  :root.comparison-view.mobile-layout #viewer-command-box button { min-height:28px; }
+}
+@media (pointer:coarse) {
+  :root.comparison-view.mobile-layout .lil-gui {
+    --font-size:12px; --input-font-size:16px; --widget-height:36px; --title-height:44px;
+  }
+}

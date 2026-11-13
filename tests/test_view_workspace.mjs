@@ -79,14 +79,18 @@ test('named-view UI saves, updates, loads and keeps text editing shortcuts nativ
   const window=new Window();Object.assign(globalThis,{window,document:window.document});
   let state=view(),errors=[];const workspace=createViewWorkspace({capture:()=>state,apply:async value=>{state=value;},identity:()=>1,ready:()=>true,
     initial:()=>view(),storage:memory(),openComparison(){},onError:message=>errors.push(message)});
-  const parent=document.createElement('div');document.body.append(parent);workspace.mount(parent);
+  const parent=document.createElement('div');document.body.append(parent);
+  const history=document.createElement('div');document.body.prepend(history);workspace.mountHistory(history);
+  workspace.mount(parent);
+  assert.equal(parent.querySelector('[data-action=undo]'),null,'history must be outside named views');
+  assert.equal(history.querySelectorAll('button').length,2);
   t.after(async()=>{window.dispatchEvent(new window.Event('pagehide'));await window.happyDOM.close();});
   const input=parent.querySelector('[data-name]'); input.value='Sections';
   parent.querySelector('[data-action=save]').click();await tick();
   assert.equal(parent.querySelector('select').value,'Sections');
   workspace.journal.record();state.params.equatorField='ur';workspace.journal.record();
   parent.querySelector('[data-action=load]').click();await tick();assert.equal(state.params.equatorField,'T');
-  await workspace.journal.step(-1);assert.equal(state.params.equatorField,'ur');
+  history.querySelector('[data-action=undo]').click();await tick();assert.equal(state.params.equatorField,'ur');
   const textUndo=new window.KeyboardEvent('keydown',{key:'z',ctrlKey:true,bubbles:true,cancelable:true});
   input.dispatchEvent(textUndo);assert.equal(textUndo.defaultPrevented,false);
   const undo=new window.KeyboardEvent('keydown',{key:'z',ctrlKey:true,bubbles:true,cancelable:true});
@@ -116,23 +120,28 @@ test('camera validation rejects degenerate/nonfinite poses but keeps rolled came
   assert.equal(validCameraPose({...pose,up:[1,0,0]}),true);
 });
 
-test('comparison bridge accepts only its parent, transfers local file references, and never echoes linked cameras',async()=>{
+test('comparison bridge bootstraps data once and transfers only view codes through copy requests',async()=>{
   const listeners={},sent=[],parent={postMessage:(message,origin)=>sent.push({message,origin})};
-  let poll, camera=structuredClone(pose), loads=0,frame=0,colours={equatorScale:'manual',equatorMin:-1,equatorMax:1};
+  let poll, camera=structuredClone(pose), loads=0,viewLoads=[],frame=0,colours={equatorScale:'manual',equatorMin:-1,equatorMax:1};
   const window={parent,location:{origin:'https://viewer.test',href:'https://viewer.test/DEEP/'},
     addEventListener:(name,fn)=>{listeners[name]=fn;},setInterval:fn=>{poll=fn;},clearInterval(){}};
   globalThis.window=window;
   const bundle={root:'fsdir:primary-1',folders:[['primary-1',{type:'files',files:new Map([['metadata.json',new Blob(['{}'])]])}]],snapshot:view()};
   createComparisonBridge({captureCamera:()=>camera,applyCamera:value=>{camera=value;},captureDataset:()=>bundle,
-    applyDataset:async()=>{loads++;},ready:()=>true,onError:message=>assert.fail(message),
+    applyDataset:async()=>{loads++;},captureView:()=> 'DTV2:view',applyView:async code=>{viewLoads.push(code);},ready:()=>true,onError:message=>assert.fail(message),
     captureFrame:()=>frame,applyFrame:async value=>{frame=value;},captureColours:()=>colours,applyColours:async value=>{colours=value;}});
   const message=(source,origin,type,payload={})=>listeners.message({source,origin,data:{channel:COMPARISON_CHANNEL,type,...payload}});
   await message({},window.location.origin,'load-dataset',{bundle});
   await message(parent,'https://evil.test','load-dataset',{bundle});assert.equal(loads,0);
   await message(parent,window.location.origin,'load-dataset',{bundle});assert.equal(loads,1);
-  await message(parent,window.location.origin,'request-dataset',{request:7});
-  const transfer=sent.find(entry=>entry.message.type==='dataset').message;
-  assert.equal(transfer.request,7);assert.ok(transfer.bundle.folders[0][1].files instanceof Map);
+  await message(parent,window.location.origin,'request-view',{request:7});
+  const transfer=sent.find(entry=>entry.message.type==='view').message;
+  assert.equal(transfer.request,7);assert.equal(transfer.code,'DTV2:view');assert.equal(transfer.bundle,undefined);
+  await message(parent,window.location.origin,'load-view',{code:transfer.code});
+  assert.deepEqual(viewLoads,['DTV2:view']);assert.equal(loads,1);assert.equal(frame,0);
+  const noDatasetExport=sent.length;
+  await message(parent,window.location.origin,'request-dataset',{request:8});
+  assert.equal(sent.length,noDatasetExport,'old dataset-copy protocol has been removed');
   const moved={...pose,position:[1,-4,2]};await message(parent,window.location.origin,'camera',{pose:moved});
   const count=sent.length;await poll();assert.equal(sent.length,count);
   camera={...pose,position:[2,-4,2]};await poll();assert.equal(sent.at(-1).message.type,'camera');
@@ -160,12 +169,57 @@ test('comparison host queues initial data, links only cameras and routes copy re
   const count=sent[1].length;dom.document.querySelector('#link-cameras').checked=false;
   message(frames[0].contentWindow,'camera',{pose});assert.equal(sent[1].length,count);
   dom.document.querySelector('#copy-a').click();const request=sent[0].at(-1).request;
-  message(frames[1].contentWindow,'dataset',{request,bundle:{root:'wrong'}});assert.equal(sent[1].length,count);
-  message(frames[0].contentWindow,'dataset',{request,bundle:{root:'core'}});assert.equal(sent[1].at(-1).bundle.root,'core');
-  message({},'camera',{pose});assert.equal(sent[1].at(-1).type,'load-dataset');
+  message(frames[1].contentWindow,'view',{request,code:'wrong'});assert.equal(sent[1].length,count);
+  message(frames[0].contentWindow,'view',{request,code:'DTV2:appearance'});assert.equal(sent[1].at(-1).code,'DTV2:appearance');
+  assert.equal(sent[1].some(message=>message.type==='load-dataset'),false,'copy appearance must never load a dataset');
+  message({},'camera',{pose});assert.equal(sent[1].at(-1).type,'load-view');
+  dom.document.querySelector('#copy-b').click();const reverse=sent[1].at(-1).request;
+  assert.equal(sent[1].at(-1).type,'request-view');
+  message(frames[1].contentWindow,'view',{request:reverse,code:'DTV2:other'});
+  assert.equal(sent[0].at(-1).type,'load-view');assert.equal(sent[0].at(-1).code,'DTV2:other');
   const before=sent[1].length;message(frames[0].contentWindow,'frame',{frame:3});assert.equal(sent[1].length,before);
   dom.document.querySelector('#link-frames').checked=true;
   message(frames[0].contentWindow,'frame',{frame:3});assert.equal(sent[1].at(-1).frame,3);
   dom.document.querySelector('#link-colours').checked=true;
   message(frames[0].contentWindow,'colours',{colours:{equatorMin:-8}});assert.equal(sent[1].at(-1).colours.equatorMin,-8);
+});
+
+test('view transfer uses destination history, blocks overlapping links and does not echo the applied pose',async()=>{
+  const listeners={},sent=[],errors=[],parent={postMessage:message=>sent.push(message)};
+  let poll,bridge,release,state=view();
+  globalThis.window={parent,location:{origin:'https://viewer.test'},addEventListener:(name,fn)=>{listeners[name]=fn;},setInterval:fn=>{poll=fn;},clearInterval(){}};
+  const journal=new ViewJournal({capture:()=>state,identity:()=>1,ready:()=>!bridge?.busy,
+    apply:async value=>{state=value;if(release===undefined)await new Promise(resolve=>{release=resolve;});}});
+  const target={...view(),cameraPose:{...pose,position:[3,-4,2]}};
+  bridge=createComparisonBridge({captureCamera:()=>state.cameraPose,applyCamera:value=>{state.cameraPose=value;},
+    captureDataset:()=>assert.fail('No dataset transfer'),applyDataset:async()=>assert.fail('No dataset load'),
+    captureView:()=> 'DTV2:test',applyView:async()=>journal.restore(target),ready:()=>true,onError:message=>errors.push(message)});
+  const message=(type,payload={})=>listeners.message({source:parent,origin:'https://viewer.test',data:{channel:COMPARISON_CHANNEL,type,...payload}});
+  const pending=message('load-view',{code:'DTV2:test'});
+  assert.equal(journal.busy,true);
+  await message('camera',{pose});assert.deepEqual(state.cameraPose,target.cameraPose);
+  await message('load-view',{code:'DTV2:another'});assert.equal(errors.length,1);
+  const during=sent.length;await poll();assert.equal(sent.length,during);
+  release();await pending;assert.equal(journal.index,1);
+  assert.equal(sent.at(-1).type,'view-applied');
+  const count=sent.length;await poll();assert.equal(sent.length,count);
+  await journal.step(-1);assert.deepEqual(state.cameraPose,pose);
+});
+
+test('comparison compact styles stay scoped and preserve separate slider/value columns',async t=>{
+  for(const comparison of [false,true]) {
+    const window=new Window();t.after(()=>window.happyDOM.close());
+    const {document}=window;
+    // happy-dom caches descendant computed styles on ancestor-class changes;
+    // use separate documents, just as standalone and comparison viewers do.
+    document.documentElement.classList.toggle('comparison-view',comparison);
+    for(const file of ['style.css','mobile-layout.css','view-workspace.css','comparison-viewer.css']) {
+      const style=document.createElement('style');style.textContent=fs.readFileSync(new URL(`../src/${file}`,import.meta.url),'utf8');document.head.append(style);
+    }
+    document.body.innerHTML='<div class="lil-gui main-controls-gui"><div class="lil-controller numeric-enhanced lil-has-slider"><input></div></div>';
+    const gui=document.querySelector('.lil-gui'),input=document.querySelector('input');
+    assert.equal(window.getComputedStyle(gui).getPropertyValue('--font-size'),comparison?'10.5px':'11px');
+    assert.equal(window.getComputedStyle(input).gridColumn,'5');
+    if(comparison)assert.match(window.getComputedStyle(gui).maxWidth,/260px/);
+  }
 });
