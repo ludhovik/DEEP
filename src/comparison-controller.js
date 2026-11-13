@@ -40,7 +40,7 @@ export function mountComparison(document, window) {
     } else if (data.type === 'error') {
       notice(`View ${index ? 'B' : 'A'}: ${String(data.message).slice(0,2000)}`, true);
     } else if (data.type === 'view-applied') {
-      notice(`View code applied to ${index ? 'B' : 'A'}. Its datasets, fields, frame and radius mapping are unchanged.`);
+      notice(`View code applied to ${index ? 'B' : 'A'}. Fields and colour settings copied; its datasets, frame and radius mapping are unchanged.`);
     } else if (data.type === 'loaded') {
       notice(`View ${index ? 'B' : 'A'} loaded. Fields and grids remain independent.`);
       if (link.checked) send(0, 'request-camera');

@@ -20,7 +20,7 @@ import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { prepareTubeLines, executeGeometryJob, unpackGeometry } from "../src/geometry-jobs.js";
 import { readResponseWithProgress } from "../src/work-progress.js";
 import { simulationTimeLabel, TIME_BOX_POSITIONS } from "../src/simulation-time.js";
-import { captureGuiFolders, restoreGuiFolders, mergeNamedView, validateView, validCameraPose, ViewJournal } from "../src/view-workspace.js";
+import { captureGuiFolders, restoreGuiFolders, mergeNamedView, portableView, validateView, validCameraPose, ViewJournal } from "../src/view-workspace.js";
 import { sampleRadialSurface, surfaceRange } from "../src/mollweide.js";
 
 const source = fs.readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
@@ -1278,23 +1278,32 @@ test("comparison bootstrap opens local datasets under fresh keys and restores fi
   assert.equal(ctx.datasetFolderSources.get('comparison-1'),source);
 });
 
-test("comparison DTV2 appearance transfer keeps data, fields, frames and radius references and can be undone",async()=>{
+test("comparison DTV2 copies fields, phi averages and colour limits, keeps datasets and radii, and can be undone",async()=>{
   const ctx=viewer(), pose={position:[2,-4,1],target:[0,0,0],up:[0,0,1],fov:40};
   let current={version:2,params:{datasetPath:'mantle',secondaryDatasetPath:'core',sequenceFrame:8,
     primaryNativeRadius:1.2,primaryPhysicalRadius:3480,secondaryNativeRadius:1.53,secondaryPhysicalRadius:3480,
     placementUnit:'km',meridianField:'PHI:2',phiAvgCount:2,phiAvg2Field:'T',equatorField:'ur',equatorColormap:'old',equatorMin:0,showEquator:false}};
   const before=structuredClone(current);
   const journal=new ViewJournal({capture:()=>current,apply:async value=>{current=value;},identity:()=>1,ready:()=>true});
-  Object.assign(ctx,{mergeNamedView,validateView,validCameraPose,captureWorkspaceView:()=>current,
+  Object.assign(ctx,{mergeNamedView,portableView,validateView,validCameraPose,captureWorkspaceView:()=>current,
     viewWorkspace:{journal},VIEW_STATE_PREFIX:'DTV2:',LEGACY_VIEW_STATE_PREFIX:'DTV1:',
-    atob:value=>Buffer.from(value,'base64').toString('binary')});
-  for(const name of ['decodeViewState','applyComparisonViewCode'])vm.runInContext(definition(name),ctx);
+    atob:value=>Buffer.from(value,'base64').toString('binary'),btoa:value=>Buffer.from(value,'binary').toString('base64')});
+  for(const name of ['encodeViewState','decodeViewState','captureComparisonViewCode','applyComparisonViewCode'])vm.runInContext(definition(name),ctx);
   const source={version:2,cameraPose:pose,params:{datasetPath:'other',secondaryDatasetPath:'different',sequenceFrame:42,
     primaryNativeRadius:9,primaryPhysicalRadius:60000,secondaryNativeRadius:3,secondaryPhysicalRadius:999,
-    placementUnit:'m',meridianField:'Br',phiAvgCount:0,phiAvg2Field:'C',equatorField:'Br',equatorColormap:'new',equatorMin:-2,showEquator:true}};
+    placementUnit:'m',meridianField:'PHI:1',phiAvgCount:1,phiAvg1Field:'ur',phiAvg1Mode:'mean',phiAvg2Field:'C',equatorField:'Br',equatorColormap:'new',equatorScale:'manual',equatorMin:-2,equatorMax:3,showEquator:true}};
+  for(const field of ['cmbField','icbField','radialField','equator2Field','meridianLeftField','meridian2Field','meridian2LeftField','isoField','mollweideField','earthField'])source.params[field]='Br';
   const encode=value=>'DTV2:'+Buffer.from(JSON.stringify(value)).toString('base64');
-  await ctx.applyComparisonViewCode(encode(source));
-  for(const key of Object.keys(before.params).filter(key=>!['equatorColormap','equatorMin','showEquator'].includes(key)))assert.equal(current.params[key],before.params[key],key);
+  // Exercise the sending side too: field selections must survive encoding.
+  ctx.captureWorkspaceView=()=>source;
+  const code=ctx.captureComparisonViewCode(),sent=ctx.decodeViewState(code);
+  assert.equal(sent.params.meridianField,'PHI:1');assert.equal(sent.params.phiAvg1Field,'ur');
+  assert.equal(sent.params.datasetPath,undefined);assert.equal(sent.params.primaryNativeRadius,undefined);
+  ctx.captureWorkspaceView=()=>current;
+  await ctx.applyComparisonViewCode(code);
+  for(const key of ['datasetPath','secondaryDatasetPath','sequenceFrame','primaryNativeRadius','primaryPhysicalRadius','secondaryNativeRadius','secondaryPhysicalRadius','placementUnit'])assert.equal(current.params[key],before.params[key],key);
+  for(const key of Object.keys(source.params).filter(key=>key.endsWith('Field')||key.startsWith('phiAvg')))assert.equal(current.params[key],source.params[key],key);
+  assert.equal(current.params.equatorScale,'manual');assert.equal(current.params.equatorMax,3);
   assert.deepEqual(current.cameraPose,pose);assert.equal(current.params.equatorColormap,'new');
   assert.equal(current.params.equatorMin,-2);assert.equal(current.params.showEquator,true);
   await journal.step(-1);assert.deepEqual(current,before);

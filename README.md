@@ -195,9 +195,12 @@ layouts and these independent linking options:
 | Frame index (off initially) | Match the zero-based frame index. Both panes need sequences with that index. This does **not** equate physical times or interpolate between timesteps. Play one pane to drive the other. |
 | Colour settings (off initially) | Match palettes, range modes, manual limits and custom palette colours for corresponding layers; field selections remain independent. Automatic min/max still depends on each pane's data. Choose matching **manual** limits when comparing the same physical quantity and units. |
 
-**View code A → B / B → A** transfers a DTV2 view code for the camera, cuts,
-visibility, palettes, limits and other appearance settings. It keeps the receiving
-pane's datasets, frame, selected fields, φ calculations and physical radius mapping.
+**View code A → B / B → A** transfers a DTV2 view code including selected
+fields, φ-calculator definitions, camera, cuts, visibility, palettes, colourbar
+range modes and limits, and other appearance settings. It keeps the receiving
+pane's datasets, frame and physical radius mapping. A field required by a visible
+layer must exist in the receiving dataset; otherwise the transfer reports the
+missing field and retains the previous view.
 There are no dataset-copy buttons. The receiving pane's Undo reverses the transfer.
 Manual limits retain their numerical values; check that they suit the receiving
 field's units. Pause playback before transferring a view.

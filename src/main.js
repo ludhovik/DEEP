@@ -10895,10 +10895,14 @@ async function loadComparisonDataset(bundle) {
   }
 }
 
+function captureComparisonViewCode() {
+  return encodeViewState(portableView(captureWorkspaceView(), true));
+}
+
 async function applyComparisonViewCode(code) {
   const snapshot = validateView(decodeViewState(code));
   if (snapshot.cameraPose && !validCameraPose(snapshot.cameraPose)) throw new Error("Invalid comparison camera pose.");
-  await viewWorkspace.journal.restore(mergeNamedView(captureWorkspaceView(), snapshot, false));
+  await viewWorkspace.journal.restore(mergeNamedView(captureWorkspaceView(), snapshot, true));
 }
 
 function bindViewWorkspace() {
@@ -10918,7 +10922,7 @@ function bindViewWorkspace() {
   comparisonBridge = createComparisonBridge({
     captureCamera: captureCameraPose, applyCamera: restoreCameraPose,
     captureDataset: captureComparisonDataset, applyDataset: loadComparisonDataset,
-    captureView: () => encodeViewState(portableView(captureWorkspaceView(), false)),
+    captureView: captureComparisonViewCode,
     applyView: applyComparisonViewCode,
     ready: () => Boolean(metadata) && !datasetLoadInProgress && !sequenceFrameLoading && !videoState.active && !sequencePngExportActive,
     captureFrame: () => sequenceIndex?.frames?.length ? Math.round(params.sequenceFrame) : null,

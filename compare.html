@@ -13,10 +13,10 @@
     <label title="Match frame indices, not physical time. Both panes must contain sequences."><input type="checkbox" id="link-frames"> Link frame index</label>
     <label title="Copy palette, range mode and manual limits between corresponding layers. Automatic ranges still depend on each dataset."><input type="checkbox" id="link-colours"> Link colour settings</label>
     <label>Layout <select id="comparison-layout"><option value="columns">Side by side</option><option value="rows">Stacked</option></select></label>
-    <button id="copy-a" title="Transfer camera, cuts and colour settings; keep B’s datasets, fields and frame">View code A → B</button><button id="copy-b" title="Transfer camera, cuts and colour settings; keep A’s datasets, fields and frame">View code B → A</button>
+    <button id="copy-a" title="Transfer fields, camera, cuts and colour settings; keep B’s datasets and frame">View code A → B</button><button id="copy-b" title="Transfer fields, camera, cuts and colour settings; keep A’s datasets and frame">View code B → A</button>
     <button id="align-a">Align cameras to A</button>
   </header>
-  <p class="comparison-hint">Open a dataset in each pane. View-code buttons transfer appearance only; datasets, selected fields, frames and radius mappings stay independent. Cameras use each dataset’s outer radius. Frame linking matches indices, not physical times. Use matching manual limits to compare colours quantitatively.</p>
+  <p class="comparison-hint">Open a dataset in each pane. View-code buttons transfer selected fields, φ calculations and appearance, including colourbar limits; datasets, frames and radius mappings stay independent. Cameras use each dataset’s outer radius. Frame linking matches indices, not physical times. Use matching manual limits to compare colours quantitatively.</p>
   <main id="comparison-panes">
     <section><h1><span>A</span><input aria-label="Pane A label" value="View A" maxlength="80"></h1><iframe title="DEEPscope comparison view A" src="./?comparison=1&amp;pane=A" allow="fullscreen"></iframe></section>
     <section><h1><span>B</span><input aria-label="Pane B label" value="View B" maxlength="80"></h1><iframe title="DEEPscope comparison view B" src="./?comparison=1&amp;pane=B" allow="fullscreen"></iframe></section>
